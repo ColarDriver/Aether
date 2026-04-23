@@ -189,19 +189,24 @@ class AgentEngine:
                     break
 
                 state_machine.transition(LoopState.LLM_CALL)
-                try:
-                    response = self.services.provider.generate(
-                        prepared_messages,
-                        self.services.tool_registry.list_descriptors(),
-                        request.model_config,
-                        context,
-                    )
-                except Exception as exc:
-                    self._handle_pipeline_error(exc, state_machine.state, context)
-                    error_text = str(exc)
-                    exit_reason = ExitReason.PROVIDER_ERROR
-                    state_machine.transition(LoopState.FAILED)
-                    break
+                response = self._pop_context_response(context, "llm_pre_response")
+                if response is None:
+                    try:
+                        response = self.services.provider.generate(
+                            prepared_messages,
+                            self.services.tool_registry.list_descriptors(),
+                            request.model_config,
+                            context,
+                        )
+                    except Exception as exc:
+                        self._handle_pipeline_error(exc, state_machine.state, context)
+                        recovered_response = self._pop_context_response(context, "llm_error_response")
+                        if recovered_response is None:
+                            error_text = str(exc)
+                            exit_reason = ExitReason.PROVIDER_ERROR
+                            state_machine.transition(LoopState.FAILED)
+                            break
+                        response = recovered_response
 
                 state_machine.transition(LoopState.POST_LLM)
                 try:
@@ -228,7 +233,7 @@ class AgentEngine:
                             break
 
                         try:
-                            tool_call = self.services.middleware_pipeline.run_before_tool(call, context)
+                            pre_tool = self.services.middleware_pipeline.run_before_tool(call, context)
                         except Exception as exc:
                             self._handle_pipeline_error(exc, state_machine.state, context)
                             error_text = str(exc)
@@ -237,35 +242,47 @@ class AgentEngine:
                             tool_failed = True
                             break
 
-                        try:
-                            result = self.services.tool_registry.dispatch(tool_call, context)
-                        except UnknownToolError:
-                            if self.config.fail_on_unknown_tool:
-                                error_text = f"Unknown tool: {tool_call.name}"
-                                exit_reason = ExitReason.UNKNOWN_TOOL
-                                state_machine.transition(LoopState.FAILED)
-                                tool_failed = True
-                                break
-                            result = ToolResult(
-                                tool_call_id=tool_call.id,
-                                name=tool_call.name,
-                                content=f"Unknown tool: {tool_call.name}",
-                                is_error=True,
-                            )
-                        except Exception as exc:
-                            if self.config.fail_on_tool_error:
-                                self._handle_pipeline_error(exc, state_machine.state, context)
-                                error_text = str(exc)
-                                exit_reason = ExitReason.TOOL_ERROR
-                                state_machine.transition(LoopState.FAILED)
-                                tool_failed = True
-                                break
-                            result = ToolResult(
-                                tool_call_id=tool_call.id,
-                                name=tool_call.name,
-                                content=f"Tool execution error: {exc}",
-                                is_error=True,
-                            )
+                        if isinstance(pre_tool, ToolResult):
+                            result = pre_tool
+                        else:
+                            tool_call = pre_tool
+                            context.metadata.pop("tool_error_result", None)
+                            context.metadata["_active_tool_call"] = tool_call
+                            try:
+                                result = self.services.tool_registry.dispatch(tool_call, context)
+                            except UnknownToolError:
+                                if self.config.fail_on_unknown_tool:
+                                    error_text = f"Unknown tool: {tool_call.name}"
+                                    exit_reason = ExitReason.UNKNOWN_TOOL
+                                    state_machine.transition(LoopState.FAILED)
+                                    tool_failed = True
+                                    break
+                                result = ToolResult(
+                                    tool_call_id=tool_call.id,
+                                    name=tool_call.name,
+                                    content=f"Unknown tool: {tool_call.name}",
+                                    is_error=True,
+                                )
+                            except Exception as exc:
+                                if self.config.fail_on_tool_error:
+                                    self._handle_pipeline_error(exc, state_machine.state, context)
+                                    recovered_tool_result = context.metadata.pop("tool_error_result", None)
+                                    if not isinstance(recovered_tool_result, ToolResult):
+                                        error_text = str(exc)
+                                        exit_reason = ExitReason.TOOL_ERROR
+                                        state_machine.transition(LoopState.FAILED)
+                                        tool_failed = True
+                                        break
+                                    result = recovered_tool_result
+                                else:
+                                    result = ToolResult(
+                                        tool_call_id=tool_call.id,
+                                        name=tool_call.name,
+                                        content=f"Tool execution error: {exc}",
+                                        is_error=True,
+                                    )
+                            finally:
+                                context.metadata.pop("_active_tool_call", None)
 
                         try:
                             result = self.services.middleware_pipeline.run_after_tool(result, context)
@@ -327,6 +344,13 @@ class AgentEngine:
     def _handle_pipeline_error(self, error: Exception, state: LoopState, context: TurnContext) -> None:
         self.services.logger.exception("AgentEngine error at %s: %s", state, error)
         self.services.middleware_pipeline.run_on_error(error, state, context)
+
+    @staticmethod
+    def _pop_context_response(context: TurnContext, key: str) -> NormalizedResponse | None:
+        candidate = context.metadata.pop(key, None)
+        if isinstance(candidate, NormalizedResponse):
+            return candidate
+        return None
 
     def _append_assistant_tool_message(
         self,

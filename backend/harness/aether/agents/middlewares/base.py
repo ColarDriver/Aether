@@ -14,7 +14,11 @@ class EngineMiddleware:
     def after_llm(self, response: NormalizedResponse, context: TurnContext) -> NormalizedResponse:
         return response
 
-    def before_tool(self, call: ToolCall, context: TurnContext) -> ToolCall:
+    def before_tool(
+        self,
+        call: ToolCall | ToolResult,
+        context: TurnContext,
+    ) -> ToolCall | ToolResult:
         return call
 
     def after_tool(self, result: ToolResult, context: TurnContext) -> ToolResult:

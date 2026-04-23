@@ -30,8 +30,8 @@ class MiddlewarePipeline:
             current = middleware.after_llm(current, context)
         return current
 
-    def run_before_tool(self, call: ToolCall, context: TurnContext) -> ToolCall:
-        current = call
+    def run_before_tool(self, call: ToolCall, context: TurnContext) -> ToolCall | ToolResult:
+        current: ToolCall | ToolResult = call
         for middleware in self.middlewares:
             current = middleware.before_tool(current, context)
         return current

@@ -1,0 +1,45 @@
+services:
+  aether-harness:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: aether-harness:latest
+    container_name: aether-harness
+    working_dir: /workspace/backend/harness
+    env_file:
+      - ../backend/harness/aether/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /workspace/backend/harness
+    volumes:
+      - ../:/workspace
+    command: ["tail", "-f", "/dev/null"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import aether; print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  aether-tests:
+    image: aether-harness:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    profiles: ["tests"]
+    working_dir: /workspace/backend/harness
+    env_file:
+      - ../backend/harness/aether/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /workspace/backend/harness
+    volumes:
+      - ../:/workspace
+    command: >
+      sh -lc "
+      python -m unittest
+      aether.tests.test_provider_streaming
+      aether.tests.test_engine
+      aether.tests.test_subagents
+      aether.tests.test_state_machine
+      "

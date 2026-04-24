@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from aether.config.schema import ModelCallConfig
-from aether.runtime.contracts import NormalizedResponse, TurnContext
+from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, TurnContext
 from aether.tools.base import ToolDescriptor
 
 
@@ -20,5 +20,6 @@ class ModelProvider(ABC):
         tools: List[ToolDescriptor],
         config: ModelCallConfig,
         context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
     ) -> NormalizedResponse:
         raise NotImplementedError

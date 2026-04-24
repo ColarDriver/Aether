@@ -11,6 +11,8 @@ from .contracts import (
     NormalizedResponse,
 )
 from .interrupts import InterruptController
+from .hooks import EngineHooks
+from .session_store import InMemorySessionStore, SessionStore
 from .state_machine import EngineStateMachine, StateTransitionError
 
 __all__ = [
@@ -25,4 +27,7 @@ __all__ = [
     "InterruptController",
     "EngineStateMachine",
     "StateTransitionError",
+    "EngineHooks",
+    "SessionStore",
+    "InMemorySessionStore",
 ]

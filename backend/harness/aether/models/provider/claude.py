@@ -20,7 +20,7 @@ from aether.models.credential_loader import (
     load_claude_code_credential,
 )
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, ToolCall, TurnContext
+from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, ToolCall, TurnContext
 from aether.tools.base import ToolDescriptor
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ class ClaudeChatModel(ModelProvider):
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
         context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
     ) -> NormalizedResponse:
         payload = self._build_request_payload(messages, tools=tools, config=config, context=context)
 
@@ -76,7 +77,13 @@ class ClaudeChatModel(ModelProvider):
         for attempt in range(1, self.retry_max_attempts + 1):
             try:
                 response = self._create(payload)
-                return self._parse_response(response)
+                parsed = self._parse_response(response)
+                if stream_callback and parsed.content and not parsed.tool_calls:
+                    try:
+                        stream_callback(parsed.content)
+                    except Exception:
+                        logger.exception("Claude stream callback failed for final content fallback")
+                return parsed
             except anthropic.RateLimitError as exc:
                 last_error = exc
                 if attempt >= self.retry_max_attempts:
@@ -499,9 +506,6 @@ class ClaudeChatModel(ModelProvider):
 
         return total_ms
 
-
-# Backward-compatible alias for config paths that use `ClaudeProvider`.
-ClaudeProvider = ClaudeChatModel
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from typing import Iterable, List
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, TurnContext
+from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, TurnContext
 from aether.tools.base import ToolDescriptor
 
 
@@ -23,7 +23,14 @@ class ScriptedProvider(ModelProvider):
         tools: List[ToolDescriptor],
         config: ModelCallConfig,
         context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
     ) -> NormalizedResponse:
         if not self._responses:
             raise RuntimeError("ScriptedProvider has no remaining responses")
-        return self._responses.popleft()
+        response = self._responses.popleft()
+        if stream_callback and response.content and not response.tool_calls:
+            try:
+                stream_callback(response.content)
+            except Exception:  # pragma: no cover - defensive callback path
+                pass
+        return response

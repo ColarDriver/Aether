@@ -12,7 +12,7 @@ import httpx
 from aether.config.schema import ModelCallConfig
 from aether.models.credential_loader import CodexCliCredential, load_codex_cli_credential
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, ToolCall, TurnContext
+from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, ToolCall, TurnContext
 from aether.tools.base import ToolDescriptor
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,21 @@ class CodexChatModel(ModelProvider):
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
         context: TurnContext,  # noqa: ARG002
+        stream_callback: StreamDeltaCallback | None = None,  # noqa: ARG002
     ) -> NormalizedResponse:
-        response = self._call_codex_api(messages, tools=tools, config=config)
-        return self._parse_response(response)
+        response = self._call_codex_api(
+            messages,
+            tools=tools,
+            config=config,
+            stream_callback=stream_callback,
+        )
+        parsed = self._parse_response(response)
+        if stream_callback and parsed.content and not parsed.tool_calls:
+            try:
+                stream_callback(parsed.content)
+            except Exception:
+                logger.exception("Codex stream callback failed for final content fallback")
+        return parsed
 
     def _load_codex_auth(self) -> CodexCliCredential | None:
         return load_codex_cli_credential()
@@ -73,6 +85,7 @@ class CodexChatModel(ModelProvider):
         *,
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
+        stream_callback: StreamDeltaCallback | None = None,
     ) -> dict[str, Any]:
         payload = self._build_payload(messages, tools=tools, config=config)
         headers = {
@@ -87,7 +100,7 @@ class CodexChatModel(ModelProvider):
         last_error: Exception | None = None
         for attempt in range(1, self.retry_max_attempts + 1):
             try:
-                return self._stream_response(headers, payload)
+                return self._stream_response(headers, payload, stream_callback=stream_callback)
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 status_code = exc.response.status_code
@@ -285,7 +298,13 @@ class CodexChatModel(ModelProvider):
             )
         return responses_tools
 
-    def _stream_response(self, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    def _stream_response(
+        self,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        stream_callback: StreamDeltaCallback | None = None,
+    ) -> dict[str, Any]:
         completed_response: dict[str, Any] | None = None
         streamed_output_items: dict[int, dict[str, Any]] = {}
 
@@ -296,6 +315,9 @@ class CodexChatModel(ModelProvider):
                     data = self._parse_sse_data_line(line)
                     if not data:
                         continue
+
+                    if stream_callback:
+                        self._emit_stream_delta(stream_callback, data)
 
                     event_type = data.get("type")
                     if event_type == "response.output_item.done":
@@ -330,6 +352,52 @@ class CodexChatModel(ModelProvider):
             completed_response["output"] = [item for item in merged_output if isinstance(item, dict)]
 
         return completed_response
+
+
+    @staticmethod
+    def _emit_stream_delta(stream_callback: StreamDeltaCallback, event: dict[str, Any]) -> None:
+        delta = CodexChatModel._extract_stream_delta(event)
+        if not delta:
+            return
+        try:
+            stream_callback(delta)
+        except Exception:
+            logger.exception("Codex stream callback failed while emitting delta")
+
+    @staticmethod
+    def _extract_stream_delta(event: dict[str, Any]) -> str:
+        if not isinstance(event, dict):
+            return ""
+
+        event_type = str(event.get("type") or "")
+
+        direct_delta = event.get("delta")
+        if isinstance(direct_delta, str):
+            return direct_delta
+        if isinstance(direct_delta, dict):
+            text = direct_delta.get("text")
+            if isinstance(text, str):
+                return text
+
+        if "output_text" in event_type and isinstance(event.get("text"), str):
+            return str(event.get("text"))
+
+        item = event.get("item")
+        if isinstance(item, dict):
+            if isinstance(item.get("text"), str):
+                return item.get("text", "")
+            content = item.get("content")
+            if isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict):
+                        block_text = block.get("text")
+                        if isinstance(block_text, str):
+                            parts.append(block_text)
+                if parts:
+                    return "".join(parts)
+
+        return ""
 
     @staticmethod
     def _parse_sse_data_line(line: str) -> dict[str, Any] | None:
@@ -427,6 +495,3 @@ class CodexChatModel(ModelProvider):
     def _calc_backoff_ms(attempt: int) -> int:
         return 2000 * (1 << (attempt - 1))
 
-
-# Backward-compatible alias for config paths that use `CodexProvider`.
-CodexProvider = CodexChatModel

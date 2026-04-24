@@ -38,13 +38,18 @@ class GuardrailMiddleware(RuntimeMiddlewareBase):
         call: ToolCall | ToolResult,
         context: TurnContext,
     ) -> ToolCall | ToolResult:
+        # Respect prior middleware short-circuits (already converted to ToolResult).
         if isinstance(call, ToolResult):
             return call
+        # Build a normalized policy request from the runtime tool call/context.
         request = self._build_request(call, context)
         decision = self._evaluate(request)
+        # Allow path: continue normal tool dispatch unchanged.
         if decision.allow:
             return call
 
+        # Deny path: convert policy decision into a synthetic tool error result
+        # so the agent can continue with an alternative strategy.
         result = self._build_denied_result(call, decision)
         self.logger.warning(
             "Guardrail denied tool call: session=%s tool=%s policy=%s code=%s",
@@ -53,6 +58,7 @@ class GuardrailMiddleware(RuntimeMiddlewareBase):
             decision.policy_id,
             decision.reasons[0].code if decision.reasons else "oap.denied",
         )
+        # Emit a structured event for downstream audit/observability hooks.
         self._append_event(
             context,
             {
@@ -66,6 +72,7 @@ class GuardrailMiddleware(RuntimeMiddlewareBase):
         return result
 
     def _build_request(self, call: ToolCall, context: TurnContext) -> GuardrailRequest:
+        # Attach execution metadata so provider-side policy can use session/iteration scoping.
         return GuardrailRequest(
             tool_name=call.name,
             tool_input=dict(call.arguments),
@@ -80,8 +87,10 @@ class GuardrailMiddleware(RuntimeMiddlewareBase):
             return self.provider.evaluate(request)
         except Exception as exc:
             self.logger.exception("Guardrail provider error: tool=%s", request.tool_name)
+            # fail-open: preserve availability if guardrail backend is down.
             if not self.fail_closed:
                 return GuardrailDecision(allow=True, policy_id="guardrail_fail_open")
+            # fail-closed: block execution when policy evaluation cannot be trusted.
             return GuardrailDecision(
                 allow=False,
                 policy_id="guardrail_fail_closed",
@@ -94,6 +103,7 @@ class GuardrailMiddleware(RuntimeMiddlewareBase):
             )
 
     def _build_denied_result(self, call: ToolCall, decision: GuardrailDecision) -> ToolResult:
+        # Always provide a deterministic denial reason/code to the model loop.
         reason = decision.reasons[0] if decision.reasons else GuardrailReason(
             code="oap.denied",
             message="blocked by guardrail policy",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from aether.config.schema import ModelCallConfig
 
@@ -34,6 +34,10 @@ class ExitReason(str, Enum):
     UNKNOWN_TOOL = "UNKNOWN_TOOL"
     EMPTY_RESPONSE = "EMPTY_RESPONSE"
 
+
+
+
+StreamDeltaCallback = Callable[[str], None]
 
 class EngineStatus(str, Enum):
     COMPLETED = "COMPLETED"
@@ -71,12 +75,16 @@ class TurnContext:
     session_id: str
     iteration: int
     metadata: Dict[str, Any] = field(default_factory=dict)
+    task_id: str | None = None
+    turn_id: str | None = None
 
 
 @dataclass(slots=True)
 class EngineRequest:
     session_id: str
     user_message: str | None = None
+    system_message: str | None = None
+    stream_callback: StreamDeltaCallback | None = None
     messages: List[Dict[str, Any]] = field(default_factory=list)
     model_config: ModelCallConfig = field(default_factory=ModelCallConfig)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -91,4 +99,8 @@ class EngineResult:
     iterations: int
     final_response: str | None = None
     error: str | None = None
+    task_id: str | None = None
+    turn_id: str | None = None
+    system_prompt: str | None = None
+    streamed: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)

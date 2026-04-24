@@ -1,5 +1,10 @@
 """Aether harness package."""
 
+from .config import load_aether_dotenv
+
+# Load local project .env once on package import.
+load_aether_dotenv()
+
 from .agents.core.agent import AgentEngine
 from .runtime.contracts import (
     EngineRequest,

@@ -29,6 +29,9 @@ class DefaultSubagentBuilder(SubagentBuilder):
             fail_on_tool_error=parent.config.fail_on_tool_error,
             raise_on_middleware_error=parent.config.raise_on_middleware_error,
             fail_on_unknown_tool=parent.config.fail_on_unknown_tool,
+            enable_todo_hydration=parent.config.enable_todo_hydration,
+            memory_nudge_interval=parent.config.memory_nudge_interval,
+            skill_nudge_interval=parent.config.skill_nudge_interval,
         )
 
         child = AgentEngine(
@@ -42,5 +45,7 @@ class DefaultSubagentBuilder(SubagentBuilder):
             subagent_id=f"subagent-{uuid4().hex[:8]}",
             parent_subagent_id=parent.subagent_id,
             subagent_manager=parent.subagent_manager,
+            session_store=parent._session_store,
+            hooks=parent._hooks,
         )
         return child

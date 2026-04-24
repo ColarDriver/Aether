@@ -23,3 +23,6 @@ class EngineConfig:
     fail_on_tool_error: bool = False
     raise_on_middleware_error: bool = False
     fail_on_unknown_tool: bool = True
+    enable_todo_hydration: bool = False
+    memory_nudge_interval: int = 0
+    skill_nudge_interval: int = 0

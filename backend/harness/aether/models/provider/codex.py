@@ -1,4 +1,4 @@
-"""OpenAI Codex provider using the ChatGPT Codex Responses API."""
+"""Codex provider using the ChatGPT Codex Responses API."""
 
 from __future__ import annotations
 

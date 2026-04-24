@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from aether.models.provider.openai import CodexChatModel
+from aether.models.provider.codex import CodexChatModel
 
 
 class ProviderStreamingTests(unittest.TestCase):

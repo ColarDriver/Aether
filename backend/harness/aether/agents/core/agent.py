@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List
 
@@ -25,7 +25,20 @@ from aether.runtime.contracts import (
 )
 from aether.runtime.hooks import EngineHooks
 from aether.runtime.interrupts import InterruptController
+from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.recovery import (
+    AttemptState,
+    GenericBackoffStrategy,
+    RecoveryStrategy,
+    wait_interruptible,
+)
 from aether.runtime.services import EngineServices
+from aether.runtime.session_runtime import (
+    TURN_KEY_EMPTY_RESPONSE_RETRIES,
+    TURN_KEY_PROVIDER_ERROR_RETRIES,
+    SessionRuntimeRegistry,
+    SessionRuntimeState,
+)
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.tools.base import UnknownToolError
@@ -54,6 +67,7 @@ class AgentEngine:
         subagent_manager: "SubagentManager | None" = None,
         session_store: SessionStore | None = None,
         hooks: EngineHooks | None = None,
+        recovery_strategy: RecoveryStrategy | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         self.services = EngineServices(
@@ -62,6 +76,13 @@ class AgentEngine:
             middleware_pipeline=middleware_pipeline or MiddlewarePipeline(),
             interrupt_controller=interrupt_controller or InterruptController(),
             logger=logger or logging.getLogger(__name__),
+            # Default recovery strategy mirrors the pre-Sprint-0 in-provider
+            # retry behaviour (3 attempts, 2s/4s exponential backoff on the
+            # well-known retriable status codes).  Only structured
+            # ``ProviderInvocationError`` errors are routed through this
+            # strategy — generic ``Exception`` instances bypass it and go
+            # straight to the middleware on_error pipeline as before.
+            recovery_strategy=recovery_strategy or GenericBackoffStrategy(),
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger
@@ -77,13 +98,17 @@ class AgentEngine:
         self._session_store = session_store or InMemorySessionStore()
         self._hooks = hooks or EngineHooks()
 
-        # Cross-turn counters used by nudge policies.
-        self._memory_nudge_counter = 0
-        self._skill_nudge_counter = 0
-
-        # Turn-local counters reset by _prepare_turn_entry().
-        self._empty_response_retries = 0
-        self._provider_error_retries = 0
+        # Per-session state registry (cross-turn nudge counters, future
+        # cached system prompt for prefix-cache stability).  Storing these
+        # on a session-keyed registry instead of plain ``self._*`` attributes
+        # is what makes a single ``AgentEngine`` instance safe to share
+        # across many concurrent sessions — see ``runtime/session_runtime.py``
+        # for the rationale.
+        #
+        # Note: per-turn retry counters (empty_response_retries,
+        # provider_error_retries) live on ``TurnContext.metadata`` instead
+        # of here, because their lifetime is exactly one turn.
+        self._session_runtime = SessionRuntimeRegistry()
 
     @property
     def delegate_depth(self) -> int:
@@ -212,18 +237,29 @@ class AgentEngine:
                     # Allow middleware to short-circuit the provider call (e.g. circuit breaker).
                     response = self._pop_context_response(context, "llm_pre_response")
                     if response is None:
-                        try:
-                            response = self.services.provider.generate(
-                                prepared_messages,
-                                self.services.tool_registry.list_descriptors(),
-                                request.model_config,
-                                context,
-                                stream_callback=stream_callback_wrapped,
-                            )
-                        except Exception as exc:
-                            self._provider_error_retries += 1
-                            # Give on_error middlewares one chance to convert provider failure
-                            # into a normalized assistant response.
+                        # ProviderInvocationError → engine-side recovery strategy
+                        # decides whether to retry; any other Exception bypasses
+                        # the strategy and goes straight to the middleware
+                        # on_error path (preserving pre-Sprint-0 behaviour for
+                        # bugs / programming errors / scripted-test providers).
+                        invoke_outcome = self._invoke_provider_with_recovery(
+                            request=request,
+                            prepared_messages=prepared_messages,
+                            stream_callback=stream_callback_wrapped,
+                            context=context,
+                        )
+                        if invoke_outcome.interrupted:
+                            state_machine.transition(LoopState.INTERRUPTED)
+                            exit_reason = ExitReason.INTERRUPTED
+                            break
+                        if invoke_outcome.response is not None:
+                            response = invoke_outcome.response
+                        else:
+                            # Recovery exhausted (or never applicable): fall
+                            # through to the existing middleware on_error
+                            # pipeline so it can build a user-facing message.
+                            exc = invoke_outcome.error
+                            assert exc is not None  # type-checker: mutually exclusive with response
                             self._handle_pipeline_error(exc, state_machine.state, context)
                             recovered_response = self._pop_context_response(context, "llm_error_response")
                             if recovered_response is None:
@@ -363,10 +399,16 @@ class AgentEngine:
                         context.metadata["stream_fallback_emitted"] = True
 
                     if final_response:
-                        self._empty_response_retries = 0
+                        # Reset the per-turn empty-response counter on success.
+                        # (Currently no consumer reads this counter — Sprint 4
+                        # will introduce the 9-step empty-response degradation
+                        # path that consumes it.)
+                        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
                         exit_reason = ExitReason.TEXT_RESPONSE
                     else:
-                        self._empty_response_retries += 1
+                        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = (
+                            int(context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)) + 1
+                        )
                         exit_reason = ExitReason.EMPTY_RESPONSE
                     state_machine.transition(LoopState.FINALIZE)
                     break
@@ -408,10 +450,6 @@ class AgentEngine:
         self,
         request: EngineRequest,
     ) -> tuple[EngineStateMachine, List[Dict[str, Any]], TurnContext]:
-        # Reset per-turn counters so retries from a previous turn don't leak.
-        self._empty_response_retries = 0
-        self._provider_error_retries = 0
-
         state_machine = EngineStateMachine()
         messages = self._sanitize_messages(copy.deepcopy(request.messages))
 
@@ -430,6 +468,12 @@ class AgentEngine:
                 "task_id": task_id,
                 "turn_id": turn_id,
                 "request_has_stream_callback": bool(request.stream_callback),
+                # Per-turn retry counters live on TurnContext.metadata so they
+                # cannot leak across concurrent sessions sharing this engine.
+                # Initialised to 0 here; mutated by the run-loop's empty-
+                # response / provider-error branches.
+                TURN_KEY_EMPTY_RESPONSE_RETRIES: 0,
+                TURN_KEY_PROVIDER_ERROR_RETRIES: 0,
             }
         )
 
@@ -489,25 +533,41 @@ class AgentEngine:
         return messages, selected_prompt
 
     def _apply_turn_nudges(self, context: TurnContext) -> None:
+        """Bump the memory-review counter for this session and surface the flag.
+
+        Cadence is per-session (not per-engine), so the counter must come from
+        ``SessionRuntimeRegistry`` rather than an instance attribute.  This is
+        what guarantees that two concurrent sessions sharing the same
+        ``AgentEngine`` cannot interfere with each other's nudge timing.
+        """
         context.metadata.setdefault("should_review_memory", False)
         context.metadata.setdefault("should_review_skills", False)
 
         interval = max(0, int(getattr(self.config, "memory_nudge_interval", 0)))
-        if interval > 0:
-            self._memory_nudge_counter += 1
-            if self._memory_nudge_counter >= interval:
-                context.metadata["should_review_memory"] = True
-                self._memory_nudge_counter = 0
+        if interval <= 0:
+            return
+
+        state = self._session_runtime.get(context.session_id)
+        state.memory_nudge_counter += 1
+        if state.memory_nudge_counter >= interval:
+            context.metadata["should_review_memory"] = True
+            state.memory_nudge_counter = 0
 
     def _register_skill_nudge(self, context: TurnContext) -> None:
+        """Bump the skill-review counter on every tool-call iteration.
+
+        Like ``_apply_turn_nudges`` this lives on ``SessionRuntimeState`` so
+        the cadence cannot bleed across concurrent sessions.
+        """
         interval = max(0, int(getattr(self.config, "skill_nudge_interval", 0)))
         if interval <= 0:
             return
 
-        self._skill_nudge_counter += 1
-        if self._skill_nudge_counter >= interval:
+        state = self._session_runtime.get(context.session_id)
+        state.skill_nudge_counter += 1
+        if state.skill_nudge_counter >= interval:
             context.metadata["should_review_skills"] = True
-            self._skill_nudge_counter = 0
+            state.skill_nudge_counter = 0
 
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
         callback = request.stream_callback
@@ -606,8 +666,133 @@ class AgentEngine:
         return self.services.interrupt_controller.is_interrupted(session_id)
 
     def _handle_pipeline_error(self, error: Exception, state: LoopState, context: TurnContext) -> None:
-        self.services.logger.exception("AgentEngine error at %s: %s", state, error)
+        # Pass ``exc_info=error`` explicitly: this method is sometimes called
+        # *outside* the original ``except`` block (e.g. after the recovery
+        # loop in ``_invoke_provider_with_recovery``), where
+        # ``sys.exc_info()`` would be cleared and ``logger.exception`` would
+        # otherwise emit a misleading "NoneType: None" stack trace.
+        self.services.logger.error(
+            "AgentEngine error at %s: %s",
+            state,
+            error,
+            exc_info=error,
+        )
         self.services.middleware_pipeline.run_on_error(error, state, context)
+
+    # ------------------------------------------------------------------
+    # Provider invocation with engine-side recovery (Sprint 0 / PR 0.3)
+    # ------------------------------------------------------------------
+
+    @dataclass(slots=True)
+    class _ProviderInvocationOutcome:
+        """Tri-state result of ``_invoke_provider_with_recovery``.
+
+        Exactly one of (``response``, ``error``) is non-None unless
+        ``interrupted`` is True (in which case both are None — the engine
+        treats that as an INTERRUPTED exit reason without consulting either).
+        """
+
+        response: NormalizedResponse | None = None
+        error: Exception | None = None
+        interrupted: bool = False
+
+    def _invoke_provider_with_recovery(
+        self,
+        *,
+        request: EngineRequest,
+        prepared_messages: List[Dict[str, Any]],
+        stream_callback,
+        context: TurnContext,
+    ) -> "_ProviderInvocationOutcome":
+        """Issue ``provider.generate`` and apply the recovery strategy on failure.
+
+        Loop semantics:
+
+        * On success → returns ``_ProviderInvocationOutcome(response=...)``.
+        * On ``ProviderInvocationError`` → bumps the per-turn provider-error
+          counter, asks the configured ``RecoveryStrategy``.  If the strategy
+          says retry, we sleep interruptibly then loop.  If it says give up
+          (or the wait gets interrupted), we hand the *most recent* error
+          back to the caller so the existing middleware on_error path can
+          run as before.
+        * On any other ``Exception`` → bumps the counter once and returns
+          immediately with that exception (no retry).  This preserves the
+          old behaviour for non-provider bugs (e.g. the test suite's
+          ``ScriptedProvider`` raising ``RuntimeError``).
+        * If an interrupt arrives during a retry wait → returns
+          ``interrupted=True``; the caller transitions to LoopState.INTERRUPTED.
+
+        The retry trail is recorded in
+        ``context.metadata['recovery_decisions']`` as a list of
+        ``{"reason": ..., "wait_seconds": ..., "attempt": ...}`` dicts so
+        callers and tests can inspect what the strategy did without parsing
+        logs.
+        """
+        attempt_state = AttemptState()
+        last_error: Exception | None = None
+        decisions_log = context.metadata.setdefault("recovery_decisions", [])
+
+        while True:
+            try:
+                response = self.services.provider.generate(
+                    prepared_messages,
+                    self.services.tool_registry.list_descriptors(),
+                    request.model_config,
+                    context,
+                    stream_callback=stream_callback,
+                )
+                return AgentEngine._ProviderInvocationOutcome(response=response)
+            except ProviderInvocationError as exc:
+                # Bump the observability counter once per failed attempt.
+                context.metadata[TURN_KEY_PROVIDER_ERROR_RETRIES] = (
+                    int(context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)) + 1
+                )
+                attempt_state.attempt += 1
+                attempt_state.errors.append(exc)
+                last_error = exc
+
+                decision = self.services.recovery_strategy.decide(
+                    error=exc,
+                    attempt_state=attempt_state,
+                    context=context,
+                )
+                decisions_log.append(
+                    {
+                        "attempt": attempt_state.attempt,
+                        "retry": decision.retry,
+                        "wait_seconds": decision.wait_seconds,
+                        "reason": decision.reason,
+                        "status_code": exc.status_code,
+                        "is_network_error": exc.is_network_error,
+                    }
+                )
+
+                if not decision.retry:
+                    return AgentEngine._ProviderInvocationOutcome(error=exc)
+
+                # Interruptible wait — if the user cancels mid-retry we abort
+                # the whole turn rather than serve a stale recovery attempt.
+                if decision.wait_seconds > 0:
+                    completed = wait_interruptible(
+                        decision.wait_seconds,
+                        interrupt_controller=self.services.interrupt_controller,
+                        session_id=request.session_id,
+                    )
+                    attempt_state.total_wait_seconds += decision.wait_seconds
+                    if not completed:
+                        return AgentEngine._ProviderInvocationOutcome(interrupted=True)
+
+                # Loop and retry the provider call.
+                continue
+            except Exception as exc:
+                # Non-structured errors (programming errors, ScriptedProvider
+                # exhaustion, etc.) bypass the recovery strategy entirely —
+                # one bump + immediate hand-off to middleware.
+                context.metadata[TURN_KEY_PROVIDER_ERROR_RETRIES] = (
+                    int(context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)) + 1
+                )
+                last_error = exc
+                return AgentEngine._ProviderInvocationOutcome(error=last_error)
 
     @staticmethod
     def _pop_context_response(context: TurnContext, key: str) -> NormalizedResponse | None:
@@ -689,6 +874,11 @@ class AgentEngine:
         else:
             status = EngineStatus.COMPLETED
 
+        # The ``runtime`` block here is a flat snapshot of the per-turn retry
+        # counters that Sprint-1+ paths use to drive recovery.  We read them
+        # straight from ``context.metadata`` (their authoritative home, since
+        # Sprint 0) instead of from ``self.*`` — the latter would re-introduce
+        # the multi-session leak this PR was supposed to fix.
         metadata = {
             "request": {
                 "session_id": request.session_id,
@@ -698,8 +888,12 @@ class AgentEngine:
             },
             "turn": dict(context.metadata),
             "runtime": {
-                "empty_response_retries": self._empty_response_retries,
-                "provider_error_retries": self._provider_error_retries,
+                "empty_response_retries": int(
+                    context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)
+                ),
+                "provider_error_retries": int(
+                    context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)
+                ),
             },
         }
 

@@ -26,3 +26,9 @@ class EngineConfig:
     enable_todo_hydration: bool = False
     memory_nudge_interval: int = 0
     skill_nudge_interval: int = 0
+    # Sprint 1 / PR 1.1: emergency rollback switch for the new SSE streaming
+    # path.  When False, the engine refuses to forward ``request.stream_callback``
+    # to the provider, forcing the (older, well-tested) non-streaming path
+    # even if the user passes a callback.  Useful for shipping deployments
+    # where a buggy provider gateway breaks SSE.
+    streaming_enabled: bool = True

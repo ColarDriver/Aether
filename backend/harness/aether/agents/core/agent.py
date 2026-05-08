@@ -25,7 +25,7 @@ from aether.runtime.contracts import (
 )
 from aether.runtime.hooks import EngineHooks
 from aether.runtime.interrupts import InterruptController
-from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
 from aether.runtime.recovery import (
     AttemptState,
     GenericBackoffStrategy,
@@ -264,7 +264,14 @@ class AgentEngine:
                             recovered_response = self._pop_context_response(context, "llm_error_response")
                             if recovered_response is None:
                                 error_text = str(exc)
-                                exit_reason = ExitReason.PROVIDER_ERROR
+                                # Sprint 1 / PR 1.1: surface RESPONSE_INVALID
+                                # as a distinct terminal so observers can
+                                # tell "API kept handing us malformed bodies"
+                                # apart from "API itself errored".
+                                if isinstance(exc, ResponseInvalidError):
+                                    exit_reason = ExitReason.RESPONSE_INVALID
+                                else:
+                                    exit_reason = ExitReason.PROVIDER_ERROR
                                 state_machine.transition(LoopState.FAILED)
                                 break
                             response = recovered_response
@@ -574,6 +581,19 @@ class AgentEngine:
         if callback is None:
             return None
 
+        # Sprint 1 / PR 1.1 emergency rollback: if the operator has flipped
+        # ``EngineConfig.streaming_enabled`` off (e.g. because a gateway is
+        # serving broken SSE), pretend the request had no callback at all.
+        # The provider then takes the non-streaming path and the user
+        # gets a single final-response chunk instead of a stream.  No
+        # exception is raised — graceful degradation is the whole point.
+        if not getattr(self.config, "streaming_enabled", True):
+            self.services.logger.debug(
+                "streaming_enabled=False; suppressing stream_callback for session %s",
+                request.session_id,
+            )
+            return None
+
         def _wrapped(delta: str) -> None:
             if not isinstance(delta, str) or not delta:
                 return
@@ -741,6 +761,19 @@ class AgentEngine:
                     context,
                     stream_callback=stream_callback,
                 )
+                # Sprint 1 / PR 1.1: post-LLM response-shape validation.
+                # ``validate_response`` is non-mutating; if it returns False
+                # we lift the structured failure into the recovery loop so
+                # the existing retry / give-up machinery handles it.  The
+                # default base-class implementation always returns valid,
+                # so providers that don't care pay zero cost here.
+                ok, reasons = self.services.provider.validate_response(response)
+                if not ok:
+                    raise ResponseInvalidError(
+                        validation_errors=list(reasons),
+                        body_summary="invalid response: " + "; ".join(reasons[:5]),
+                        metadata={"phase": "validate_response"},
+                    )
                 return AgentEngine._ProviderInvocationOutcome(response=response)
             except ProviderInvocationError as exc:
                 # Bump the observability counter once per failed attempt.
@@ -869,6 +902,10 @@ class AgentEngine:
             ExitReason.TOOL_ERROR,
             ExitReason.MIDDLEWARE_ERROR,
             ExitReason.UNKNOWN_TOOL,
+            # Sprint 1 / PR 1.1: response-shape validation failure after
+            # all retries.  Same terminal class as PROVIDER_ERROR but with
+            # a distinct ExitReason so observers can branch.
+            ExitReason.RESPONSE_INVALID,
         }:
             status = EngineStatus.FAILED
         else:

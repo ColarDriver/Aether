@@ -21,7 +21,12 @@ dependencies = [
     "tiktoken>=0.8.0",
     "ddgs>=9.10.0",
     "duckdb>=1.4.4",
+    "prompt_toolkit>=3.0.0",
+    "rich>=13.0.0",
 ]
+
+[project.scripts]
+aether = "aether.cli.main:main"
 
 [project.optional-dependencies]
 pymupdf = ["pymupdf4llm>=0.0.17"]

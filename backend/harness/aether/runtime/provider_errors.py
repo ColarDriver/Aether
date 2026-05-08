@@ -92,4 +92,71 @@ class ProviderInvocationError(Exception):
         return self._build_message()
 
 
-__all__ = ["ProviderInvocationError"]
+@dataclass
+class StreamStallError(ProviderInvocationError):
+    """Raised when an SSE stream produces no events for too long.
+
+    Sprint 1 / PR 1.1 — added so the engine's recovery layer can distinguish
+    "the network got cut" from "the stream is hung mid-way".  A stall is
+    semantically a network-level failure (the server is alive enough to keep
+    the TCP connection open but never sends another byte), so we set
+    ``is_network_error=True`` on the parent.  ``GenericBackoffStrategy``
+    therefore retries it like any other transport error — but providers also
+    use this signal to flip their own ``_disable_streaming`` flag and fall
+    back to non-streaming for the rest of the session.
+
+    ``stalled_after_seconds`` records how long the wait was before we gave
+    up, so log messages and observability can pinpoint slow backends.
+    """
+
+    stalled_after_seconds: float = 0.0
+
+    def __post_init__(self) -> None:  # pragma: no cover - inherits behaviour
+        # Ensure the base-class invariants hold even when callers forget to
+        # set them explicitly.  is_network_error must be True for the
+        # recovery layer to retry; status_code is None because we never got
+        # a response status.
+        self.is_network_error = True
+        self.status_code = None
+        super().__post_init__()
+
+
+@dataclass
+class ResponseInvalidError(ProviderInvocationError):
+    """Raised when a provider returns HTTP 200 but the response shape is malformed.
+
+    Sprint 1 / PR 1.1 — covers the "OpenRouter returned an `error` field in
+    a 200 body" / "choices is empty" / "message is null" class of failures.
+    The engine catches this from ``provider.validate_response`` and treats
+    it like any other ``ProviderInvocationError`` (retried by Sprint 0's
+    ``GenericBackoffStrategy``).
+
+    Sprint 2 will introduce a dedicated ``ResponseInvalidStrategy`` that
+    triggers eager fallback rather than generic backoff retry.  Until then
+    we deliberately mark this as ``is_network_error=True`` so the existing
+    retry path picks it up — see the comment in ``GenericBackoffStrategy``.
+
+    ``validation_errors`` is the human-readable list returned by
+    ``ModelProvider.validate_response``.  It propagates into the recovery-
+    decision log so future strategies can branch on the specific defect.
+    """
+
+    validation_errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:  # pragma: no cover - inherits behaviour
+        # Sprint 1 placeholder: classify as network-error-equivalent so the
+        # generic retry path picks it up.  Sprint 2 will replace this with
+        # an explicit ResponseInvalidStrategy in the recovery chain.
+        self.is_network_error = True
+        # Body summary defaults to "; ".join(validation_errors) so logs are
+        # immediately useful without callers having to set it manually.
+        if not self.body_summary and self.validation_errors:
+            self.body_summary = "invalid response: " + "; ".join(self.validation_errors)
+        super().__post_init__()
+
+
+__all__ = [
+    "ProviderInvocationError",
+    "StreamStallError",
+    "ResponseInvalidError",
+]

@@ -33,6 +33,11 @@ class ExitReason(str, Enum):
     MIDDLEWARE_ERROR = "MIDDLEWARE_ERROR"
     UNKNOWN_TOOL = "UNKNOWN_TOOL"
     EMPTY_RESPONSE = "EMPTY_RESPONSE"
+    # Sprint 1 / PR 1.1: response-shape validation failed even after the
+    # recovery layer's retry budget was exhausted.  Distinct from
+    # PROVIDER_ERROR so observers can tell "the API itself broke" apart
+    # from "the API kept returning malformed bodies".
+    RESPONSE_INVALID = "RESPONSE_INVALID"
 
 
 

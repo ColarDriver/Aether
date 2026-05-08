@@ -68,7 +68,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
 
 if TYPE_CHECKING:  # pragma: no cover
     from aether.runtime.contracts import TurnContext
@@ -225,6 +225,13 @@ class GenericBackoffStrategy(RecoveryStrategy):
 
     def _is_retriable(self, error: ProviderInvocationError) -> bool:
         if error.is_network_error:
+            return True
+        # Sprint 1 stop-gap: invalid-response errors are retried generically
+        # so the engine doesn't immediately fail when a single 200-OK body is
+        # malformed.  Sprint 2 will replace this with a dedicated
+        # ResponseInvalidStrategy that does eager fallback to the next
+        # provider — at that point this isinstance check goes away.
+        if isinstance(error, ResponseInvalidError):
             return True
         return error.status_code in self.retriable_status_codes
 

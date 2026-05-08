@@ -38,6 +38,30 @@ class ExitReason(str, Enum):
     # PROVIDER_ERROR so observers can tell "the API itself broke" apart
     # from "the API kept returning malformed bodies".
     RESPONSE_INVALID = "RESPONSE_INVALID"
+    # Sprint 1 / PR 1.2: response hit the model's output budget but we
+    # successfully stitched a continuation and returned the full text.
+    LENGTH_RECOVERED = "LENGTH_RECOVERED"
+    # Sprint 1 / PR 1.2: response hit the output budget repeatedly and we
+    # had to stop after rollback / partial return.
+    LENGTH_EXHAUSTED = "LENGTH_EXHAUSTED"
+    # Sprint 1 / PR 1.3: assistant tool-call payload was cut off mid-stream
+    # (either because finish_reason="length" arrived alongside tool_calls
+    # or because the JSON arguments did not terminate with "}" / "]").  We
+    # refused to dispatch the truncated call and either retried once or
+    # surfaced a partial turn.  Distinct from LENGTH_EXHAUSTED so observers
+    # can branch on "the model asked for a tool but never finished writing
+    # the arguments" vs "the model exhausted its output budget on prose".
+    TOOL_CALL_TRUNCATED = "TOOL_CALL_TRUNCATED"
+    # Sprint 1.5 / phantom-tool recovery: model wrote shell commands or
+    # ``<function=NAME>`` / ``<invoke>`` markers in prose instead of
+    # populating the structured ``tool_calls`` field, and the loop sent
+    # corrective messages for ``max_phantom_tool_retries`` turns without
+    # ever getting back a properly structured invocation.  Distinct from
+    # TEXT_RESPONSE because the model *intended* to invoke a tool — the
+    # turn is broken, not just complete.  Surfaced to the UI so the
+    # user sees a clear "the model never got around to actually running
+    # anything" footer instead of a misleading green checkmark.
+    PHANTOM_TOOL_INTENT = "PHANTOM_TOOL_INTENT"
 
 
 

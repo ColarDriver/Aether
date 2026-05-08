@@ -17,7 +17,7 @@ _TRANSITIONS: Dict[LoopState, FrozenSet[LoopState]] = {
     LoopState.PREPARE: frozenset({LoopState.PRE_LLM, LoopState.INTERRUPTED, LoopState.FAILED}),
     LoopState.PRE_LLM: frozenset({LoopState.LLM_CALL, LoopState.INTERRUPTED, LoopState.FAILED}),
     LoopState.LLM_CALL: frozenset({LoopState.POST_LLM, LoopState.INTERRUPTED, LoopState.FAILED}),
-    LoopState.POST_LLM: frozenset({LoopState.TOOL_DISPATCH, LoopState.FINALIZE, LoopState.INTERRUPTED, LoopState.FAILED}),
+    LoopState.POST_LLM: frozenset({LoopState.TOOL_DISPATCH, LoopState.CHECK_EXIT, LoopState.FINALIZE, LoopState.INTERRUPTED, LoopState.FAILED}),
     LoopState.TOOL_DISPATCH: frozenset({LoopState.TOOL_EXECUTE, LoopState.INTERRUPTED, LoopState.FAILED}),
     LoopState.TOOL_EXECUTE: frozenset({LoopState.CHECK_EXIT, LoopState.INTERRUPTED, LoopState.FAILED}),
     LoopState.CHECK_EXIT: frozenset({LoopState.PRE_LLM, LoopState.FINALIZE, LoopState.INTERRUPTED, LoopState.FAILED}),

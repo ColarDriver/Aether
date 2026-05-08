@@ -61,7 +61,14 @@ class SpyHooks(EngineHooks):
 class EngineTests(unittest.TestCase):
     def test_completes_with_text_response(self) -> None:
         provider = ScriptedProvider([NormalizedResponse(content="hello world")])
-        engine = AgentEngine(provider, config=EngineConfig(max_iterations=4))
+        # use_builtin_tools=False so this test stays focused on message
+        # routing — with builtins on, the engine prepends a
+        # <tool_use_contract> system block that would push the first
+        # ``user`` role to position 1.
+        engine = AgentEngine(
+            provider,
+            config=EngineConfig(max_iterations=4, use_builtin_tools=False),
+        )
 
         result = engine.run_turn(EngineRequest(session_id="s1", user_message="hi"))
 
@@ -76,7 +83,13 @@ class EngineTests(unittest.TestCase):
 
     def test_system_message_injected_as_first_message(self) -> None:
         provider = ScriptedProvider([NormalizedResponse(content="ok")])
-        engine = AgentEngine(provider)
+        # See note in test_completes_with_text_response: disable
+        # builtins so the only ``system`` message in messages[0] is
+        # the one we explicitly passed in.
+        engine = AgentEngine(
+            provider,
+            config=EngineConfig(use_builtin_tools=False),
+        )
 
         result = engine.run_turn(
             EngineRequest(

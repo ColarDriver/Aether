@@ -80,6 +80,78 @@ def _default_history_file() -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Environment context (injected into the system prompt)
+# ---------------------------------------------------------------------------
+#
+# Without this block the model has no idea where the harness is running.
+# When the user asks "查看当前文件夹" / "what's in this directory?" the
+# model can only guess or apologise, since it doesn't know its CWD,
+# whether it's in a git repo, the platform, or today's date.
+#
+# We prepend a small ``<environment>...</environment>`` block to whatever
+# system prompt the user supplied (or stand alone if none was given) so
+# every turn has the same baseline context the user takes for granted.
+
+def _build_environment_context() -> str:
+    """Return a small block describing where + when the harness is running.
+
+    Mirrors Claude Code's "Environment" system-prompt section: working
+    directory, platform, shell, git status, today's date.  Kept short so
+    it doesn't dominate the system prompt or burn the prefix cache.
+    """
+    import platform as _platform
+    import time as _time
+
+    cwd = Path.cwd()
+
+    # Walk up looking for a ``.git`` directory — running from a sub-folder
+    # of a repo (e.g. ``backend/harness/aether``) shouldn't make the
+    # model think it's outside version control.
+    git_root: Path | None = None
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / ".git").exists():
+            git_root = candidate
+            break
+
+    git_branch: str | None = None
+    if git_root is not None:
+        head = git_root / ".git" / "HEAD"
+        try:
+            head_text = head.read_text(encoding="utf-8").strip()
+            if head_text.startswith("ref: refs/heads/"):
+                git_branch = head_text[len("ref: refs/heads/"):]
+        except OSError:
+            pass
+
+    lines = [
+        "<environment>",
+        f"working_directory: {cwd}",
+        f"platform: {_platform.system().lower()} ({_platform.machine()})",
+        f"is_git_repository: {'yes' if git_root is not None else 'no'}",
+    ]
+    if git_root is not None and git_root != cwd:
+        lines.append(f"git_root: {git_root}")
+    if git_branch:
+        lines.append(f"git_branch: {git_branch}")
+    lines.append(f"shell: {os.environ.get('SHELL', 'unknown')}")
+    lines.append(f"date: {_time.strftime('%Y-%m-%d')}")
+    lines.append("</environment>")
+    return "\n".join(lines)
+
+
+def _augment_system_prompt(user_prompt: str | None) -> str:
+    """Prepend the environment block to *user_prompt* (or stand alone).
+
+    Always returns a non-empty string — every session gets at least the
+    environment context so the model knows its working directory.
+    """
+    env_block = _build_environment_context()
+    if user_prompt:
+        return f"{env_block}\n\n{user_prompt}"
+    return env_block
+
+
+# ---------------------------------------------------------------------------
 # cmd_chat
 # ---------------------------------------------------------------------------
 
@@ -94,12 +166,26 @@ def cmd_chat(args: argparse.Namespace) -> None:
     from aether.cli.sessions import SessionRecord
     from aether.config.schema import EngineConfig, ModelCallConfig
 
+    from aether.cli import prefs as _prefs
+
     provider_name: str = args.provider or os.getenv("AETHER_PROVIDER", "openai")
+
+    # Model precedence (highest → lowest):
+    #   1. ``--model`` flag                       (this run only)
+    #   2. ``AETHER_MODEL`` env var               (this shell)
+    #   3. persisted last choice for this provider (across runs)
+    #   4. provider default                       (fallback in build_provider)
+    #
+    # Resume cases override #3 explicitly later — see ``resume_record``.
+    explicit_model = args.model or os.getenv("AETHER_MODEL")
+    remembered_model: str | None = None
+    if not explicit_model:
+        remembered_model = _prefs.get_last_model(provider_name)
 
     try:
         provider = build_provider(
             provider_name,
-            model=args.model or os.getenv("AETHER_MODEL"),
+            model=explicit_model or remembered_model,
             api_key=args.api_key,
             base_url=args.base_url,
         )
@@ -107,10 +193,21 @@ def cmd_chat(args: argparse.Namespace) -> None:
         _print_startup_error(str(exc))
         sys.exit(1)
 
+    # If the user passed ``--model`` (or ``AETHER_MODEL``) on this run,
+    # treat that as a deliberate update to the persisted preference so
+    # subsequent ``aether chat`` (without the flag) starts on the same
+    # model.  When only the remembered value was used, no rewrite —
+    # the file already says what we just loaded.
+    if explicit_model:
+        active_model = getattr(provider, "model", explicit_model)
+        if active_model:
+            _prefs.set_last_model(provider_name, str(active_model))
+
     engine_config = EngineConfig(
         max_iterations=args.max_iterations,
         fail_on_tool_error=False,
         fail_on_unknown_tool=False,
+        use_builtin_tools=not args.no_builtin_tools,
     )
     engine = AgentEngine(provider=provider, config=engine_config)
 
@@ -126,6 +223,12 @@ def cmd_chat(args: argparse.Namespace) -> None:
         except OSError as exc:
             _print_startup_error(f"could not read system prompt file: {exc}")
             sys.exit(1)
+
+    # Always prepend the environment block so the model knows its
+    # working directory, platform, git state, and today's date — even
+    # when the user didn't supply a system prompt.  Without this the
+    # model has to guess (or apologise) when asked about the workspace.
+    system_prompt = _augment_system_prompt(system_prompt)
 
     # ---- session resume -----------------------------------------------------
     resume_record: SessionRecord | None = _resolve_resume_target(
@@ -411,6 +514,14 @@ def _add_chat_args(p: argparse.ArgumentParser) -> None:
         "--no-banner",
         action="store_true",
         help="Skip the welcome banner on startup",
+    )
+    p.add_argument(
+        "--no-builtin-tools",
+        action="store_true",
+        help=(
+            "Disable the bundled tool kit (shell, read_file, write_file, "
+            "list_dir, grep, glob) for this session."
+        ),
     )
     p.add_argument(
         "--log-level",

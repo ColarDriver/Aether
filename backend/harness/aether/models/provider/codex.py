@@ -163,6 +163,11 @@ class CodexChatModel(ModelProvider):
 
         if tools:
             payload["tools"] = self._convert_tools(tools)
+            # Mirror the OpenAI-compatible provider: some gateways treat a
+            # missing tool_choice as "tools are described but not actually
+            # available", which produces prose-only pseudo calls instead of
+            # structured function_call output items.
+            payload.setdefault("tool_choice", "auto")
 
         for key, value in config.extra.items():
             if key in {
@@ -494,4 +499,3 @@ class CodexChatModel(ModelProvider):
     @staticmethod
     def _calc_backoff_ms(attempt: int) -> int:
         return 2000 * (1 << (attempt - 1))
-

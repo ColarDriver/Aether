@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from aether.config.schema import ModelCallConfig
 from aether.models.provider.codex import CodexChatModel
+from aether.tools.base import ToolDescriptor
 
 
 class ProviderStreamingTests(unittest.TestCase):
@@ -49,6 +51,29 @@ class ProviderStreamingTests(unittest.TestCase):
         CodexChatModel._emit_stream_delta(deltas.append, event)
 
         self.assertEqual(deltas, [])
+
+    def test_build_payload_sets_tool_choice_auto_when_tools_present(self) -> None:
+        provider = CodexChatModel(access_token="test-token", account_id="acct")
+        payload = provider._build_payload(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                ToolDescriptor(
+                    name="exec_command",
+                    description="Run a shell command",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "cmd": {"type": "string"},
+                        },
+                    },
+                    required=["cmd"],
+                )
+            ],
+            config=ModelCallConfig(),
+        )
+
+        self.assertEqual(payload.get("tool_choice"), "auto")
+        self.assertIn("tools", payload)
 
 
 if __name__ == "__main__":

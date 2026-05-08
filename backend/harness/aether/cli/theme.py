@@ -34,6 +34,9 @@ AETHER_INFO = "#38BDF8"
 # brand purple used for the assistant)
 TOOL_ACCENT = "#F97316"
 TOOL_DIM = "#9A3412"
+# Lighter copper used for the activity-bar "shimmer" sweep — bright
+# enough to read as a moving highlight, dim enough not to flash.
+TOOL_SHIMMER = "#FED7AA"
 
 
 # ---------------------------------------------------------------------------

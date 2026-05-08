@@ -20,15 +20,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from rich.console import Console, ConsoleRenderable, Group
+from rich.console import Console, ConsoleOptions, ConsoleRenderable, Group, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from aether.cli.activity import (
+    ActivityBar,
+    MODE_THINKING,
+    MODE_TOOL_USE,
+    TurnState,
+)
 from aether.cli.theme import (
     AETHER_ACCENT,
     AETHER_BORDER,
@@ -39,10 +44,9 @@ from aether.cli.theme import (
     AETHER_SUCCESS,
     AETHER_TEXT,
     AETHER_WARNING,
-    TOOL_ACCENT,
-    TOOL_DIM,
     icon,
 )
+from aether.cli.tool_groups import ToolGroupTracker
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +55,7 @@ from aether.cli.theme import (
 
 _MAX_TOOL_RESULT_PREVIEW = 1200
 _MAX_TOOL_ARGS_PREVIEW = 800
+_MAX_RAW_TOOL_PREVIEW = 1600
 
 # Tags some models emit inline to "narrate" their tool use.  These are
 # stripped before rendering — the structured tool_calls in the message
@@ -73,6 +78,7 @@ _TOOL_TAGS = (
     "function_result", "function_results",
     "function_response", "function_responses",
     "invoke", "invokes",
+    "reasoning_effort",
     "thinking",
 )
 # A named back-reference (``(?P=tag)``) keeps the open and close tag
@@ -89,6 +95,141 @@ _TOOL_OPEN_RE = re.compile(
     r"<\s*(?:[\w-]+:)?(?:" + "|".join(_TOOL_TAGS) + r")\b[^>]*>",
     re.IGNORECASE,
 )
+_BRACKET_TOOL_LINE_RE = re.compile(
+    r"(?mi)^[ \t]*\[tool:\s*([^\]\n]+?)\][ \t]*(?:\n|$)"
+)
+_BRACKET_TOOL_OPEN_RE = re.compile(
+    r"(?i)\[tool:\s*[^\]\n]*$"
+)
+# A non-standard "function-equals" inline syntax some Kimi-style
+# models emit when they fail to populate the structured ``tool_calls``
+# field: ``<function=execute_command> <cmd>`` (with ``=`` instead of
+# ``name="…"``, *and* no closing tag).  The body extends until the
+# next ``<function=`` or end-of-text.  We capture (name, body) so the
+# diagnostic can surface the attempted command and ``strip_tool_blocks``
+# can drop both the tag and the prose body that follows it.
+_FUNCTION_EQ_TAG_RE = re.compile(
+    r"(?is)<function=([^>\s/]+)>(.*?)(?=<function=|</function|\Z)"
+)
+_FUNCTION_EQ_OPEN_RE = re.compile(r"(?i)<function=[^>\s/]+>")
+# Partial open tag at the very end of the buffer (e.g. ``<function=`` while
+# the model is mid-token) — anchor with ``$`` so we only strip when it's
+# the trailing fragment, not an embedded ``<funct`` inside prose.
+_FUNCTION_EQ_PARTIAL_RE = re.compile(r"(?i)<function=?[^>]*$")
+_INLINE_INVOKE_OPEN_RE = re.compile(
+    r'(?is)<invoke\b[^>]*name="([^"]+)"[^>]*>'
+)
+_INLINE_PARAMETER_RE = re.compile(
+    r'(?is)<parameter\b[^>]*name="([^"]+)"[^>]*>([^<\n]*)'
+)
+_PARTIAL_INLINE_TAG_NAMES = tuple(
+    sorted(set(_TOOL_TAGS + ("parameter",)), key=len, reverse=True)
+)
+
+
+def _strip_bracket_tool_lines(text: str) -> str:
+    cleaned = _BRACKET_TOOL_LINE_RE.sub("", text)
+    open_match = _BRACKET_TOOL_OPEN_RE.search(cleaned)
+    if open_match is not None:
+        cleaned = cleaned[: open_match.start()]
+    return cleaned
+
+
+def _strip_partial_inline_xml_tag(text: str) -> str:
+    lt_index = text.rfind("<")
+    if lt_index < 0:
+        return text
+
+    tail = text[lt_index + 1 :]
+    if ">" in tail:
+        return text
+
+    normalized = tail.strip().lower().lstrip("/")
+    if ":" in normalized:
+        normalized = normalized.split(":")[-1]
+    normalized = re.split(r"[^a-z0-9_-]", normalized, maxsplit=1)[0]
+    if not normalized:
+        return text[:lt_index]
+
+    if any(tag.startswith(normalized) for tag in _PARTIAL_INLINE_TAG_NAMES):
+        return text[:lt_index]
+    return text
+
+
+def _extract_bracket_tool_names(text: str) -> list[str]:
+    names: list[str] = []
+    for match in _BRACKET_TOOL_LINE_RE.finditer(text):
+        name = str(match.group(1) or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _canonical_tool_name(name: str) -> str:
+    normalized = (name or "").strip()
+    if not normalized:
+        return normalized
+    if "__" in normalized:
+        normalized = normalized.split("__")[-1]
+    if "." in normalized:
+        normalized = normalized.split(".")[-1]
+    if ":" in normalized:
+        normalized = normalized.split(":")[-1]
+    return normalized
+
+
+def _inline_activity_from_invoke(text: str) -> str:
+    matches = list(_INLINE_INVOKE_OPEN_RE.finditer(text))
+    if not matches:
+        return ""
+
+    latest = matches[-1]
+    invoke_name = _canonical_tool_name(str(latest.group(1) or "").strip())
+    if not invoke_name:
+        return ""
+
+    tail = text[latest.end() :]
+    args: dict[str, Any] = {}
+    for match in _INLINE_PARAMETER_RE.finditer(tail):
+        key = str(match.group(1) or "").strip()
+        value = str(match.group(2) or "").strip()
+        if key and value:
+            args[key] = value
+
+    verb = _verb_for_tool(invoke_name)
+    detail = _truncate_inline(_detail_for_args(args)) if args else ""
+    if detail:
+        return f"{verb}…  {detail}"
+    return f"{verb}…"
+
+
+def _inline_activity_from_text(text: str) -> str:
+    invoke_activity = _inline_activity_from_invoke(text)
+    if invoke_activity:
+        return invoke_activity
+    names = _extract_bracket_tool_names(text)
+    if names:
+        return f"{_verb_for_tool(_canonical_tool_name(names[-1]))}…"
+    # Last resort: pick up the latest ``<function=NAME>`` so the bar
+    # shows the right verb while the user watches the model "type" the
+    # attempted invocation in prose.  Without this they'd see a generic
+    # "Pondering…" while a clearly-actionable command was on screen.
+    eq_matches = list(_FUNCTION_EQ_TAG_RE.finditer(text))
+    if eq_matches:
+        last = eq_matches[-1]
+        name = _canonical_tool_name((last.group(1) or "").strip())
+        body = (last.group(2) or "").strip()
+        if name:
+            verb = _verb_for_tool(name)
+            if body:
+                detail = _truncate_inline(" ".join(body.split()))
+                return f"{verb}…  {detail}"
+            return f"{verb}…"
+    return ""
+
+
+def _has_xml_style_inline_tool_markup(text: str) -> bool:
+    return _TOOL_OPEN_RE.search(text) is not None
 
 
 def strip_tool_blocks(text: str) -> str:
@@ -99,13 +240,52 @@ def strip_tool_blocks(text: str) -> str:
     open tag onward, so the user never sees half-rendered JSON before the
     closing tag arrives in the stream.  Trailing blank-line runs are
     collapsed to keep the prose tidy.
+
+    Also strips the non-standard ``<function=NAME> <body>`` syntax
+    Kimi-class models occasionally emit.  These tags have *no* closing
+    pair, so each ``<function=…>`` consumes everything up to the next
+    ``<function=`` or end-of-text — we erase the whole run so the user
+    sees clean prose instead of a half-rendered tool intent.
     """
     cleaned = _TOOL_BLOCK_RE.sub("", text)
     open_match = _TOOL_OPEN_RE.search(cleaned)
     if open_match is not None:
         cleaned = cleaned[: open_match.start()]
+    cleaned = _strip_bracket_tool_lines(cleaned)
+    cleaned = _FUNCTION_EQ_TAG_RE.sub("", cleaned)
+    cleaned = _FUNCTION_EQ_PARTIAL_RE.sub("", cleaned)
+    cleaned = _strip_partial_inline_xml_tag(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
+
+
+# Match ``<thinking>…</thinking>`` (with any namespace prefix) so we can
+# route it to the reasoning channel.  This is the *one* tag inside
+# ``_TOOL_TAGS`` that carries human-readable narration — surfacing its
+# contents in the activity bar rescues "↑ N tokens but body is blank"
+# turns where the model burned its budget thinking out loud.
+_THINKING_BLOCK_RE = re.compile(
+    r"<\s*(?:[\w-]+:)?thinking\b[^>]*>(.*?)</\s*(?:[\w-]+:)?thinking\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_thinking_blocks(text: str) -> str:
+    """Return the concatenated content of any ``<thinking>…</thinking>`` blocks.
+
+    Used by :class:`CLIUI` to populate the reasoning excerpt under the
+    activity bar so the user can see the model is producing chain-of-
+    thought even when the visible body is empty.  Returns an empty string
+    when the text carries no thinking blocks.
+    """
+    if not text or "thinking" not in text.lower():
+        return ""
+    parts: list[str] = []
+    for match in _THINKING_BLOCK_RE.finditer(text):
+        body = (match.group(1) or "").strip()
+        if body:
+            parts.append(body)
+    return "\n".join(parts)
 
 
 def _format_args(args: dict[str, Any]) -> str:
@@ -129,6 +309,28 @@ def _truncate_for_preview(content: str, limit: int = _MAX_TOOL_RESULT_PREVIEW) -
     return content[:limit] + "\n…(truncated)", True
 
 
+def _inline_tool_preview(text: str, limit: int = _MAX_RAW_TOOL_PREVIEW) -> tuple[str, bool]:
+    """Return a compact preview of raw inline tool-tag output."""
+    if not text:
+        return "", False
+
+    collapsed = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not collapsed:
+        return "", False
+
+    return _truncate_for_preview(collapsed, limit=limit)
+
+
+def _should_render_inline_tool_preview(cleaned_text: str, stripped_chars: int) -> bool:
+    """Show raw preview only when stripped tool-tag output dominates."""
+    visible_chars = len(cleaned_text.strip())
+    if stripped_chars < 80:
+        return False
+    if visible_chars == 0:
+        return True
+    return stripped_chars >= max(160, visible_chars * 3)
+
+
 # ---------------------------------------------------------------------------
 # Compact tool-call rendering — "● Reading file" + "└ <detail>"
 # ---------------------------------------------------------------------------
@@ -138,10 +340,12 @@ def _truncate_for_preview(content: str, limit: int = _MAX_TOOL_RESULT_PREVIEW) -
 # heuristic in :func:`_verb_for_tool` below.
 _TOOL_VERBS: dict[str, str] = {
     "read_file": "Reading file",
+    "read": "Reading file",
     "Read": "Reading file",
     "view_file": "Reading file",
     "ViewFile": "Reading file",
     "list_directory": "Listing directory",
+    "execute_command": "Running command",
     "ListDirectory": "Listing directory",
     "ls": "Listing directory",
     "list": "Listing directory",
@@ -189,6 +393,7 @@ _TOOL_DETAIL_KEYS: tuple[str, ...] = (
 
 def _verb_for_tool(name: str) -> str:
     """Map a raw tool name to a human-readable verb phrase."""
+    name = _canonical_tool_name(name)
     if name in _TOOL_VERBS:
         return _TOOL_VERBS[name]
     lname = name.lower()
@@ -264,6 +469,16 @@ class _StreamState:
     # the user is left wondering what went wrong.  We surface a hint.
     stripped_chars: int = 0
     tool_calls_at_start: int = 0
+    inline_activity: str = ""
+    # Reasoning-channel buffer — captures content the provider routes
+    # through the model's "thinking" / "reasoning" channel, plus any
+    # ``<thinking>…</thinking>`` blocks that ``strip_tool_blocks`` peels
+    # off the visible body.  Never flushed to scrollback; the activity
+    # bar surfaces a dim sub-line of the most recent excerpt so the user
+    # can tell the model is producing reasoning even before the first
+    # content token lands.
+    reasoning_chars: int = 0
+    reasoning_excerpt: str = ""
 
 
 @dataclass(slots=True)
@@ -274,6 +489,445 @@ class TurnStats:
     streamed_chars: int = 0
     elapsed_sec: float = 0.0
     started_at: float = field(default_factory=time.monotonic)
+
+
+# ---------------------------------------------------------------------------
+# Idle-warning heuristics
+# ---------------------------------------------------------------------------
+#
+# The "no tools were dispatched this turn" warning previously fired for any
+# short reply (<200 chars, 0 tool calls), which produced false positives for
+# greetings, clarifications, and short answers.  We now only fire when there
+# is positive evidence the model *intended* to invoke a tool but emitted the
+# command into prose instead.
+
+# Fenced code block fences (```bash / ```sh / ```shell / ```console / ```$).
+_FENCE_HINT_RE = re.compile(
+    r"```(?:bash|sh|shell|zsh|console|cmd|ps1?|powershell|sql|python|py|node|js|ts)\b",
+    re.IGNORECASE,
+)
+
+# Shell-prompt-style command lines.
+_SHELL_PROMPT_RE = re.compile(r"(?m)^\s*[\$\#\>▶]\s+\S")
+
+# Imperative verbs commonly preceding a "let me run" intent in Chinese & English.
+_IMPERATIVE_HINT_RE = re.compile(
+    r"(?i)\b(?:let me (?:run|check|look|inspect|search|find|read)|"
+    r"i(?:'ll| will) (?:run|check|look|inspect|search|find|read|execute)|"
+    r"running|executing|searching|checking)\b"
+    r"|(?:我来|让我|我先|我去|我会)(?:运行|执行|看看|检查|搜索|查看|读)",
+)
+
+
+def _looks_like_intended_tool_use(text: str) -> bool:
+    """True when *text* contains positive evidence of attempted tool use.
+
+    We use this to gate the idle-turn warning so a polite greeting doesn't
+    get flagged as a missing tool call.
+    """
+    if not text:
+        return False
+    if _FENCE_HINT_RE.search(text):
+        return True
+    if _SHELL_PROMPT_RE.search(text):
+        return True
+    if _IMPERATIVE_HINT_RE.search(text):
+        return True
+    if _FUNCTION_EQ_OPEN_RE.search(text):
+        return True
+    return False
+
+
+# Match a fenced shell block, body captured non-greedily.  Body ends at
+# the *earliest* of:
+#
+#  1. ``\u0060\u0060\u0060`` *not* followed by a shell-language tag — a real
+#     closing fence; consume it (so the substitute also drops it).
+#  2. (lookahead) a blank line — paragraph break, treated as the
+#     implicit end of an *unclosed* phantom-tool block since models
+#     never embed prose-paragraphs *inside* a real bash command.
+#  3. (lookahead) ``\u0060\u0060\u0060<lang>`` — opener of the *next* fenced
+#     block; don't consume, leave it for the next iteration.
+#  4. End-of-string — models routinely truncate the line they were
+#     about to call a tool on.
+#
+# The negative lookahead in branch 1 is critical: without it the
+# non-greedy ``.*?`` would happily stop at the *opening* ``\u0060\u0060\u0060`` of
+# the *next* shell fence and substitution would leave a stranded
+# ``bash\n...`` behind that fails to re-match.  Whether a given block
+# is considered "trailing" is decided by callers via the
+# post-fence-prose budget — see :func:`_extract_trailing_command_fence`.
+_SHELL_LANG_GROUP = r"(?:bash|sh|shell|zsh|console|cmd|ps1?|powershell)"
+_COMMAND_FENCE_RE = re.compile(
+    r"(?is)```" + _SHELL_LANG_GROUP + r"\b"
+    r"[ \t]*\n?(.*?)"
+    r"(?:\n?```(?!" + _SHELL_LANG_GROUP + r"\b)"
+    r"|(?=\n[ \t]*\n)"
+    r"|(?=\n?```" + _SHELL_LANG_GROUP + r"\b)"
+    r"|\Z)"
+)
+# Allow a small amount of trailing prose after the fence (e.g. "I'll
+# run that for you.") — beyond this the fence is considered embedded
+# in the response, not a tool intent.
+_TRAILING_FENCE_TAIL_BUDGET = 80
+
+
+def _extract_trailing_command_fence(text: str) -> str | None:
+    """Pull a single-line shell command out of a trailing fenced block.
+
+    Returns the command body (newlines collapsed to spaces, trimmed)
+    when *text* ends with ``\u0060\u0060\u0060bash <command>\u0060\u0060\u0060`` —
+    closing fence optional, since models routinely truncate at the
+    moment they were *about* to invoke a tool.  Returns ``None`` when:
+
+    * No fenced shell block is present.
+    * A fence exists but is followed by substantial prose (it's
+      embedded in the response as an example, not a tool intent).
+    * The captured body is empty / pure whitespace.
+    """
+    if not text or "```" not in text:
+        return None
+    match: re.Match[str] | None = None
+    for m in _COMMAND_FENCE_RE.finditer(text):
+        match = m
+    if match is None:
+        return None
+    if len(text[match.end():].strip()) > _TRAILING_FENCE_TAIL_BUDGET:
+        return None
+    body = (match.group(1) or "").strip()
+    if not body:
+        return None
+    return " ".join(line.strip() for line in body.splitlines() if line.strip())
+
+
+def _has_unclosed_command_fence(text: str) -> bool:
+    """True if *text* contains a shell code fence missing its close.
+
+    The streaming preview uses this to decide whether to hide a
+    trailing ``\u0060\u0060\u0060bash …`` block in flight.  Returns ``True`` only
+    when at least one fenced shell block is still open — i.e. the
+    model has typed ``\u0060\u0060\u0060bash`` but not the matching closing
+    ``\u0060\u0060\u0060`` yet.  Closed examples (both fences present) return
+    ``False`` so legitimate code-block content stays visible.
+    """
+    if not text or "```" not in text:
+        return False
+    open_fences = len(
+        re.findall(
+            r"(?im)```(?:bash|sh|shell|zsh|console|cmd|ps1?|powershell)\b",
+            text,
+        )
+    )
+    if open_fences == 0:
+        return False
+    total_fences = text.count("```")
+    return total_fences < open_fences * 2
+
+
+def strip_trailing_command_fence(text: str) -> str:
+    """Strip a trailing fenced shell block from *text*.
+
+    Pairs with :func:`_extract_trailing_command_fence` — call this to
+    drop the dangling code fence from the visible assistant body so
+    the user doesn't see a half-rendered ``\u0060\u0060\u0060bash`` while the
+    parsed command is surfaced via the phantom-tool diagnostic.
+    Conservatively returns *text* unchanged when the fence isn't at
+    the tail of the message.
+    """
+    if not text or "```" not in text:
+        return text
+    match: re.Match[str] | None = None
+    for m in _COMMAND_FENCE_RE.finditer(text):
+        match = m
+    if match is None:
+        return text
+    if len(text[match.end():].strip()) > _TRAILING_FENCE_TAIL_BUDGET:
+        return text
+    return text[: match.start()].rstrip()
+
+
+def _extract_all_command_fences(text: str) -> list[str]:
+    """Return *every* shell command body in *text*, in source order.
+
+    Each entry is one fenced block, with internal newlines collapsed
+    to spaces so the diagnostic can render it on a single line.  Used
+    by ``end_stream`` when the model emitted multiple ``\u0060\u0060\u0060bash`` blocks
+    and *no* tool was dispatched: we strip them all and surface them
+    via the phantom-tool diagnostic so the response body shows only
+    the model's prose narration, claude-code-style.
+    """
+    if not text or "```" not in text:
+        return []
+    out: list[str] = []
+    for match in _COMMAND_FENCE_RE.finditer(text):
+        body = (match.group(1) or "").strip()
+        if not body:
+            continue
+        flat = " ".join(line.strip() for line in body.splitlines() if line.strip())
+        if flat:
+            out.append(flat)
+    return out
+
+
+def strip_all_command_fences(text: str) -> str:
+    """Remove every shell code-fence block from *text*.
+
+    Aggressive companion to :func:`strip_trailing_command_fence` for
+    multi-fence phantom-tool cases (Kimi-style).  Strips the fenced
+    block plus any immediately preceding ``intro:`` / ``intro：``
+    punctuation so the visible prose flows naturally instead of
+    showing "我先看看：" floating on its own line.
+
+    The caller must gate this behind the no-tools-dispatched +
+    intent-verbs heuristic — bare ``\u0060\u0060\u0060bash`` examples in a long
+    response would otherwise be incorrectly stripped.
+    """
+    if not text or "```" not in text:
+        return text
+    # Pass 1: drop every fence we can spot.  The negative-lookahead
+    # in ``_COMMAND_FENCE_RE`` makes substitution stable across
+    # multi-block input — substituting the first match leaves the
+    # next fence intact for the next iteration.
+    cleaned = _COMMAND_FENCE_RE.sub("", text)
+    # Pass 2: clean up dangling lead-in punctuation ("我先看看：" /
+    # "Let me run:") that's now sitting on its own line.  We require
+    # the colon to be at end-of-line *and* the previous content to
+    # not look like a real sentence end (e.g. "好。"), so we only
+    # erase the trailing "短语：" punctuation, never a sentence period.
+    cleaned = re.sub(
+        r"(?m)([^\s:：])[ \t]*[：:][ \t]*$",
+        r"\1。",
+        cleaned,
+    )
+    # Collapse the blank-line runs the strip can leave behind.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Inline tool-tag intent extraction
+# ---------------------------------------------------------------------------
+#
+# When the model emits ``<invoke name="…">…<parameter name="…">…</parameter>``
+# inline (instead of populating the structured ``tool_calls`` field), we
+# parse out a (name, args) pair so the user sees *what the model tried to
+# do* rather than just "2420 chars stripped".  The structured call never
+# ran, but at least the user can tell whether the loss matters.
+
+_INVOKE_BLOCK_RE = re.compile(
+    r'(?is)<invoke\b[^>]*name="([^"]+)"[^>]*>(.*?)</invoke\s*>'
+)
+_INVOKE_PARAM_RE = re.compile(
+    r'(?is)<parameter\b[^>]*name="([^"]+)"[^>]*>(.*?)</parameter\s*>'
+)
+_TOOL_CALL_JSON_RE = re.compile(
+    r"(?is)<tool_call\b[^>]*>\s*(\{.*?\})\s*</tool_call\s*>"
+)
+
+
+@dataclass(slots=True)
+class _InlineToolIntent:
+    name: str
+    args: dict[str, Any]
+
+
+def _extract_inline_tool_intent(raw_text: str) -> _InlineToolIntent | None:
+    """Best-effort: pull the first ``<invoke>`` or ``<tool_call>{json}`` from *raw_text*.
+
+    Returns ``None`` if the text doesn't carry a parseable tool intent.
+    Used by the phantom-tool diagnostic so we can render
+    ``model attempted: Reading file foo.py`` instead of an opaque
+    "chars stripped" line.
+    """
+    if not raw_text:
+        return None
+
+    # Prefer Anthropic-style <invoke name="..."><parameter name="...">...
+    invoke_match = _INVOKE_BLOCK_RE.search(raw_text)
+    if invoke_match is not None:
+        name = (invoke_match.group(1) or "").strip()
+        body = invoke_match.group(2) or ""
+        args: dict[str, Any] = {}
+        for param_match in _INVOKE_PARAM_RE.finditer(body):
+            key = (param_match.group(1) or "").strip()
+            value = (param_match.group(2) or "").strip()
+            if key:
+                args[key] = value
+        if name:
+            return _InlineToolIntent(name=name, args=args)
+
+    # Fall back to OpenAI-ish <tool_call>{"name":..., "arguments":...}</tool_call>
+    json_match = _TOOL_CALL_JSON_RE.search(raw_text)
+    if json_match is not None:
+        try:
+            payload = json.loads(json_match.group(1))
+        except Exception:  # noqa: BLE001
+            return None
+        name = str(payload.get("name") or payload.get("tool") or "").strip()
+        raw_args = payload.get("arguments") or payload.get("parameters") or {}
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except Exception:  # noqa: BLE001
+                raw_args = {"_raw": raw_args}
+        if not isinstance(raw_args, dict):
+            raw_args = {"_raw": raw_args}
+        if name:
+            return _InlineToolIntent(name=name, args=raw_args)
+
+    # Last-ditch: the non-standard ``<function=NAME> <body>`` syntax.
+    # No closing tag, body extends until the next ``<function=`` or
+    # end-of-text.  We treat the body as a single positional argument
+    # under a ``"command"`` key so :func:`_detail_for_args` renders it
+    # cleanly on the ``└ attempted`` line.  The *first* match wins to
+    # mirror the XML branch above.
+    eq_match = _FUNCTION_EQ_TAG_RE.search(raw_text)
+    if eq_match is not None:
+        name = (eq_match.group(1) or "").strip()
+        body = (eq_match.group(2) or "").strip()
+        if name:
+            args = {"command": " ".join(body.split())} if body else {}
+            return _InlineToolIntent(name=name, args=args)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Reasoning excerpt helper
+# ---------------------------------------------------------------------------
+
+_REASONING_EXCERPT_LIMIT = 96
+
+
+def _render_reasoning_excerpt(text: str) -> ConsoleRenderable:
+    """Build the dim ``thinking: …`` sub-line shown under the activity bar.
+
+    Truncates to a single line (``_REASONING_EXCERPT_LIMIT`` chars) and
+    keeps the *tail* of the excerpt because the most recent reasoning
+    fragment is the most informative — older content already produced
+    visible body once the model started generating its answer.
+    """
+    flat = (text or "").replace("\n", " ").replace("\r", " ").strip()
+    if len(flat) > _REASONING_EXCERPT_LIMIT:
+        flat = "…" + flat[-(_REASONING_EXCERPT_LIMIT - 1):]
+    line = Text()
+    line.append(f"  {icon('thinking') or '·'} ", style=f"dim {AETHER_DIM}")
+    line.append("thinking: ", style=f"dim {AETHER_DIM}")
+    line.append(flat, style=f"dim {AETHER_TEXT}")
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Live turn surface — Group(streaming_body, activity_bar)
+# ---------------------------------------------------------------------------
+
+class _TurnSurface:
+    """Rich renderable held by the turn-scoped ``Live``.
+
+    Pulled by Rich on every refresh frame (20 Hz).  Reads CLIUI's current
+    ``_stream_buffer`` + ``_turn_state`` so the rendered surface reflects
+    live state without us having to call ``Live.update()`` every tick.
+
+    Visibility rule:
+
+      * **While streaming visible prose** the bar hides — the moving
+        text is itself the activity indicator and a redundant
+        ``Forging (12s · thought for 9s)`` glued to the bottom of the
+        markdown reads as "stuck".
+      * **Between iterations / during tool use / while thinking** the
+        bar is the only visual signal that anything is happening, so
+        we show it.
+    """
+
+    def __init__(self, ui: "CLIUI") -> None:
+        self._ui = ui
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        ui = self._ui
+
+        # Streaming body — only present while a stream is open and has
+        # visible content (after stripping inline tool tags).  Rendering
+        # it inside Live lets each delta trigger an in-place repaint via
+        # Rich's auto-refresh.
+        #
+        # Tail-cropping rule (this matters!):
+        #   Rich's Live region with content that grows past the terminal
+        #   viewport leaks "frames" into scrollback because the cursor
+        #   clear-and-redraw sequence can only reach lines that are still
+        #   visible — anything that scrolled off the top is permanently
+        #   stuck in scrollback.  As streaming continues, each new frame
+        #   is taller than the previous, the top portion of every frame
+        #   ends up in scrollback, and the user sees the same content
+        #   repeated many times.
+        #
+        #   We bound the rendered surface ourselves to `options.height`
+        #   lines (with a safety margin) and prefer the *latest* lines
+        #   (tail crop) so the user sees new tokens as they arrive.  The
+        #   full content is never lost — ``end_stream`` flushes the
+        #   complete Markdown to scrollback exactly once when the stream
+        #   completes.
+        streamed_body: ConsoleRenderable | None = None
+        if ui._stream.active and ui._stream_buffer:
+            raw = "".join(ui._stream_buffer)
+            cleaned = strip_tool_blocks(raw)
+            if cleaned.strip():
+                # Reserve a few rows for the activity bar / reasoning
+                # excerpt / hint lines so the last row isn't pinned
+                # against the prompt.  Minimum 3 rows so very small
+                # terminals still show *something*.  ``options.height``
+                # is ``None`` when this surface is rendered outside a
+                # live region (tests / non-TTY paths) — fall back to
+                # the console's actual height, then to a sane default
+                # of 24 rows.
+                effective_height = (
+                    options.height
+                    or getattr(console, "height", None)
+                    or 24
+                )
+                tail_lines = max(3, int(effective_height) - 2)
+                lines = cleaned.split("\n")
+                if len(lines) > tail_lines:
+                    lines = lines[-tail_lines:]
+                    cleaned = "\n".join(lines)
+                streamed_body = ui._render_assistant(cleaned)
+
+        # Active tool group — when at least one tool is in flight, render
+        # the rolling "Searching for X, reading Y…" line plus a single
+        # ``⎿ <hint>`` row directly above the activity bar.  Mirrors
+        # claude-code's CollapsedReadSearchContent (lines 448-490) where
+        # an active group sits inline above the spinner.
+        active_group = ui.tool_groups.active
+        group_renderables: list[ConsoleRenderable] = []
+        if active_group is not None and active_group.is_active:
+            group_renderables.append(active_group.render_headline(active=True))
+            hint = active_group.render_hint()
+            if hint is not None:
+                group_renderables.append(hint)
+
+        # Reasoning excerpt — single-line dim hint shown beneath the
+        # activity bar when the model is producing chain-of-thought
+        # tokens (either through a separate reasoning channel or via
+        # ``<thinking>`` blocks in the visible body).  Without this the
+        # user sees "↑ N tokens" but no body, with no clue the model is
+        # actually thinking.
+        reasoning_renderable: ConsoleRenderable | None = None
+        excerpt = ui._stream.reasoning_excerpt if ui._stream.active else ""
+        if excerpt:
+            reasoning_renderable = _render_reasoning_excerpt(excerpt)
+
+        if streamed_body is not None:
+            # Streaming visible prose — show only the body; the bar
+            # would compete with the moving text for attention.
+            yield streamed_body
+            return
+
+        for r in group_renderables:
+            yield r
+        yield ActivityBar(ui._turn_state)
+        if reasoning_renderable is not None:
+            yield reasoning_renderable
 
 
 class CLIUI:
@@ -288,24 +942,162 @@ class CLIUI:
     def __init__(self, console: Console, *, verbose: bool = False) -> None:
         self.console = console
         self.verbose = verbose
+        # Off-turn fallback only — slash commands ("/model") may want a
+        # spinner without opening a full turn.  In-turn status flows
+        # through ``self._turn_state.verb`` and the activity bar.
         self._status: Status | None = None
+        self._status_message: str = ""
         self._stream = _StreamState()
         self._stream_buffer: list[str] = []
-        self._live: Live | None = None
+        # Most recent finalised stream text from this turn — used by
+        # ``_render_idle_turn_hint`` after ``end_stream`` has already
+        # cleared ``_stream_buffer``.  Reset at ``begin_turn``.
+        self._last_streamed_text: str = ""
+        # Parsed command body extracted from a trailing fenced shell
+        # block when the model wrote ``\u0060\u0060\u0060bash <cmd>`` in prose
+        # instead of dispatching a tool.  Stashed by ``end_stream`` and
+        # consumed by ``_render_idle_turn_hint`` so the diagnostic can
+        # show "└ attempted: $ <cmd>" — same shape we use for XML tool
+        # tags, which gives the user a single, consistent hint across
+        # both phantom-tool failure modes.  Reset at ``begin_turn``.
+        self._last_trailing_command: str | None = None
+        # Full list of phantom commands when the model emits 2+ bash
+        # blocks in a single stream (Kimi-style "我先看看：\u0060\u0060\u0060bash …
+        # 实际上让我用更系统的方式查看：\u0060\u0060\u0060bash …").  Populated
+        # alongside ``_last_trailing_command`` so the phantom-tool
+        # diagnostic can list each attempt instead of pretending only
+        # the first one happened.  Reset at ``begin_turn``.
+        self._last_attempted_commands: list[str] = []
+        # Set to ``True`` by ``end_stream`` whenever it renders a
+        # phantom-tool hint (XML / JSON / function-eq tags stripped).
+        # ``end_turn`` reads this to suppress the idle-turn warning,
+        # which would otherwise repeat the same diagnostic in slightly
+        # different wording right above the footer.  Reset at
+        # ``begin_turn``.
+        self._phantom_hint_rendered: bool = False
+        # Sprint 1.5 / P0-9: when the engine *synthesizes* structured
+        # tool_calls from prose intent, ``end_turn`` is told via the
+        # ``phantom_synth_notes`` kwarg.  We surface a single dim
+        # ``↻ synthesized N call(s) from prose`` line so the user
+        # knows the model misbehaved without the loud warning that
+        # used to fire ("model emitted inline tool tags").  The
+        # warning is suppressed entirely when synthesis covered every
+        # phantom block.  Reset at ``begin_turn``.
+        self._pending_phantom_strip: dict[str, Any] | None = None
+        # Turn-scoped: opened in ``begin_turn`` and torn down in
+        # ``end_turn``.  Hosts ``_TurnSurface`` which renders the
+        # streamed body + activity bar each refresh.  ``None`` between
+        # turns and during slash-command execution.
+        self._turn_live: Live | None = None
+        self._turn_state = TurnState()
+        # Counters captured at the start of each streaming session within
+        # a turn.  Used by the phantom-tool diagnostic to distinguish
+        # "this stream produced no structured calls" from "the whole
+        # turn never dispatched a tool".
+        self._tool_calls_at_turn_start: int = 0
         self.stats = TurnStats()
         # Rotated every time a turn begins so the spinner doesn't feel
         # mechanical.  Mirrors Claude Code's "Forging / Channeling /
         # Pondering …" vibe.
         self._verb_cursor = 0
+        # Coalesces consecutive tool dispatches inside a single LLM
+        # iteration into one rolling line ("Searching for 2 patterns,
+        # reading 1 file…").  Mirrors claude-code's
+        # ``CollapsedReadSearchContent`` — without it every individual
+        # call would print its own ``● Reading file`` block, which gets
+        # noisy fast for tool-heavy turns.
+        self.tool_groups = ToolGroupTracker(sink=self._flush_tool_group)
+        # Last block kind we wrote to scrollback (``user`` / ``assistant``
+        # / ``tool_group`` / ``footer`` / ``other``).  Drives the
+        # blank-line spacer logic in ``_ensure_block_spacer`` so we can
+        # insert a single empty row between visually distinct blocks
+        # without hard-coding ``console.print()`` calls everywhere.
+        self._last_block_kind: str = ""
+        # Set to True by :class:`aether.cli.app.AetherApp` when the
+        # bottom region (activity bar + active-group preview + input
+        # frame) is owned by a long-lived ``prompt_toolkit``
+        # Application.  In that mode we **must not** create our own
+        # ``rich.live.Live`` region or ``rich.status.Status`` spinner
+        # because both would clash with prompt_toolkit's bottom layout
+        # via ``patch_stdout(raw=True)``.  AetherApp pulls the activity
+        # bar / active-group rendering directly from ``self._turn_state``
+        # and ``self.tool_groups`` instead.
+        self.managed_externally: bool = False
+
+    # ------------------------------ spacing --------------------------------
+    #
+    # Visually distinct blocks (user echo, assistant prose, tool group
+    # headlines, the turn footer) share a single blank-line policy: emit
+    # at most one blank row between any two adjacent blocks.  Centralising
+    # this in :meth:`_ensure_block_spacer` keeps the rules coherent and
+    # avoids the "two blocks glued together → caller sprinkles
+    # ``console.print()`` calls all over the place" pattern.
+
+    # Block kinds that count toward the spacer policy.  Anything not in
+    # this set (info / warn / debug lines) is treated as transient and
+    # doesn't reset the policy.
+    _SPACED_BLOCK_KINDS: frozenset[str] = frozenset({
+        "user", "assistant", "tool_group", "tool_legacy", "footer",
+    })
+
+    def _ensure_block_spacer(self, next_kind: str) -> None:
+        """Print one blank row when the previous block was visually heavy.
+
+        Caller passes the kind of the block they're *about* to render;
+        we print a separator if and only if the previous spaced block
+        is something we want to push apart from the new one (e.g. user
+        echo → assistant prose → tool group → footer transitions).
+        """
+        prev = self._last_block_kind
+        if prev and prev in self._SPACED_BLOCK_KINDS and next_kind in self._SPACED_BLOCK_KINDS:
+            try:
+                self.console.print()
+            except Exception:  # noqa: BLE001 — never let a spacer kill the run
+                pass
+
+    def _record_block(self, kind: str) -> None:
+        if kind in self._SPACED_BLOCK_KINDS:
+            self._last_block_kind = kind
+
+    def _flush_tool_group(self, renderable: ConsoleRenderable) -> None:
+        """Sink wired into :class:`ToolGroupTracker` — prints the past-tense headline.
+
+        Adds the same blank-row spacer policy used by user/assistant
+        blocks so a tool group never glues to the assistant prelude
+        directly above it.
+        """
+        self._ensure_block_spacer("tool_group")
+        self.console.print(renderable)
+        self._record_block("tool_group")
 
     # ------------------------------ status ---------------------------------
 
     def set_status(self, message: str, *, spinner: str = "dots") -> None:
-        """Show or update the spinner with *message*."""
+        """Set the active verb on the activity bar (or open a fallback spinner).
+
+        During a turn the verb routes to :class:`TurnState` so the
+        always-on activity bar picks it up on its next refresh — no
+        nested ``rich.status.Status`` is needed.  Outside a turn (slash
+        commands like ``/model``) we fall back to the classic spinner.
+
+        When :class:`aether.cli.app.AetherApp` owns the bottom region
+        (``managed_externally=True``) we route exclusively through
+        ``self._turn_state.verb`` because a ``rich.status.Status``
+        spinner would smear ANSI escape sequences across the
+        prompt_toolkit-managed input frame.
+        """
+        self._status_message = message
+        # Trim trailing ellipsis — the bar's parenthesised suffix already
+        # conveys "in progress" and we don't want "Reading file……" on
+        # tight terminals.
+        verb = message.rstrip().rstrip("…").rstrip()
+        if self._turn_live is not None or self.managed_externally:
+            self._turn_state.verb = verb
+            return
         if self._status is not None:
             try:
                 self._status.update(status=f"[aether.status]{message}[/]", spinner=spinner)
-            except Exception:
+            except Exception:        # noqa: BLE001
                 self._status.update(status=f"[aether.status]{message}[/]")
             return
         self._status = self.console.status(
@@ -315,40 +1107,49 @@ class CLIUI:
         )
         self._status.start()
 
-    def clear_status(self) -> None:
+    def clear_status(self, *, clear_message: bool = True) -> None:
+        if self._turn_live is not None or self.managed_externally:
+            if clear_message:
+                self._turn_state.verb = ""
+                self._status_message = ""
+            return
+        if self._status is not None:
+            try:
+                self._status.stop()
+            finally:
+                self._status = None
+        if clear_message:
+            self._status_message = ""
+
+    # ------------------------------ stream ---------------------------------
+
+    def begin_stream(self) -> None:
+        """Mark a streaming session as active so the bar surface includes the body."""
+        if self._stream.active:
+            return
+        # Stop any off-turn fallback spinner (defensive — should not
+        # normally be active inside a turn).
         if self._status is not None:
             try:
                 self._status.stop()
             finally:
                 self._status = None
 
-    # ------------------------------ stream ---------------------------------
-
-    def begin_stream(self) -> None:
-        """Stop any active spinner and open the live markdown surface."""
-        if self._stream.active:
-            return
-        self.clear_status()
-        self.console.print()  # blank separator above the assistant block
-
         self._stream_buffer = []
-        self._live = Live(
-            self._render_assistant(""),
-            console=self.console,
-            refresh_per_second=10,
-            transient=False,        # keep the final render in scrollback
-            vertical_overflow="visible",
-        )
-        try:
-            self._live.start()
-        except Exception:           # noqa: BLE001 — Live is best-effort
-            self._live = None
-
         self._stream.active = True
         self._stream.char_count = 0
         self._stream.line_count = 1
         self._stream.stripped_chars = 0
         self._stream.tool_calls_at_start = self.stats.tool_calls
+        self._stream.inline_activity = ""
+        self._stream.reasoning_chars = 0
+        self._stream.reasoning_excerpt = ""
+
+        # If no Live is running (e.g. caller didn't open a turn — used
+        # by tests / non-TTY paths) leave a blank line and we'll print
+        # cleaned deltas inline as they arrive.
+        if self._turn_live is None:
+            self.console.print()
 
     def stream_delta(self, delta: str) -> None:
         if not delta:
@@ -359,81 +1160,349 @@ class CLIUI:
         self._stream_buffer.append(delta)
         self._stream.char_count += len(delta)
         self.stats.streamed_chars += len(delta)
+        self._turn_state.response_chars = self._stream.char_count
         if "\n" in delta:
             self._stream.line_count += delta.count("\n")
 
-        if self._live is not None:
+        if self._turn_live is not None or self.managed_externally:
+            # Either the Rich Live region or the prompt_toolkit AetherApp
+            # owns the bottom region — recompute stripped_chars + inline
+            # activity + reasoning excerpt so the renderer sees fresh
+            # values on its next tick.  We deliberately do NOT echo
+            # cleaned deltas to stdout here: in Live mode the surface
+            # renders the markdown buffer itself, in managed mode the
+            # activity bar's ``↓ N tokens`` counter ticks while the full
+            # formatted body is flushed once at ``end_stream``.  Echoing
+            # raw deltas would race the bottom region and produce
+            # smeared output (verb fragments overlapping prose).
             try:
                 raw = "".join(self._stream_buffer)
                 cleaned = strip_tool_blocks(raw)
-                self._stream.stripped_chars = max(
-                    0, len(raw) - len(cleaned)
-                )
-                self._live.update(self._render_assistant(cleaned))
-            except Exception:        # noqa: BLE001 — never let render kill the stream
+                self._stream.inline_activity = _inline_activity_from_text(raw)
+                self._stream.stripped_chars = max(0, len(raw) - len(cleaned))
+                # Capture <thinking> blocks into the reasoning excerpt so
+                # the activity bar's sub-line shows what the model is
+                # mulling — otherwise these tokens count toward "↑ N
+                # tokens" but never become visible.
+                thinking_text = extract_thinking_blocks(raw)
+                if thinking_text:
+                    self._stream.reasoning_excerpt = thinking_text
+                if self._stream.inline_activity:
+                    self._turn_state.verb = self._stream.inline_activity
+                    self._turn_state.mode = MODE_TOOL_USE
+                # Flip from "thinking" to "responding" only once the
+                # cleaned visible body has started arriving — purely
+                # reasoning/thinking tokens shouldn't reset the timer.
+                if cleaned.strip() and self._turn_state.mode == MODE_THINKING:
+                    self._turn_state.mark_first_response_token()
+            except Exception:        # noqa: BLE001 — never let render-prep kill the stream
                 pass
         else:
-            # Fallback path when Live failed to start (e.g. no TTY).  Just
-            # echo the cleaned delta to stdout.
+            # Fallback path when no turn is open AND no AetherApp is
+            # managing the bottom region — echo the cleaned delta
+            # directly so unit tests / non-TTY use still see output.
             cleaned_delta = strip_tool_blocks(delta)
             if cleaned_delta:
+                if self._turn_state.mode == MODE_THINKING:
+                    self._turn_state.mark_first_response_token()
                 self.console.out(cleaned_delta, highlight=False, end="")
 
+    def stream_reasoning_delta(self, delta: str) -> None:
+        """Append a delta from the provider's reasoning/thinking channel.
+
+        Reasoning content is **never** flushed to scrollback — it lives
+        only as a single dim ``thinking: …`` sub-line beneath the
+        activity bar so the user can see the model is producing
+        chain-of-thought even before the visible body starts arriving.
+
+        Providers route here when they emit a separate ``reasoning``
+        channel (DeepSeek-R1 / o1-style ``reasoning_content`` deltas).
+        For providers that wrap chain-of-thought in ``<thinking>`` tags
+        inside the main content stream, the existing ``stream_delta``
+        path catches it via :func:`extract_thinking_blocks`.
+        """
+        if not delta:
+            return
+        if not self._stream.active:
+            self.begin_stream()
+
+        self._stream.reasoning_chars += len(delta)
+        # Keep a rolling tail of the reasoning excerpt — the most recent
+        # fragment is the most useful one to show.  We bound the in-
+        # memory excerpt to avoid unbounded growth on very long traces.
+        existing = self._stream.reasoning_excerpt
+        combined = (existing + delta) if existing else delta
+        max_excerpt = max(_REASONING_EXCERPT_LIMIT * 4, 256)
+        if len(combined) > max_excerpt:
+            combined = combined[-max_excerpt:]
+        self._stream.reasoning_excerpt = combined
+
     def end_stream(self) -> None:
+        """Finalise the current streaming session.
+
+        Flushes the streamed markdown to scrollback (so subsequent
+        ``console.print`` for tool panels lands below it), runs the
+        phantom-tool diagnostic, and resets ``_stream``.  Leaves the
+        turn-scoped Live running — the next iteration's stream will
+        re-attach to the same surface.
+        """
         if not self._stream.active:
             return
 
-        stripped = self._stream.stripped_chars
-        no_real_tool_dispatched = (
-            self.stats.tool_calls == self._stream.tool_calls_at_start
+        # Differentiate "this stream produced no structured calls" from
+        # "this turn never dispatched anything" — the wording in the
+        # diagnostic depends on it.
+        stream_dispatched_tools = (
+            self.stats.tool_calls > self._stream.tool_calls_at_start
         )
+        turn_dispatched_tools = (
+            self.stats.tool_calls > self._tool_calls_at_turn_start
+        )
+        raw_stream_text = "".join(self._stream_buffer)
+        cleaned = strip_tool_blocks(raw_stream_text)
+        # Recompute the stripped-char count from the actual buffer
+        # rather than trusting ``self._stream.stripped_chars`` — that
+        # field is updated by ``stream_delta`` and may be stale when
+        # tests / non-streaming paths feed the buffer directly.  The
+        # phantom-tool diagnostic gate uses this number; getting it
+        # wrong silently swallows the warning.
+        stripped = max(self._stream.stripped_chars, len(raw_stream_text) - len(cleaned))
 
-        if self._live is not None:
-            cleaned = strip_tool_blocks("".join(self._stream_buffer))
-            try:
-                self._live.update(self._render_assistant(cleaned), refresh=True)
-                self._live.stop()
-            except Exception:        # noqa: BLE001
-                pass
-            self._live = None
-        else:
-            self.console.print()
+        # Phantom command intent — if this iteration produced *no*
+        # structured tool dispatch but the visible body carries one or
+        # more ``\u0060\u0060\u0060bash <cmd>`` blocks AND the prose contains
+        # imperative verbs ("let me run / 我来 / I'll check"), treat
+        # each fenced block as a failed tool invocation: strip every
+        # block from the body so the response shows only narration
+        # (claude-code-style), and stash the parsed commands for the
+        # phantom-tool diagnostic to surface as ``└ attempted: $ <cmd>``.
+        #
+        # We use the aggressive multi-fence stripper here rather than
+        # the trailing-only variant — Kimi-class models routinely emit
+        # 2-3 bash blocks interleaved with prose ("我先看看：\u0060\u0060\u0060bash …
+        # 实际上让我用更系统的方式查看：\u0060\u0060\u0060bash …"), and the trailing
+        # heuristic was leaving the earlier ones on screen.
+        all_attempts: list[str] = []
+        if not stream_dispatched_tools and _looks_like_intended_tool_use(cleaned):
+            all_attempts = _extract_all_command_fences(cleaned)
+            if all_attempts:
+                cleaned = strip_all_command_fences(cleaned)
+        if all_attempts:
+            # Stash the *first* command on ``_last_trailing_command``
+            # for the existing single-line idle hint, and keep the
+            # full list around so ``_render_phantom_tool_hint`` can
+            # decide whether to summarise ("attempted 3 commands").
+            self._last_trailing_command = all_attempts[0]
+            self._last_attempted_commands = all_attempts
 
-        # Diagnostic: the model narrated tool calls in prose but the
-        # engine never saw structured tool_calls.  Without this hint the
-        # user sees the model say "tool didn't return" with no clue why.
-        if stripped >= 80 and no_real_tool_dispatched:
-            self._render_phantom_tool_hint(stripped)
+        # Flush the final markdown into scrollback.  Rich's Live correctly
+        # hoists this above the live region so it lands above the bar;
+        # :class:`AetherApp`'s ``patch_stdout(raw=True)`` does the same
+        # thing relative to the prompt_toolkit layout.
+        if cleaned.strip():
+            if self._turn_live is not None or self.managed_externally:
+                try:
+                    self._ensure_block_spacer("assistant")
+                    self.console.print(self._render_assistant(cleaned))
+                    self._record_block("assistant")
+                except Exception:    # noqa: BLE001
+                    pass
+            else:
+                # No turn-scoped Live (test / non-TTY path) — newline only.
+                self.console.print()
 
+        # Stash the stream text so ``end_turn`` can run the
+        # idle-turn heuristic *after* this method clears the buffer.
+        self._last_streamed_text = raw_stream_text
+        # Reset stream state BEFORE running the diagnostic so the live
+        # surface re-renders without the stale buffer.
         self._stream = _StreamState()
         self._stream_buffer = []
+        # The bar should reflect "between tool dispatches" so the verb
+        # rotates back to a thinking word; the middleware will overwrite
+        # this on the next iteration boundary, but we keep the bar from
+        # showing a stale "responding" verb in the gap.
+        self._turn_state.mode = MODE_THINKING
 
-    def _render_phantom_tool_hint(self, stripped_chars: int) -> None:
-        """Warn the user when ``<function_calls>`` was inline-only.
+        # Phantom-tool diagnostic — Sprint 1.5 / P0-9 deferred path.
+        # We can't decide at stream-end whether the warning is needed
+        # because the engine's synthesis pass runs *after* this method
+        # returns: a stripped block might still get rescued into a
+        # structured ``tool_calls`` dispatch.  Stash the parameters and
+        # let ``end_turn`` make the final call once it knows whether
+        # synthesis covered the strip.  This eliminates the old "loud
+        # warning shown above a successful tool dispatch" UX glitch.
+        if stripped >= 80 and not stream_dispatched_tools:
+            self._pending_phantom_strip = {
+                "stripped_chars": stripped,
+                "raw_text": raw_stream_text,
+                "cleaned_text": cleaned,
+                "turn_already_dispatched": turn_dispatched_tools,
+            }
 
-        Tells them in plain language: the model wrote XML tool tags into
-        its prose but didn't actually populate the ``tool_calls`` field,
-        so nothing ran.  Suggests a workaround.
+    def _render_phantom_synth_note(
+        self,
+        *,
+        count: int,
+        notes: list[str],
+    ) -> None:
+        """Render the soft "↻ synthesized N call(s) from prose" hint.
+
+        Fires once per turn whenever
+        :class:`AgentEngine` rescued a phantom tool intent into a
+        structured ``ToolCall`` and dispatched it.  We deliberately
+        keep the styling subtle (dim ``↻`` glyph, no warning colour)
+        because the call *did* run — the user just gets a small
+        breadcrumb that the model emitted prose tags and the engine
+        repaired them.  The loud "model emitted inline tool tags"
+        warning is reserved for the case where synthesis was
+        impossible (no matching tool registered) and the run-loop
+        ended up sending a corrective message instead.
         """
+        if count <= 0:
+            return
+        line = Text()
+        line.append("  ", style="")
+        line.append("↻ ", style=f"bold {AETHER_DIM}")
+        plural = "" if count == 1 else "s"
+        line.append(
+            f"synthesized {count} tool call{plural} from prose",
+            style=f"dim {AETHER_DIM}",
+        )
+        self.console.print(line)
+        for raw_note in (notes or [])[:3]:
+            note = (raw_note or "").strip()
+            if not note:
+                continue
+            sub = Text()
+            sub.append("    ⎿ ", style=f"dim {AETHER_DIM}")
+            sub.append(_truncate_inline(note), style=f"dim {AETHER_TEXT}")
+            self.console.print(sub)
+        if len(notes or []) > 3:
+            extra = Text()
+            extra.append("    ⎿ ", style=f"dim {AETHER_DIM}")
+            extra.append(
+                f"… (+{len(notes) - 3} more)",
+                style=f"dim {AETHER_DIM}",
+            )
+            self.console.print(extra)
+
+    def _render_phantom_tool_hint(
+        self,
+        stripped_chars: int,
+        *,
+        raw_text: str = "",
+        cleaned_text: str = "",
+        turn_already_dispatched: bool = False,
+    ) -> None:
+        """Warn the user when an inline tool-tag block was stripped silently.
+
+        Three pieces of information matter for the user:
+
+        1. **What was lost** — render the model's *intent* (parsed name +
+           args) instead of just "N chars stripped".  This way the user
+           can tell at a glance whether a missing tool call mattered.
+        2. **Why** — the model wrote XML tags into prose instead of
+           populating the structured ``tool_calls`` field, so nothing
+           ran.  Different wording when the turn already had successful
+           dispatches earlier (mid-turn fallback) vs. an entire-turn miss.
+        3. **A way out** — strengthen the system prompt or pick a model
+           with native tool use.
+
+        Auto-shows the raw preview when stripping ate so much that the
+        cleaned reply is essentially empty (visible <20 chars) — that's
+        the case where the turn looked "silenced" to the user.
+        """
+        intent = _extract_inline_tool_intent(raw_text)
+
+        # Headline.  When the model fell back mid-turn (i.e. earlier
+        # iterations succeeded) we say so explicitly — the previous
+        # wording "no structured tool_calls were dispatched" was
+        # confusing because the user had just seen one work.
+        if turn_already_dispatched:
+            headline_msg = "model fell back to inline tool tags"
+            tail_msg = " — earlier dispatches succeeded but this one was lost."
+        else:
+            headline_msg = "model emitted inline tool tags"
+            tail_msg = " — no structured tool_calls were dispatched."
+
         line = Text()
         line.append("  ", style="")
         line.append(f"{icon('warn')} ", style=f"bold {AETHER_WARNING}")
-        line.append("model emitted inline tool tags ", style=AETHER_WARNING)
+        line.append(f"{headline_msg} ", style=AETHER_WARNING)
         line.append(
             f"({stripped_chars} chars stripped)",
             style=f"dim {AETHER_DIM}",
         )
-        line.append(
-            "  — no structured tool_calls were dispatched.",
-            style=AETHER_WARNING,
-        )
+        line.append(tail_msg, style=AETHER_WARNING)
         self.console.print(line)
+
+        # Surface the model's *intent* — the most important signal.
+        # When parsing fails we still want the hint visible, just
+        # without the "Reading file: foo.py" line.
+        rendered_attempt = False
+        if intent is not None:
+            verb = _verb_for_tool(intent.name)
+            detail = _truncate_inline(_detail_for_args(intent.args)) if intent.args else ""
+            attempted = Text()
+            attempted.append("    └ attempted: ", style=f"dim {AETHER_DIM}")
+            attempted.append(verb, style=f"bold {AETHER_TEXT}")
+            if detail:
+                attempted.append("  ", style="")
+                attempted.append(detail, style=f"dim {AETHER_TEXT}")
+            self.console.print(attempted)
+            rendered_attempt = True
+
+        # Bash-fence attempts captured by ``end_stream`` — list each
+        # one so the user sees the full intended workflow.  When an
+        # XML/JSON intent was already shown above, the bash list is
+        # appended underneath; otherwise it serves as the primary
+        # attempted-action display.
+        bash_attempts = list(self._last_attempted_commands)
+        for idx, cmd in enumerate(bash_attempts):
+            line = Text()
+            if not rendered_attempt and idx == 0:
+                line.append("    └ attempted: ", style=f"dim {AETHER_DIM}")
+            else:
+                line.append("      ", style="")
+            line.append("$ ", style=f"bold {AETHER_TEXT}")
+            line.append(_truncate_inline(cmd), style=AETHER_TEXT)
+            self.console.print(line)
+            rendered_attempt = True
+
         hint = Text(
             "    try /system to ask the model to use the structured "
             "tool_calls field, or pick a model that supports native tool use.",
             style=f"dim {AETHER_DIM}",
         )
         self.console.print(hint)
+
+        # Keep the raw preview as an explicit debug/verbose affordance.
+        # In normal mode the user asked for the tool activity to live in
+        # the bar, not for the stripped XML/function payload to flood the
+        # transcript area.
+        if not self.verbose:
+            return
+        if not _should_render_inline_tool_preview(cleaned_text, stripped_chars):
+            return
+        if not _has_xml_style_inline_tool_markup(raw_text):
+            return
+
+        preview, truncated = _inline_tool_preview(raw_text)
+        if not preview:
+            return
+
+        title = "raw model output preview"
+        if truncated:
+            title += " (truncated)"
+        self.console.print(
+            Panel(
+                Text(preview, style=AETHER_DIM),
+                title=title,
+                border_style=AETHER_BORDER,
+                expand=True,
+            )
+        )
 
     # ---------------------------- conversation -----------------------------
 
@@ -453,23 +1522,59 @@ class CLIUI:
         keeps a readable trail of "what was typed → what came back".
         Multi-line input is preserved with a ``› `` hanging indent.
 
-        We always emit a leading blank line so the user turn is visually
-        separated from whatever the assistant produced before it — without
-        this each new prompt felt glued to the previous response.
+        Spacer policy (centralised in :meth:`_ensure_block_spacer`)
+        guarantees a single blank row separates this user echo from the
+        previous assistant block / footer / tool group, and from the
+        first assistant block that comes next.  Without this each new
+        prompt felt glued to the previous response.
         """
-        self.console.print()
+        self._ensure_block_spacer("user")
         text = Text()
         text.append(f"{icon('user')} ", style=f"bold {AETHER_PRIMARY}")
         text.append(message.replace("\n", "\n  "), style=f"{AETHER_TEXT}")
         self.console.print(text)
+        self._record_block("user")
 
     def render_assistant_block(self, content: str) -> None:
         """Render a non-streamed final assistant message (fallback path)."""
-        cleaned = strip_tool_blocks(content or "")
+        raw_content = content or ""
+        cleaned = strip_tool_blocks(raw_content)
+        stripped = max(0, len(raw_content) - len(cleaned))
+        turn_already_dispatched = (
+            self.stats.tool_calls > self._tool_calls_at_turn_start
+        )
+
+        # Mirror ``end_stream``'s phantom-command guard for the
+        # non-streaming path: when the model wrote ``\u0060\u0060\u0060bash <cmd>``
+        # in prose without dispatching a tool, strip the trailing
+        # fence from the visible body and stash the parsed command
+        # for ``_render_idle_turn_hint`` to surface as ``└ attempted``.
+        if not turn_already_dispatched and _looks_like_intended_tool_use(cleaned):
+            trailing_command = _extract_trailing_command_fence(cleaned)
+            if trailing_command:
+                cleaned = strip_trailing_command_fence(cleaned)
+                self._last_trailing_command = trailing_command
+
         if not cleaned.strip():
+            if stripped >= 80:
+                self._pending_phantom_strip = {
+                    "stripped_chars": stripped,
+                    "raw_text": raw_content,
+                    "cleaned_text": cleaned,
+                    "turn_already_dispatched": turn_already_dispatched,
+                }
             return
-        self.console.print()
+        self._ensure_block_spacer("assistant")
         self.console.print(self._render_assistant(cleaned))
+        self._record_block("assistant")
+
+        if stripped >= 80:
+            self._pending_phantom_strip = {
+                "stripped_chars": stripped,
+                "raw_text": raw_content,
+                "cleaned_text": cleaned,
+                "turn_already_dispatched": turn_already_dispatched,
+            }
 
     # ---- assistant body builder (shared by streaming + fallback) ---------
 
@@ -501,6 +1606,40 @@ class CLIUI:
         grid.add_row(bullet, body)
         return grid
 
+    def _render_stream_surface(self, text: str, *, activity: str = "") -> ConsoleRenderable:
+        status_message = activity or self._status_message
+        if not status_message:
+            return self._render_assistant(text)
+
+        header = Text()
+        if activity:
+            header.append(f"{icon('tool')} ", style=f"bold {AETHER_PRIMARY_DIM}")
+        else:
+            header.append(f"{icon('thinking')} ", style=f"bold {AETHER_PRIMARY_DIM}")
+        header.append(status_message, style=f"dim {AETHER_DIM}")
+
+        if not text.strip():
+            return header
+
+        return Group(header, self._render_assistant(text))
+
+    def _refresh_live_stream(self) -> None:
+        if self._live is None:
+            return
+        try:
+            raw = "".join(self._stream_buffer)
+            cleaned = strip_tool_blocks(raw)
+            self._stream.inline_activity = _inline_activity_from_text(raw)
+            self._stream.stripped_chars = max(0, len(raw) - len(cleaned))
+            self._live.update(
+                self._render_stream_surface(
+                    cleaned,
+                    activity=self._stream.inline_activity,
+                )
+            )
+        except Exception:        # noqa: BLE001 — never let render kill the stream
+            pass
+
     # ------------------------------ tools ----------------------------------
     #
     # Tool calls are rendered as a compact two-line block, Claude-Code style:
@@ -520,7 +1659,21 @@ class CLIUI:
         *,
         tool_call_id: str | None = None,
     ) -> None:
-        """Print the compact ``● <verb>`` + ``└ <detail>`` two-line block."""
+        """Verbose-only legacy rendering — one ``● <verb>`` line per call.
+
+        In normal mode the :class:`ToolGroupTracker` coalesces tool
+        dispatches into a single rolling line (``● Searching for 2
+        patterns, reading 1 file…``) so we deliberately do **not**
+        render anything per-call.  Verbose mode keeps the old per-call
+        block for debugging — it's the only path that reaches the
+        ``● <verb>`` + ``└ <detail>`` two-line shape.
+
+        Note: stats accounting (``self.stats.tool_calls += 1``) lives in
+        :class:`CLIUIMiddleware` now so verbose / non-verbose paths agree.
+        """
+        del tool_call_id
+        if not self.verbose:
+            return
         self.clear_status()
         if self._stream.active:
             self.end_stream()
@@ -528,6 +1681,7 @@ class CLIUI:
         verb = _verb_for_tool(name)
         detail = _truncate_inline(_detail_for_args(args)) if args else ""
 
+        self._ensure_block_spacer("tool_legacy")
         head = Text()
         head.append(f"{icon('assistant')} ", style=f"bold {AETHER_PRIMARY}")
         head.append(verb, style=f"bold {AETHER_TEXT}")
@@ -538,12 +1692,7 @@ class CLIUI:
             sub.append("  └ ", style=AETHER_DIM)
             sub.append(detail, style=f"dim {AETHER_TEXT}")
             self.console.print(sub)
-
-        # Track id silently for /stats; we don't render it inline anymore.
-        self.stats.tool_calls += 1
-        if tool_call_id:
-            # Stash for potential debug rendering; not user-visible.
-            pass
+        self._record_block("tool_legacy")
 
     def render_tool_result(
         self,
@@ -557,17 +1706,29 @@ class CLIUI:
 
         Shape (always indented under the ``└`` detail line above):
 
-            ✓ 412 B  · 23 lines        ← success with content
-            ⚠ empty result             ← success but no content
-            ✗ error  <reason…>         ← failure
+            (silent)                   ← success with content (always)
+            ✓ 412 B  · 23 lines        ← success with content (verbose only)
+            ✗ error  <reason…>         ← failure (always)
+
+        Successful results stay silent by default — claude-code's
+        transcript style.  The :class:`ToolGroupTracker` headline above
+        is the visual record; printing size/line counts after every
+        read would clutter the scroll and compete with the activity bar
+        for attention.
+
+        Errors *always* render so the user can see why the tool failed
+        even though the group headline only flips to "with errors".
+
+        Note: stats accounting (``self.stats.tool_errors``) lives in
+        :class:`CLIUIMiddleware` now so verbose / non-verbose paths agree.
         """
+        del name  # only used for /verbose path; kept for API stability
+        del metadata
         self.clear_status()
 
-        line = Text()
-        line.append("    ", style="")  # indent under "  └ " detail column
-
         if is_error:
-            self.stats.tool_errors += 1
+            line = Text()
+            line.append("    ", style="")  # indent under "  ⎿ " detail column
             msg = _truncate_inline(content or "(no message)", limit=200)
             line.append(f"{icon('error')} ", style=f"bold {AETHER_ERROR}")
             line.append("error  ", style=f"bold {AETHER_ERROR}")
@@ -575,16 +1736,20 @@ class CLIUI:
             self.console.print(line)
             return
 
-        # ---- success path ------------------------------------------------
+        if not self.verbose:
+            return  # successful results stay silent — see docstring.
+
+        # ---- verbose success path ----------------------------------------
         if not content:
-            # An empty success is suspicious — the model often complains
-            # "the tool didn't return" when this happens, so make it loud
-            # enough that the user can see something is off.
+            line = Text()
+            line.append("    ", style="")
             line.append(f"{icon('warn')} ", style=f"bold {AETHER_WARNING}")
             line.append("empty result", style=AETHER_WARNING)
             self.console.print(line)
             return
 
+        line = Text()
+        line.append("    ", style="")
         size = _format_size(len(content))
         nlines = content.count("\n") + (0 if content.endswith("\n") else 1)
         line.append(f"{icon('success')} ", style=AETHER_SUCCESS)
@@ -670,28 +1835,174 @@ class CLIUI:
         return verb
 
     def begin_turn(self) -> None:
-        self.stats = TurnStats()
-        self.set_status(f"{self._next_spinner_verb()}…")
+        """Open a turn-scoped Live region that hosts streaming + the activity bar.
 
-    def end_turn(self, *, status: str, exit_reason: str, iterations: int, error: str | None = None) -> None:
-        self.clear_status()
+        From this point until ``end_turn`` is called, every
+        ``console.print`` lands above the live region and the activity
+        bar at the bottom is auto-refreshed at 20 Hz.  Streamed deltas
+        feed into the same surface so the body stays directly above the
+        bar instead of competing with a separate spinner.
+        """
+        self.stats = TurnStats()
+        self._tool_calls_at_turn_start = 0  # we just reset stats above
+        self._last_streamed_text = ""
+        self._last_trailing_command = None
+        self._last_attempted_commands = []
+        self._phantom_hint_rendered = False
+        self._pending_phantom_strip = None
+        self._turn_state.reset()
+        self._turn_state.verb = self._next_spinner_verb()
+        self._turn_state.mark_thinking_start()
+        self._status_message = self._turn_state.verb
+        # Reset the tool-group tracker — leftover state from a prior
+        # turn would otherwise leak into the new turn's first iteration.
+        self.tool_groups.discard_active()
+
+        # Stop any leftover off-turn fallback spinner.
+        if self._status is not None:
+            try:
+                self._status.stop()
+            finally:
+                self._status = None
+
+        if self._turn_live is not None:
+            # Defensive — should not happen.  Tear down the previous
+            # surface so we don't leak a Rich Live thread.
+            try:
+                self._turn_live.stop()
+            except Exception:        # noqa: BLE001
+                pass
+            self._turn_live = None
+
+        # When :class:`AetherApp` owns the bottom region we MUST NOT
+        # spawn a Rich ``Live`` — the two layers would race for the
+        # terminal cursor and produce smeared output on every refresh.
+        # AetherApp polls ``self._turn_state`` and ``self.tool_groups``
+        # directly via its own FormattedTextControl renderers.
+        if self.managed_externally:
+            return
+
+        try:
+            self._turn_live = Live(
+                _TurnSurface(self),
+                console=self.console,
+                refresh_per_second=20,
+                transient=True,
+                # ``vertical_overflow="crop"`` is a line-wrap-level safety
+                # net — the line-level tail-crop in
+                # ``_TurnSurface.__rich_console__`` already keeps the
+                # source markdown bounded to ``terminal_height - 1`` lines,
+                # but a single very wide line can wrap onto extra display
+                # rows and still overflow.  ``crop`` ensures the Live
+                # region never exceeds the viewport even in that edge
+                # case, so we never get scrollback duplication.  The full
+                # content lands in scrollback exactly once via
+                # ``end_stream``'s ``console.print(_render_assistant(…))``.
+                vertical_overflow="crop",
+            )
+            self._turn_live.start()
+        except Exception:            # noqa: BLE001 — Live is best-effort
+            self._turn_live = None
+
+    def end_turn(
+        self,
+        *,
+        status: str,
+        exit_reason: str,
+        iterations: int,
+        error: str | None = None,
+        phantom_synth_notes: list[str] | None = None,
+        phantom_synth_count: int = 0,
+    ) -> None:
         if self._stream.active:
             self.end_stream()
+        # Flush any unresolved tool group so its past-tense headline
+        # lands in scrollback before the turn footer.  Errors paths
+        # have already discarded the tracker; this is a no-op then.
+        self.tool_groups.flush_active()
+        # Now that the stream (if any) is flushed to scrollback, take down
+        # the live surface so the activity bar disappears cleanly before
+        # we print the turn footer.
+        if self._turn_live is not None:
+            try:
+                self._turn_state.verb = ""  # last frame: blank the bar
+                self._turn_live.stop()
+            except Exception:        # noqa: BLE001
+                pass
+            self._turn_live = None
+        if self._status is not None:
+            try:
+                self._status.stop()
+            finally:
+                self._status = None
+        self._status_message = ""
 
         self.stats.iterations = iterations
         self.stats.elapsed_sec = max(0.0, time.monotonic() - self.stats.started_at)
 
-        # Detect "did the agent actually do anything?".  When the model
-        # produced a short reply with zero tool dispatches we surface a
-        # diagnostic — that's the signature of a model that *meant* to
-        # call a tool (markdown ```bash``` block, "I'll take a look at
-        # your project. ls", etc.) but never populated the structured
-        # ``tool_calls`` field, so the engine had nothing to run.
+        # Detect "did the agent actually do anything?".  We previously
+        # fired this for any short reply (<200 chars, 0 tool calls)
+        # which produced false positives for greetings, clarifications,
+        # and short answers.  Now we require positive evidence the
+        # model *intended* a tool call but emitted it in prose.
+        #
+        # Two distinct signals qualify as evidence:
+        #
+        # 1. Streamed body that *looks* like attempted tool use (fenced
+        #    shell block, ``$``-prefixed line, "I'll run/我来" verb).
+        # 2. ``end_stream`` / ``render_assistant_block`` already parsed
+        #    a trailing command fence out of the body — definitive
+        #    proof the model wrote a tool call in prose.  This second
+        #    branch matters for the non-streaming fallback path where
+        #    ``_last_streamed_text`` is empty.
+        #
+        # ``_phantom_hint_rendered`` deduplicates: when ``end_stream``
+        # already showed the structured-tag phantom warning we skip
+        # this one because both diagnostics convey the same thing —
+        # firing both would look like a duplicate-bug regression.
+        last_text = self._last_streamed_text
+        streaming_intent = (
+            self.stats.streamed_chars > 0
+            and _looks_like_intended_tool_use(last_text)
+        )
+        parsed_intent = self._last_trailing_command is not None
+
+        # Sprint 1.5 / P0-9: when the engine synthesized real
+        # ``ToolCall``s from prose intents, render a single dim
+        # acknowledgement line and *drop* any pending phantom warning
+        # — the call did dispatch, the warning would be misleading.
+        if phantom_synth_count > 0:
+            self._render_phantom_synth_note(
+                count=phantom_synth_count,
+                notes=phantom_synth_notes or [],
+            )
+            self._pending_phantom_strip = None
+            self._phantom_hint_rendered = True
+
+        # Loud warning is now deferred from ``end_stream`` /
+        # ``render_assistant_block``: only fire if the strip was *not*
+        # rescued by synthesis above.  Surface it just before the
+        # footer so the visual ordering is "assistant body → ●
+        # dispatched group(s) → warning → footer".
+        if (
+            self._pending_phantom_strip is not None
+            and self.stats.tool_calls == self._tool_calls_at_turn_start
+        ):
+            payload = self._pending_phantom_strip
+            self._render_phantom_tool_hint(
+                int(payload.get("stripped_chars", 0) or 0),
+                raw_text=str(payload.get("raw_text", "") or ""),
+                cleaned_text=str(payload.get("cleaned_text", "") or ""),
+                turn_already_dispatched=bool(payload.get("turn_already_dispatched")),
+            )
+            self._phantom_hint_rendered = True
+        self._pending_phantom_strip = None
+
         if (
             status == "COMPLETED"
             and self.stats.tool_calls == 0
-            and self.stats.streamed_chars > 0
-            and self.stats.streamed_chars < 200
+            and (streaming_intent or parsed_intent)
+            and not self._phantom_hint_rendered
         ):
             self._render_idle_turn_hint()
 
@@ -726,19 +2037,28 @@ class CLIUI:
                 style=f"dim {AETHER_DIM}",
             )
 
+        self._ensure_block_spacer("footer")
         self.console.print(line)
+        self._record_block("footer")
         if error:
             self.error(error)
 
     def _render_idle_turn_hint(self) -> None:
         """Warn when the model said something but never dispatched a tool.
 
-        Triggered by short replies with zero tool calls — the canonical
-        case is a model writing "I'll take a look" then a markdown code
-        block of the command it would run, instead of populating the
-        structured ``tool_calls`` field.  Without this hint the user only
-        sees a few words then the prompt comes back, with no clue why
-        "nothing happened".
+        Only fires when the assistant text contains positive evidence of
+        intent-to-call-a-tool (fenced shell block, ``$``-prefixed line,
+        an "I'll run/我来运行/…" verb).  Polite greetings, clarifications,
+        and short answers stay silent.
+
+        When ``end_stream`` parsed a trailing fenced shell block out of
+        the response (and stripped it from the body to avoid rendering
+        a dangling code fence), surface the captured command on a
+        ``└ attempted: $ <cmd>`` line.  That mirrors what
+        :meth:`_render_phantom_tool_hint` does for inline XML tool
+        tags so both failure modes look the same to the user — the
+        critical question "what did the model try to do?" is
+        answered consistently.
         """
         warn = Text()
         warn.append("  ", style="")
@@ -748,11 +2068,34 @@ class CLIUI:
             style=AETHER_WARNING,
         )
         warn.append(
-            "  — if you expected one, the model likely typed the command "
-            "into prose instead of calling a tool.",
+            "  — the model wrote a command in prose instead of calling a tool.",
             style=f"dim {AETHER_DIM}",
         )
         self.console.print(warn)
+
+        commands = list(self._last_attempted_commands)
+        if not commands and self._last_trailing_command:
+            commands = [self._last_trailing_command]
+        if commands:
+            # When the model emits multiple bash blocks in one turn,
+            # render each on its own ``└ attempted: $ <cmd>`` line so
+            # the user sees the full intended workflow — single-line
+            # rendering would have hidden the 2nd / 3rd commands and
+            # made it look like only one shell intent was lost.
+            for idx, cmd in enumerate(commands):
+                line = Text()
+                line.append("    └ " if idx == 0 else "      ", style=f"dim {AETHER_DIM}")
+                if idx == 0:
+                    line.append("attempted: ", style=f"dim {AETHER_DIM}")
+                line.append("$ ", style=f"bold {AETHER_TEXT}")
+                line.append(_truncate_inline(cmd), style=AETHER_TEXT)
+                self.console.print(line)
+
+            hint = Text(
+                "    try /system to ask the model to call tools instead of writing shell.",
+                style=f"dim {AETHER_DIM}",
+            )
+            self.console.print(hint)
 
     # ------------------------------ utility --------------------------------
 

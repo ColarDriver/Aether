@@ -9,7 +9,17 @@
 
 ## P0-1 流式健康检查（阶段 8）
 
-### 现状
+### ✅ 已完成（Sprint 1 / PR 1.1）
+
+`OpenAICompatibleModel.generate` 现在按 `stream_callback` 是否提供分流：
+有 callback 时走 `_streaming_generate`（SSE 解析 + 90s stale-stream watchdog
+→ 抛 `StreamStallError`，is_network_error=True），失败一次后置位
+`_disable_streaming` 并自动降级为非流式重试一次；`EngineConfig.streaming_enabled`
+提供紧急回滚开关。`_parse_sse_stream` 模块级函数支持单元测试，`stream_options.include_usage`
+默认开启以保留 token 计费。覆盖测试见
+`tests/test_streaming_generate.py` 与 `tests/test_streaming_engine_gate.py`。
+
+### 现状（已修复，存档原始描述）
 ```51:104:backend/harness/aether/models/provider/openai_compatible.py
     def generate(
         self,
@@ -53,7 +63,17 @@
 
 ## P0-2 响应壳校验（阶段 9）
 
-### 现状
+### ✅ 已完成基础（Sprint 1 / PR 1.1） + ⚠️ 仍待 Sprint 2 的 eager fallback
+
+`ModelProvider.validate_response()` 已成为 provider 抽象的一部分（默认实现返回
+`(True, [])`，零成本 opt-out）；`OpenAICompatibleModel` 默认实现识别 OpenRouter
+风格的 `error` 信封 + 空 `choices`。引擎在 LLM_CALL 之后立即校验，失败抛
+`ResponseInvalidError`（继承自 `ProviderInvocationError`，`is_network_error=True`）
+走 Sprint 0 的 recovery 层；用尽预算后落到 `ExitReason.RESPONSE_INVALID` 终态，
+与 `PROVIDER_ERROR` 区分。eager fallback 仍走 Sprint 2 的 `FallbackChain`。
+覆盖测试见 `tests/test_response_validation.py`。
+
+### 现状（部分修复，存档原始描述）
 - `_parse_response` 在 `OpenAICompatibleModel` 里直接 `data["choices"][0]["message"]`，没有 None / 空 list 防御。
 - 引擎层完全不校验 `NormalizedResponse` 形状。
 
@@ -70,7 +90,27 @@
 
 ## P0-3 `finish_reason="length"` 续写与回滚（阶段 10）
 
-### 现状
+### ✅ 已完成（Sprint 1 / PR 1.2）
+
+`AgentEngine._handle_length_finish_reason` 在每次 LLM_CALL 之后命中
+`finish_reason == "length"` 时分流：
+1. **Thinking-budget 检测**：`_looks_like_thinking_only_length_response` →
+   friendly exit（`ExitReason.LENGTH_EXHAUSTED` + `length_exit_reason="thinking_budget"`）。
+2. **续写 retry**（最多 `max_length_continue_retries`=3 次）：把当前 assistant
+   消息（带 `finish_reason="length"` 与 `partial=True` 元数据）+ 续写指令 user 消息
+   写入历史；通过 `context.metadata["_ephemeral_max_output_tokens"] = base × (n+1)`
+   抬高输出预算（上限 32k），由 `_invoke_provider_with_recovery` 在下次发包时拷贝
+   到一次性 `ModelCallConfig` 而不污染原 `EngineRequest`。可见前缀累积到
+   `truncated_response_prefix_parts`。
+3. **回滚**：续写用尽后 `_get_messages_up_to_last_assistant` 剥离脚手架并附
+   `partial=True` 助手消息，落到 `ExitReason.LENGTH_EXHAUSTED`。
+4. **`length_continuation_enabled=False`** 紧急回滚开关。
+
+`ExitReason.LENGTH_RECOVERED` / `LENGTH_EXHAUSTED` 已写入 contracts。
+截断 tool_call 走 P0-4 的独立路径。覆盖测试见
+`tests/test_run_loop_length_continuation.py`。
+
+### 现状（已修复，存档原始描述）
 `run_loop` 完全无视 `response.finish_reason`。
 
 ### 期望
@@ -100,7 +140,34 @@
 
 ## P0-4 截断 tool_call 检测（阶段 15.②）
 
-### 现状
+### ✅ 已完成（Sprint 1 / PR 1.3）
+
+`AgentEngine._validate_tool_call_arguments` 在 dispatch 之前对每个 `tool_call.arguments`
+按 hermes 13335-13426 的顺序处理：
+1. **类型规整**：dict/list 直接 pass-through 当作已解析；非 str 标量 `str()`；
+   空串/纯空格 → `{}`。处理后 dispatch 看到的永远是规范化后的 `dict`/`list`。
+2. **JSON 解析 + 错误收集**：`json.loads` 成功则 store 解码后形态；失败则记录
+   `(name, error_msg)` 进 `invalid_json_args`。
+3. **截断启发式**（`_detect_truncated_tool_call`，纯静态方法）：任一失败的
+   args strip 后未以 `}`/`]` 结尾 → 整批视为截断。能命中 router 把
+   `finish_reason` 从 `"length"` 改写成 `"tool_calls"` 的 case。
+4. **截断分流**：仍有预算时 retry（不进 dispatch、不进历史）；用尽
+   `max_truncated_tool_call_retries`(=1) 后回滚到上一完整 assistant turn，落到
+   `ExitReason.TOOL_CALL_TRUNCATED` + `partial=True`。
+5. **JSON 错误分流**：未截断 → 静默 retry `max_invalid_json_retries`(=3) 次；
+   用尽后注入 assistant 消息（带 `_invalid_json_recovery=True` 标记）+
+   每个失败 tool_call 一条 `role=tool` 错误说明（保持 OpenAI 严格的角色轮替），
+   让模型自纠（hermes 13396-13423 的复刻）。`invalid_json_recovery_enabled=False`
+   时回到 fail-fast。
+
+`run_loop` 在 `finish_reason="length" && tool_calls` 命中时走
+`_handle_length_with_tool_calls`（重试一次同样不进历史，超额后落到
+`TOOL_CALL_TRUNCATED`）。`EngineResult.metadata.runtime` 暴露 `truncated_tool_call_retries`
+与 `invalid_json_retries` 计数。`truncated_tool_call_detection_enabled=False` 紧急
+回滚开关。覆盖测试见 `tests/test_run_loop_truncated_tool_call.py`（13 例：
+`_detect_truncated_tool_call` 单元 + 7 个 run-loop 端到端场景）。
+
+### 现状（已修复，存档原始描述）
 - `dispatch(tool_call, context)` 直接拿原始 arguments 调用工具，没有 JSON 校验。
 - 模型返回半截 JSON（`{"path": "/etc/pas`）会被原样喂给 tool runtime，工具炸出异常 → 模型把它当真错误 → 怪圈。
 
@@ -301,6 +368,85 @@
 
 ---
 
+## P0-9 内置工具集 + 散文工具调用合成（Sprint 1.5）
+
+### ✅ 已完成（Sprint 1.5 / 本次 PR）
+
+历史背景：在引入 P0-9 之前，`AgentEngine` 默认 `tool_registry=ToolRegistry()`（**空注册表**），
+CLI 也没有给它注册任何工具。模型被告知它"是 agent"，但事实上**没有任何工具可调**——
+对于 Kimi 这一类训练时见过工具调用模板的模型，结果就是它把工具调用以散文（markdown bash
+fence、`<function=NAME>`、`<functions.shell:0>`、`<invoke>`）的形式写在 `content`
+里。原本的 phantom-tool recovery（PR 1.5 早期）通过"注入 corrective user message + 重试"
+**让模型重新尝试**，但模型没有真正可用的工具，只能再写一遍 prose，最终在 `max_phantom_tool_retries`
+后退出 `PHANTOM_TOOL_INTENT`。用户看到的就是终端里反复出现 `└ attempted: Running command…`
+然后 loop 中断。
+
+### 解决方案
+
+1. **`aether/tools/builtins/`** 新增六个内置 executor：`shell` / `read_file` / `write_file` /
+   `list_dir` / `grep` / `glob`，对齐 claude-code Day-1 工具面（Bash / Read / Write / LS /
+   Grep / Glob）。每个都纯 Python，无外部依赖（`grep` 在有 ripgrep 时优先调用），输出做了字节
+   截断保护（shell 16KB/流，read_file 256KB 文件，write_file 1MB content）。
+2. **`build_default_tool_registry(cwd=...)`** 工厂在 `tools/builtins/__init__.py`，
+   把六个工具一次性注册到一个新的 `ToolRegistry` 并返回。
+3. **`AgentEngine.__init__`** 当 `tool_registry is None` 且 `EngineConfig.use_builtin_tools`
+   为 `True`（新默认）时，自动调用工厂；否则维持空注册表。这一行就让 SDK 消费者、子 Agent、
+   测试 fixture 全部继承同一份默认工具集。
+4. **`<tool_use_contract>` 系统提示** —— `agents/core/system_prompt.py:augment_system_with_tool_contract`
+   会在用户传入的 system message 之前 prepend 一段中英双语契约，列出注册的工具名并明确禁止
+   prose-style emission。该契约从 `tool_registry.list_descriptors()` 派生，注册表为空时
+   自动跳过。在 `EngineConfig.tool_use_contract_enabled=True`（默认）时启用。
+5. **散文工具合成** —— `phantom_tool.synthesize_tool_calls_from_phantom(intent, registry)`
+   把已经解析出的 `PhantomToolIntent` 翻译成结构化 `ToolCall`：
+   - bash fence → 注册表中第一个 shell 别名工具（`shell` / `bash` / `execute_command` /
+     `run_command` / …）。
+   - `<function=NAME>` / `<functions.NAME:N>` / `<invoke>` / `<tool_call>` → 通过
+     case-fold + 去 namespace 前缀（`mcp__server__`、`functions.`、`ns:`）解析到注册的工具名。
+   - 名字解析失败时返回 `None`，让 corrective-message 回退路径处理。
+6. **Run-loop 切入** —— `AgentEngine._maybe_recover_phantom_tool_intent` 在原有"注入
+   corrective user message"分支之前先尝试合成；成功时把 `response_to_store.tool_calls`
+   注满，回到现有的 dispatch 路径继续 loop（新 helper `_dispatch_synthesized_tool_calls`
+   做 streamlined 的 dispatch，跳过 truncated/invalid-JSON 校验，因为参数是我们自己造的）。
+   `EngineConfig.phantom_tool_synthesis_enabled` 控制是否启用（默认 `True`），
+   `TURN_KEY_PHANTOM_TOOL_SYNTHESIZED` 计数本回合合成的工具调用次数。
+7. **UI 处理** —— `cli/ui.py` 把"model emitted inline tool tags"警告从 `end_stream` /
+   `render_assistant_block` 推迟到 `end_turn`：合成成功时显示一条柔和的
+   `↻ synthesized N tool call(s) from prose`，并把警告抑制掉；只有在合成失败（注册表里没有
+   匹配工具）时才仍然展示原本的醒目警告。
+8. **CLI 仅暴露 opt-out** —— `cli/main.py` 加了 `--no-builtin-tools` flag，映射到
+   `EngineConfig(use_builtin_tools=False)`。CLI 不再 import 工具工厂、不再组装契约；
+   它只是 engine 的"前台"。
+
+### 验收
+
+- 单测：`tests/test_builtin_tools.py`（26 用例）覆盖六个工具的 happy/error/truncation/schema。
+- 单测：`tests/test_phantom_synthesis.py`（16 用例）覆盖：
+  - 每种 phantom 句法（bash / function= / functions.NAME:N / invoke）→ ToolCall 转换。
+  - 模糊解析（大小写、namespace 前缀、shell 别名）。
+  - typo 不会误解析（`read_files` ≠ `read_file`）。
+  - run-loop 集成：合成成功时 `phantom_tool_retries=0` / `phantom_tool_synthesized=1`、
+    spy tool 真的被调用、`exit_reason=TEXT_RESPONSE`。
+  - run-loop 集成：禁用 synthesis 时回退到 corrective-retry 路径仍然工作。
+  - run-loop 集成：注册表里没有 shell 工具时合成跳过、正确转入 corrective 路径。
+- 单测：`tests/test_run_loop_phantom_tool.py` 新增两个 case 校验 synthesis 走通时 retries
+  仍为 0、metadata 中 `phantom_synth_notes` 包含 per-call 描述。
+- 单测：`tests/test_cli_main.py` 校验 `--no-builtin-tools` flag 解析、默认 `EngineConfig`
+  把 `use_builtin_tools` / `tool_use_contract_enabled` / `phantom_tool_synthesis_enabled`
+  全部置为 `True`。
+- 集成（手动）：用 Kimi-class provider 触发 `<functions.shell:0>{...}` 散文输出，断言不再看到
+  `└ attempted: Running command…` 半截截断的警告，loop 顺利推进到下一轮。
+
+### 数据结构变更
+
+- `EngineConfig` 新增 `use_builtin_tools` / `tool_use_contract_enabled` /
+  `phantom_tool_synthesis_enabled`，默认 `True`。
+- `TURN_KEY_PHANTOM_TOOL_SYNTHESIZED` 加入 `runtime/session_runtime.py`。
+- `phantom_tool.SynthesisOutcome` 新数据类。
+- `EngineResult.metadata["runtime"]["phantom_tool_synthesized"]` 暴露给观察方。
+- `EngineResult.metadata["turn"]["phantom_synth_notes"]` 携带 per-call 描述给 UI。
+
+---
+
 ## P0 总览：依赖关系
 
 ```
@@ -310,9 +456,12 @@ P0-2 (校验)  ─┼─→ P0-3 (length 续写) ─┐
               └─→ P0-4 (截断 tool_call) ─┘
                                        │
 P0-5 (名字模糊修复) ─→ P0-6 (上限 + 去重) ─┘
+                                       │
+                                       └─→ P0-9 (内置工具集 + 散文合成)
 ```
 
 按这个依赖图，Sprint 1 应该聚焦 **P0-1、P0-2、P0-3、P0-4**（流式 + 截断处理），
+Sprint 1.5 加入 **P0-9**（内置工具集 + 散文合成，与 P0-5 的模糊修复语义共享 `_normalize_name`），
 Sprint 2 聚焦 **P0-5、P0-6、P0-7**（错误分类 + tool 容错），
 Sprint 4 聚焦 **P0-8**（空响应 9 步降级，因为它依赖 P0-7 的 fallback chain）。
 

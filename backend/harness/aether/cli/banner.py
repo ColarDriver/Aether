@@ -1,4 +1,4 @@
-"""Welcome banner: ASCII logo + session info panel for the Aether CLI."""
+"""Welcome banner: wordmark + mascot panel for the Aether CLI."""
 
 from __future__ import annotations
 
@@ -24,21 +24,19 @@ from aether.cli.theme import (
 
 
 # ---------------------------------------------------------------------------
-# ASCII logo  —  the AETHER mascot (a tiny robot inspired by docs/pics/icon.png)
-# rendered next to the wordmark in a vertical gradient (primary → accent).
+# Terminal mascot — a soft round companion inspired by the product icon.
+# The face is drawn with light shell fills, dark eyes, and pink cheeks so
+# the banner feels friendlier than the previous hard-edged robot glyph.
 # ---------------------------------------------------------------------------
 
-# 6-row mascot.  Each row aligns with one row of the wordmark below so the
-# whole header reads as a single shape.  Padding uses regular spaces — do
-# *not* substitute non-breaking spaces; Rich measures them as wide chars.
-_MASCOT_LINES: list[str] = [
-    "    ✦    ",
-    "  ╭─┴─╮  ",
-    " │ ◉ ◉ │ ",
-    "  ╰─┬─╯  ",
-    "   ║✦║   ",
-    "   ╨ ╨   ",
-]
+_MASCOT_SHELL = "#F8FAFC"
+_MASCOT_SHELL_EDGE = "#CBD5E1"
+_MASCOT_FEATURE = "#111827"
+_MASCOT_BLUSH = "#F9A8D4"
+
+# ``w`` means "shell fill cell" and is rendered as a white background
+# space.  All other visible characters are outline/features.
+_MASCOT_TEMPLATE_LINES: list[str] = []
 
 _LOGO_LINES: list[str] = [
     " █████╗ ███████╗████████╗██╗  ██╗███████╗██████╗ ",
@@ -49,13 +47,9 @@ _LOGO_LINES: list[str] = [
     "╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝",
 ]
 
-# Compact form for narrow terminals — the mascot collapses to a single
-# stylised figure printed inline with the wordmark.
-_COMPACT_MASCOT_LINES: list[str] = [
-    " ╭─✦─╮ ",
-    " │◉ ◉│ ",
-    " ╨   ╨ ",
-]
+# Compact form for narrow terminals — keep the same rounded character but
+# collapse it into three rows so the wordmark still fits.
+_COMPACT_MASCOT_TEMPLATE_LINES: list[str] = []
 
 _COMPACT_LOGO_LINES: list[str] = [
     "  ▄▀█ █▀▀ ▀█▀ █░█ █▀▀ █▀█  ",
@@ -84,9 +78,28 @@ def _mascot_color(step: int, total: int) -> str:
     return _gradient_color(total - 1 - step, total)
 
 
+def _render_mascot_line(template: str, *, compact: bool = False) -> Text:
+    """Render one mascot row from a shell-fill template."""
+    text = Text(no_wrap=True)
+    for ch in template:
+        if ch == "w":
+            text.append(" ", style=f"on {_MASCOT_SHELL}")
+        elif ch in {"●", "◉"}:
+            text.append(ch, style=f"bold {_MASCOT_FEATURE} on {_MASCOT_SHELL}")
+        elif ch in {"◌", "◍"}:
+            text.append(ch, style=f"bold {_MASCOT_BLUSH} on {_MASCOT_SHELL}")
+        elif ch in {"◡", "︶", "⌣"}:
+            text.append(ch, style=f"bold {_MASCOT_FEATURE} on {_MASCOT_SHELL}")
+        elif ch in {"╭", "╮", "╰", "╯", "◖", "◗"}:
+            text.append(ch, style=f"bold {_MASCOT_SHELL_EDGE}")
+        else:
+            text.append(ch, style=f"{AETHER_TEXT}")
+    return text
+
+
 def _render_logo(*, compact: bool = False) -> Text:
     """Render the mascot + AETHER wordmark side-by-side as a single Text block."""
-    mascot_lines = _COMPACT_MASCOT_LINES if compact else _MASCOT_LINES
+    mascot_lines = _COMPACT_MASCOT_TEMPLATE_LINES if compact else _MASCOT_TEMPLATE_LINES
     word_lines = _COMPACT_LOGO_LINES if compact else _LOGO_LINES
 
     # Pair lines defensively in case future edits change the row counts.
@@ -99,15 +112,14 @@ def _render_logo(*, compact: bool = False) -> Text:
         m = (mascot_lines[i] if i < len(mascot_lines) else "").ljust(mascot_width)
         w = (word_lines[i] if i < len(word_lines) else "").ljust(word_width)
         word_color = _gradient_color(i, rows)
-        mascot_color = _mascot_color(i, rows)
-        text.append(m, style=f"bold {mascot_color}")
+        text.append_text(_render_mascot_line(m, compact=compact))
         text.append(_LOGO_GUTTER)
         text.append(w + "\n", style=f"bold {word_color}")
     return text
 
 
 def _logo_width(*, compact: bool) -> int:
-    mascot_lines = _COMPACT_MASCOT_LINES if compact else _MASCOT_LINES
+    mascot_lines = _COMPACT_MASCOT_TEMPLATE_LINES if compact else _MASCOT_TEMPLATE_LINES
     word_lines = _COMPACT_LOGO_LINES if compact else _LOGO_LINES
     mascot_width = max((len(l) for l in mascot_lines), default=0)
     word_width = max((len(l) for l in word_lines), default=0)

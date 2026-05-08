@@ -58,6 +58,39 @@ from typing import Dict, Final
 TURN_KEY_EMPTY_RESPONSE_RETRIES: Final[str] = "empty_response_retries"
 TURN_KEY_PROVIDER_ERROR_RETRIES: Final[str] = "provider_error_retries"
 
+# Sprint 1 / PR 1.3 — per-turn retry counters for the truncated tool-call
+# detector.  Both reset to 0 at turn entry; they live on
+# ``TurnContext.metadata`` because their lifetime is exactly one turn and
+# concurrent sessions sharing the engine instance must not interfere.
+#
+# - ``truncated_tool_call_retries``: how many times we have re-issued the
+#   provider call after seeing finish_reason="length" + tool_calls (without
+#   appending the broken response to history).
+# - ``invalid_json_retries``: how many times we have re-issued the call
+#   because the tool_call arguments did not parse as JSON but did not look
+#   truncated (so the model just made a JSON formatting mistake).
+TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES: Final[str] = "truncated_tool_call_retries"
+TURN_KEY_INVALID_JSON_RETRIES: Final[str] = "invalid_json_retries"
+# Sprint 1.5 / phantom-tool recovery: bumped each time the engine
+# detects the model wrote a tool intent in prose (\u0060\u0060\u0060bash …,
+# ``<function=NAME>`` …, ``<invoke>`` …) but did not populate the
+# structured ``tool_calls`` field, and we sent a corrective user
+# message asking it to retry with proper tool_calls.  Bounded by
+# ``EngineConfig.max_phantom_tool_retries`` so a model that
+# consistently refuses tool_calls exits with PHANTOM_TOOL_INTENT
+# instead of looping forever.
+TURN_KEY_PHANTOM_TOOL_RETRIES: Final[str] = "phantom_tool_retries"
+# Sprint 1.5 / P0-9: bumped each time the engine *successfully*
+# turns prose-style tool intent into structured ``ToolCall``s and
+# dispatches them inline (see ``synthesize_tool_calls_from_phantom``
+# + the run-loop synthesis branch).  Distinct from
+# ``TURN_KEY_PHANTOM_TOOL_RETRIES`` because synthesis keeps the loop
+# moving forward; only un-synthesizable phantoms burn a corrective-
+# message retry.  Surfaced in the UI as "↻ synthesized N call(s)
+# from prose" so users see the model misbehaved without the loud
+# warning.
+TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: Final[str] = "phantom_tool_synthesized"
+
 # Set of all turn-scoped retry-counter keys.  Helpers iterate over this set
 # when initialising/resetting per-turn state so adding a new counter only
 # requires touching this constant + the consumer site.
@@ -65,6 +98,10 @@ TURN_RETRY_COUNTER_KEYS: Final[frozenset[str]] = frozenset(
     {
         TURN_KEY_EMPTY_RESPONSE_RETRIES,
         TURN_KEY_PROVIDER_ERROR_RETRIES,
+        TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES,
+        TURN_KEY_INVALID_JSON_RETRIES,
+        TURN_KEY_PHANTOM_TOOL_RETRIES,
+        TURN_KEY_PHANTOM_TOOL_SYNTHESIZED,
     }
 )
 
@@ -148,5 +185,9 @@ __all__ = [
     "SessionRuntimeRegistry",
     "TURN_KEY_EMPTY_RESPONSE_RETRIES",
     "TURN_KEY_PROVIDER_ERROR_RETRIES",
+    "TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES",
+    "TURN_KEY_INVALID_JSON_RETRIES",
+    "TURN_KEY_PHANTOM_TOOL_RETRIES",
+    "TURN_KEY_PHANTOM_TOOL_SYNTHESIZED",
     "TURN_RETRY_COUNTER_KEYS",
 ]

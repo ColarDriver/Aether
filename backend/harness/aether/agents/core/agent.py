@@ -6,12 +6,18 @@ import copy
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List
 
+from aether.agents.core.phantom_tool import (
+    PhantomToolIntent,
+    build_corrective_user_message,
+    detect_phantom_tool_intent,
+    synthesize_tool_calls_from_phantom,
+)
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
-from aether.config.schema import EngineConfig
+from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
 from aether.runtime.contracts import (
     EngineRequest,
@@ -35,7 +41,11 @@ from aether.runtime.recovery import (
 from aether.runtime.services import EngineServices
 from aether.runtime.session_runtime import (
     TURN_KEY_EMPTY_RESPONSE_RETRIES,
+    TURN_KEY_INVALID_JSON_RETRIES,
+    TURN_KEY_PHANTOM_TOOL_RETRIES,
+    TURN_KEY_PHANTOM_TOOL_SYNTHESIZED,
     TURN_KEY_PROVIDER_ERROR_RETRIES,
+    TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES,
     SessionRuntimeRegistry,
     SessionRuntimeState,
 )
@@ -70,9 +80,20 @@ class AgentEngine:
         recovery_strategy: RecoveryStrategy | None = None,
     ) -> None:
         self.config = config or EngineConfig()
+        if tool_registry is None:
+            if self.config.use_builtin_tools:
+                # Local import keeps subprocess/pathlib import cost
+                # off the critical path for callers that explicitly
+                # disable builtins (use_builtin_tools=False) or pass
+                # their own registry.
+                from aether.tools.builtins import build_default_tool_registry
+
+                tool_registry = build_default_tool_registry()
+            else:
+                tool_registry = ToolRegistry()
         self.services = EngineServices(
             provider=provider,
-            tool_registry=tool_registry or ToolRegistry(),
+            tool_registry=tool_registry,
             middleware_pipeline=middleware_pipeline or MiddlewarePipeline(),
             interrupt_controller=interrupt_controller or InterruptController(),
             logger=logger or logging.getLogger(__name__),
@@ -224,6 +245,14 @@ class AgentEngine:
                     )
 
                     # PRE_LLM middleware stage: rewrite/enrich outbound message list.
+                    # PR 1.2 continuation path can override the message list
+                    # for exactly one next iteration (partial assistant +
+                    # continuation user instruction).  Pop it here so retries
+                    # do not accidentally keep reusing a stale override.
+                    loop_messages = context.metadata.pop("_messages_override", None)
+                    if isinstance(loop_messages, list):
+                        messages = loop_messages
+
                     try:
                         prepared_messages = self.services.middleware_pipeline.run_before_llm(messages, context)
                     except Exception as exc:
@@ -297,7 +326,102 @@ class AgentEngine:
                         context_metadata=context.metadata,
                     )
 
+                    if response.finish_reason == "length":
+                        # Sprint 1 / PR 1.3: ``finish_reason="length"`` +
+                        # tool_calls is a structurally different failure
+                        # from prose-truncation.  The continuation prompt
+                        # used by PR 1.2 cannot finish a half-emitted JSON
+                        # tool argument, so we route this case through a
+                        # dedicated retry-once-then-refuse handler instead
+                        # of the regular length-continuation path.
+                        if (
+                            response.tool_calls
+                            and getattr(self.config, "truncated_tool_call_detection_enabled", True)
+                        ):
+                            handled = self._handle_length_with_tool_calls(
+                                response=response,
+                                messages=messages,
+                                context=context,
+                            )
+                        else:
+                            handled = self._handle_length_finish_reason(
+                                response=response,
+                                messages=messages,
+                                request=request,
+                                context=context,
+                            )
+                        if handled.action == "continue":
+                            messages = handled.messages
+                            state_machine.transition(LoopState.CHECK_EXIT)
+                            if iterations >= self.config.max_iterations:
+                                state_machine.transition(LoopState.FINALIZE)
+                                exit_reason = ExitReason.MAX_ITERATIONS
+                                break
+                            state_machine.transition(LoopState.PRE_LLM)
+                            continue
+                        if handled.action == "finalize":
+                            messages = handled.messages
+                            final_response = handled.final_response
+                            exit_reason = handled.exit_reason
+                            state_machine.transition(LoopState.FINALIZE)
+                            break
+
                     if response.tool_calls:
+                        # Sprint 1 / PR 1.3 — gate the dispatcher on
+                        # tool-call argument validation.  The validator
+                        # normalises argument types in place, decides
+                        # whether the response is truncated (and we
+                        # should retry without poisoning history), and
+                        # falls back to a tool-error injection so the
+                        # model can self-correct on persistent JSON
+                        # mistakes.  See ``_validate_tool_call_arguments``
+                        # for the full state machine.
+                        if getattr(self.config, "truncated_tool_call_detection_enabled", True):
+                            validation = self._validate_tool_call_arguments(
+                                response=response,
+                                messages=messages,
+                                context=context,
+                            )
+                            if validation.action == "retry":
+                                state_machine.transition(LoopState.CHECK_EXIT)
+                                if iterations >= self.config.max_iterations:
+                                    state_machine.transition(LoopState.FINALIZE)
+                                    exit_reason = ExitReason.MAX_ITERATIONS
+                                    break
+                                state_machine.transition(LoopState.PRE_LLM)
+                                continue
+                            if validation.action == "truncated":
+                                rollback = self._get_messages_up_to_last_assistant(messages)
+                                visible_text = self._extract_visible_text(response.content or "")
+                                if visible_text:
+                                    prefix_parts = context.metadata.setdefault(
+                                        "truncated_response_prefix_parts", []
+                                    )
+                                    if isinstance(prefix_parts, list):
+                                        prefix_parts.append(visible_text)
+                                context.metadata["partial"] = True
+                                context.metadata.setdefault(
+                                    "length_exit_reason", "tool_call_truncated"
+                                )
+                                messages = rollback
+                                final_response = visible_text or None
+                                exit_reason = ExitReason.TOOL_CALL_TRUNCATED
+                                state_machine.transition(LoopState.FINALIZE)
+                                break
+                            if validation.action == "inject_error":
+                                # Append assistant tool_calls + per-call
+                                # tool error stubs.  The model sees the
+                                # JSON it produced and the parse error,
+                                # then has the next iteration to retry.
+                                messages.extend(validation.injection_messages)
+                                state_machine.transition(LoopState.CHECK_EXIT)
+                                if iterations >= self.config.max_iterations:
+                                    state_machine.transition(LoopState.FINALIZE)
+                                    exit_reason = ExitReason.MAX_ITERATIONS
+                                    break
+                                state_machine.transition(LoopState.PRE_LLM)
+                                continue
+                            # action == "ok" → fall through to dispatch.
                         self._register_skill_nudge(context)
 
                         # Tool path: append assistant tool-call message first, then execute each call.
@@ -398,9 +522,91 @@ class AgentEngine:
                         state_machine.transition(LoopState.PRE_LLM)
                         continue
 
-                    # No tool calls -> finalize response
-                    self._append_assistant_text_message(messages, response)
-                    final_response = response.content or ""
+                    # No tool calls -> finalize response (or recover
+                    # from phantom-tool intent first).
+                    prefix_parts = context.metadata.pop("truncated_response_prefix_parts", None)
+                    prefix = " ".join(part.strip() for part in prefix_parts if isinstance(part, str) and part.strip()) if isinstance(prefix_parts, list) else ""
+                    suffix = (response.content or "").strip()
+                    combined_content = ((prefix + " " + suffix).strip() if prefix and suffix else (prefix or suffix))
+                    response_to_store = response
+                    if combined_content != (response.content or ""):
+                        response_to_store = NormalizedResponse(
+                            content=combined_content,
+                            tool_calls=list(response.tool_calls),
+                            finish_reason=response.finish_reason,
+                            metadata=dict(response.metadata),
+                        )
+
+                    # Phantom-tool recovery — when the assistant body
+                    # carries clear evidence of attempted tool use
+                    # (\u0060\u0060\u0060bash blocks, ``<function=NAME>`` inline
+                    # tags, ``<invoke>`` XML) but ``tool_calls`` is
+                    # empty, the model is "describing" rather than
+                    # invoking.  Without this branch the loop would
+                    # silently finalise as TEXT_RESPONSE, leaving the
+                    # user with a green checkmark and no work done.
+                    #
+                    # Three outcomes:
+                    #
+                    # * ``"retry"`` — append the assistant's prose to
+                    #   history, append a corrective ``role=user``
+                    #   nudge, bump the retry counter, continue the
+                    #   loop and let the model self-correct.
+                    # * ``"exhausted"`` — phantom intent was present
+                    #   but ``max_phantom_tool_retries`` already
+                    #   burned; fall through to finalise but tag the
+                    #   turn ``PHANTOM_TOOL_INTENT`` so the UI shows
+                    #   "model never invoked anything" instead of a
+                    #   misleading green checkmark.
+                    # * ``"none"`` — body was prose, no recovery
+                    #   needed; fall through unchanged.
+                    phantom_outcome = self._maybe_recover_phantom_tool_intent(
+                        response_to_store=response_to_store,
+                        messages=messages,
+                        context=context,
+                    )
+                    if phantom_outcome == "synthesized":
+                        # The recovery method has populated
+                        # ``response_to_store.tool_calls`` from the
+                        # parsed prose.  Run the synthesized calls
+                        # through the dispatch path inline so the
+                        # next LLM iteration sees a clean tool/result
+                        # pair, just as if the model had emitted
+                        # structured tool_calls in the first place.
+                        synth_outcome, synth_exit, synth_error = self._dispatch_synthesized_tool_calls(
+                            response=response_to_store,
+                            messages=messages,
+                            context=context,
+                            state_machine=state_machine,
+                            request=request,
+                        )
+                        if synth_outcome == "interrupted":
+                            exit_reason = ExitReason.INTERRUPTED
+                            break
+                        if synth_outcome == "failed":
+                            assert synth_exit is not None
+                            exit_reason = synth_exit
+                            error_text = synth_error
+                            break
+                        state_machine.transition(LoopState.CHECK_EXIT)
+                        if iterations >= self.config.max_iterations:
+                            state_machine.transition(LoopState.FINALIZE)
+                            exit_reason = ExitReason.MAX_ITERATIONS
+                            break
+                        state_machine.transition(LoopState.PRE_LLM)
+                        continue
+
+                    if phantom_outcome == "retry":
+                        state_machine.transition(LoopState.CHECK_EXIT)
+                        if iterations >= self.config.max_iterations:
+                            state_machine.transition(LoopState.FINALIZE)
+                            exit_reason = ExitReason.MAX_ITERATIONS
+                            break
+                        state_machine.transition(LoopState.PRE_LLM)
+                        continue
+
+                    self._append_assistant_text_message(messages, response_to_store)
+                    final_response = response_to_store.content or ""
                     if stream_callback_wrapped and final_response and not context.metadata.get("streamed_output"):
                         stream_callback_wrapped(final_response)
                         context.metadata["stream_fallback_emitted"] = True
@@ -411,7 +617,19 @@ class AgentEngine:
                         # will introduce the 9-step empty-response degradation
                         # path that consumes it.)
                         context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
-                        exit_reason = ExitReason.TEXT_RESPONSE
+                        if phantom_outcome == "exhausted":
+                            # Body looked like attempted tool use but
+                            # the recovery budget ran out — surface
+                            # this as a distinct exit reason so the
+                            # UI footer can flag it ("model described
+                            # commands but never invoked them") rather
+                            # than the misleading TEXT_RESPONSE green
+                            # checkmark.
+                            exit_reason = ExitReason.PHANTOM_TOOL_INTENT
+                        else:
+                            exit_reason = (
+                                ExitReason.LENGTH_RECOVERED if prefix else ExitReason.TEXT_RESPONSE
+                            )
                     else:
                         context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = (
                             int(context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)) + 1
@@ -478,9 +696,13 @@ class AgentEngine:
                 # Per-turn retry counters live on TurnContext.metadata so they
                 # cannot leak across concurrent sessions sharing this engine.
                 # Initialised to 0 here; mutated by the run-loop's empty-
-                # response / provider-error branches.
+                # response / provider-error / truncated-tool-call branches.
                 TURN_KEY_EMPTY_RESPONSE_RETRIES: 0,
                 TURN_KEY_PROVIDER_ERROR_RETRIES: 0,
+                TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES: 0,
+                TURN_KEY_INVALID_JSON_RETRIES: 0,
+                TURN_KEY_PHANTOM_TOOL_RETRIES: 0,
+                TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: 0,
             }
         )
 
@@ -514,12 +736,36 @@ class AgentEngine:
         requested_prompt = self._sanitize_text(request.system_message) if request.system_message else None
         selected_prompt = requested_prompt or stored_prompt
 
-        if selected_prompt:
-            messages = self._inject_system_prompt(messages, selected_prompt)
+        # Sprint 1.5 / P0-9: augment the prompt with a registry-derived
+        # <tool_use_contract> block before injecting it into messages.
+        # We deliberately do NOT mutate ``selected_prompt`` itself —
+        # storage / metadata / EngineResult should reflect what the
+        # caller passed in, not the engine's boilerplate.  The contract
+        # is regenerated each turn from the live registry, so resuming
+        # a session with a different toolset still produces an accurate
+        # block.
+        prompt_for_messages = selected_prompt
+        if self.config.tool_use_contract_enabled:
+            from aether.agents.core.system_prompt import (
+                augment_system_with_tool_contract,
+            )
+
+            prompt_for_messages = augment_system_with_tool_contract(
+                selected_prompt,
+                self.services.tool_registry.list_descriptors(),
+            )
+
+        if prompt_for_messages:
+            messages = self._inject_system_prompt(messages, prompt_for_messages)
 
         context.metadata["system_prompt_applied"] = bool(selected_prompt)
         context.metadata["system_prompt_source"] = (
             "request_field" if requested_prompt else ("session_store" if stored_prompt else "none")
+        )
+        context.metadata["tool_use_contract_applied"] = bool(
+            self.config.tool_use_contract_enabled
+            and prompt_for_messages is not None
+            and prompt_for_messages != selected_prompt
         )
 
         if self.config.enable_todo_hydration:
@@ -575,6 +821,244 @@ class AgentEngine:
         if state.skill_nudge_counter >= interval:
             context.metadata["should_review_skills"] = True
             state.skill_nudge_counter = 0
+
+    def _maybe_recover_phantom_tool_intent(
+        self,
+        *,
+        response_to_store: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> str:
+        """Detect phantom-tool intent and decide what to do about it.
+
+        Returns one of four string values:
+
+        * ``"synthesized"`` — phantom intent was detected **and** the
+          parsed prose mapped cleanly to registered tools, so the
+          engine turned them into structured ``ToolCall``s.  The
+          caller's ``response_to_store`` was mutated in place
+          (``response_to_store.tool_calls`` now carries the synth
+          calls) so the caller can fall straight through the normal
+          tool-dispatch branch as if the model had emitted them.  Also
+          bumps ``TURN_KEY_PHANTOM_TOOL_SYNTHESIZED`` and stashes the
+          per-call notes in ``context.metadata['phantom_synth_notes']``
+          so the UI can render a soft "synthesized" hint instead of
+          the loud ``inline tool tags`` warning.
+        * ``"retry"``  — phantom intent detected, retry budget had
+          room, ``messages`` was extended with the assistant's prose
+          + a corrective ``role=user`` nudge, and the per-turn
+          counter was bumped.  The caller should ``continue`` the
+          loop (after honouring max_iterations).
+        * ``"exhausted"`` — phantom intent was present but
+          ``EngineConfig.max_phantom_tool_retries`` had already been
+          burned this turn.  ``messages`` is left untouched; the
+          caller falls through to the normal text-response finalise
+          path but should set ``exit_reason = PHANTOM_TOOL_INTENT``.
+          Also stashes ``"phantom_tool_attempts"`` in
+          ``context.metadata`` so observers / diagnostics can show
+          *what* the model tried to invoke without re-parsing.
+        * ``"none"`` — body was prose; no recovery needed.  Caller
+          falls through unchanged.
+
+        Designed as a pure decision routine: callers control the loop
+        transitions and ``exit_reason`` assignment.  This keeps the
+        hot path (no phantom intent at all — the common case) at one
+        ``re.search`` against the response body and zero list
+        mutations.
+        """
+        if not getattr(self.config, "phantom_tool_recovery_enabled", True):
+            return "none"
+
+        intent = detect_phantom_tool_intent(response_to_store.content or "")
+        if intent.is_empty():
+            return "none"
+
+        # Cache the parsed intent for downstream observers (footer,
+        # diagnostic).  Stored as plain dicts so middleware can
+        # serialise it without importing the dataclass.
+        context.metadata["phantom_tool_attempts"] = {
+            "shell_commands": list(intent.shell_commands),
+            "invoke_calls": [
+                {"name": name, "arguments": dict(args)}
+                for name, args in intent.invoke_calls
+            ],
+            "raw_intents_count": intent.raw_intents_count,
+        }
+
+        # Synthesis path — try to turn the prose intents into real
+        # ``ToolCall``s the registry can dispatch *this iteration*.
+        # When successful the caller skips the corrective-message
+        # retry entirely and the loop continues forward with one
+        # fewer wasted round-trip.  Synthesis is conservative: it
+        # only emits calls for tools the registry already knows about
+        # (after case-fold + underscore-normalise), so unknown tool
+        # names still fall through to the corrective-message path.
+        if getattr(self.config, "phantom_tool_synthesis_enabled", True):
+            synth = synthesize_tool_calls_from_phantom(
+                intent,
+                self.services.tool_registry,
+                id_prefix=f"phantom_{context.iteration}",
+            )
+            if synth is not None and synth.tool_calls:
+                response_to_store.tool_calls = list(synth.tool_calls)
+                # Strip phantom-tool prose out of the visible content
+                # — leaving raw ``<function=...>`` tags in the
+                # assistant message would re-trigger detection on the
+                # next turn (when the message is re-sent in history).
+                # We keep a brief acknowledgement in the content slot
+                # so the UI's "● Listing 1 directory…" headline still
+                # has *something* to render.
+                response_to_store.content = ""
+                context.metadata.setdefault("phantom_synth_notes", []).extend(synth.notes)
+                if synth.unresolved:
+                    context.metadata.setdefault(
+                        "phantom_synth_unresolved", []
+                    ).extend(
+                        [{"name": name, "reason": reason} for name, reason in synth.unresolved]
+                    )
+                context.metadata[TURN_KEY_PHANTOM_TOOL_SYNTHESIZED] = (
+                    int(context.metadata.get(TURN_KEY_PHANTOM_TOOL_SYNTHESIZED, 0))
+                    + len(synth.tool_calls)
+                )
+                try:
+                    self.services.logger.debug(
+                        "phantom_tool_synthesis: emitted=%d unresolved=%d session=%s",
+                        len(synth.tool_calls),
+                        len(synth.unresolved),
+                        context.session_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return "synthesized"
+
+        attempts = int(context.metadata.get(TURN_KEY_PHANTOM_TOOL_RETRIES, 0))
+        max_attempts = max(0, int(getattr(self.config, "max_phantom_tool_retries", 2)))
+        if attempts >= max_attempts:
+            return "exhausted"
+
+        # Append the assistant's prose so the next iteration's
+        # context window includes the model's broken response, then
+        # the corrective nudge.  Order matters: removing the
+        # assistant message would let the model "forget" what it
+        # just wrote and re-emit the same broken pattern.
+        self._append_assistant_text_message(messages, response_to_store)
+        messages.append(
+            build_corrective_user_message(intent, attempt_index=attempts + 1)
+        )
+        context.metadata[TURN_KEY_PHANTOM_TOOL_RETRIES] = attempts + 1
+        # Reset the empty-response counter — this iteration produced
+        # *content*, just in the wrong shape.  Carrying the
+        # empty-response budget over would cause spurious 9-step
+        # degradation kicks (P0-8) when phantom recovery is doing
+        # the right thing.
+        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
+        try:
+            self.services.logger.debug(
+                "phantom_tool_recovery: attempt=%d / max=%d shell=%d invoke=%d session=%s",
+                attempts + 1,
+                max_attempts,
+                len(intent.shell_commands),
+                len(intent.invoke_calls),
+                context.session_id,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return "retry"
+
+    def _dispatch_synthesized_tool_calls(
+        self,
+        *,
+        response: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        state_machine: EngineStateMachine,
+        request: EngineRequest,
+    ) -> tuple[str, ExitReason | None, str | None]:
+        """Dispatch ``response.tool_calls`` synthesized from prose intent.
+
+        Returns ``(outcome, exit_reason, error_text)`` where ``outcome``
+        is one of:
+
+        * ``"continue"`` — every call dispatched, results appended,
+          loop should iterate to the next LLM call.
+        * ``"interrupted"`` — user pressed Ctrl-C mid-dispatch; caller
+          should ``break`` and surface ``ExitReason.INTERRUPTED``.
+        * ``"failed"`` — middleware / strict-mode tool error; caller
+          should ``break`` with the returned ``exit_reason`` and
+          ``error_text``.
+
+        This helper is intentionally a tighter version of the regular
+        tool-dispatch branch: we skip the truncation /
+        invalid-JSON validators because the synthesized arguments
+        were built by us (not parsed from a model JSON blob), so the
+        failure modes those gates protect against do not apply.
+        """
+        state_machine.transition(LoopState.TOOL_DISPATCH)
+        self._append_assistant_tool_message(messages, response)
+
+        state_machine.transition(LoopState.TOOL_EXECUTE)
+        for call in response.tool_calls:
+            if self._is_interrupted(request.session_id):
+                state_machine.transition(LoopState.INTERRUPTED)
+                return "interrupted", ExitReason.INTERRUPTED, None
+
+            try:
+                pre_tool = self.services.middleware_pipeline.run_before_tool(call, context)
+            except Exception as exc:
+                self._handle_pipeline_error(exc, state_machine.state, context)
+                state_machine.transition(LoopState.FAILED)
+                return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
+
+            if isinstance(pre_tool, ToolResult):
+                result = pre_tool
+            else:
+                tool_call = pre_tool
+                context.metadata.pop("tool_error_result", None)
+                context.metadata["_active_tool_call"] = tool_call
+                try:
+                    result = self.services.tool_registry.dispatch(tool_call, context)
+                except UnknownToolError:
+                    if self.config.fail_on_unknown_tool:
+                        state_machine.transition(LoopState.FAILED)
+                        return (
+                            "failed",
+                            ExitReason.UNKNOWN_TOOL,
+                            f"Unknown tool: {tool_call.name}",
+                        )
+                    result = ToolResult(
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name,
+                        content=f"Unknown tool: {tool_call.name}",
+                        is_error=True,
+                    )
+                except Exception as exc:
+                    if self.config.fail_on_tool_error:
+                        self._handle_pipeline_error(exc, state_machine.state, context)
+                        recovered_tool_result = context.metadata.pop("tool_error_result", None)
+                        if not isinstance(recovered_tool_result, ToolResult):
+                            state_machine.transition(LoopState.FAILED)
+                            return "failed", ExitReason.TOOL_ERROR, str(exc)
+                        result = recovered_tool_result
+                    else:
+                        result = ToolResult(
+                            tool_call_id=tool_call.id,
+                            name=tool_call.name,
+                            content=f"Tool execution error: {exc}",
+                            is_error=True,
+                        )
+                finally:
+                    context.metadata.pop("_active_tool_call", None)
+
+            try:
+                result = self.services.middleware_pipeline.run_after_tool(result, context)
+            except Exception as exc:
+                self._handle_pipeline_error(exc, state_machine.state, context)
+                state_machine.transition(LoopState.FAILED)
+                return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
+
+            self._append_tool_result_message(messages, result)
+
+        return "continue", None, None
 
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
         callback = request.stream_callback
@@ -754,10 +1238,21 @@ class AgentEngine:
 
         while True:
             try:
+                call_config = request.model_config
+                ephemeral_max_output_tokens = context.metadata.pop("_ephemeral_max_output_tokens", None)
+                if isinstance(ephemeral_max_output_tokens, int) and ephemeral_max_output_tokens > 0:
+                    # PR 1.2 length continuation temporarily raises the output
+                    # budget without mutating EngineRequest.model_config in-place.
+                    call_config = ModelCallConfig(
+                        temperature=request.model_config.temperature,
+                        max_tokens=ephemeral_max_output_tokens,
+                        extra=dict(request.model_config.extra),
+                    )
+
                 response = self.services.provider.generate(
                     prepared_messages,
                     self.services.tool_registry.list_descriptors(),
-                    request.model_config,
+                    call_config,
                     context,
                     stream_callback=stream_callback,
                 )
@@ -826,6 +1321,539 @@ class AgentEngine:
                 )
                 last_error = exc
                 return AgentEngine._ProviderInvocationOutcome(error=last_error)
+
+    @dataclass(slots=True)
+    class _LengthHandlingOutcome:
+        action: str
+        messages: List[Dict[str, Any]]
+        final_response: str | None = None
+        exit_reason: ExitReason = ExitReason.TEXT_RESPONSE
+
+    @dataclass(slots=True)
+    class _ToolCallValidationOutcome:
+        """Verdict from ``_validate_tool_call_arguments``.
+
+        ``action`` is one of:
+
+        * ``"ok"``               — every tool_call has parseable args; the
+                                   engine proceeds with the existing
+                                   dispatch path.
+        * ``"retry"``            — at least one tool_call had truncated /
+                                   invalid args but we still have retry
+                                   budget; the engine continues without
+                                   appending to history (re-issues the
+                                   provider call).
+        * ``"truncated"``        — args looked truncated and we are out of
+                                   retry budget; the engine finalises the
+                                   turn with TOOL_CALL_TRUNCATED.
+        * ``"inject_error"``    — args were unparseable JSON (not
+                                   truncated) and we exhausted the silent
+                                   retry budget; the caller appends the
+                                   assistant message + a tool-error stub
+                                   per failing call so the model can
+                                   self-correct on the next iteration.
+        """
+
+        action: str
+        invalid_json_args: List[tuple[str, str]] = field(default_factory=list)
+        # When action="inject_error", the messages the caller should append
+        # before continuing the loop — assistant tool_calls message followed
+        # by one ``role="tool"`` error stub per failing tool_call.
+        injection_messages: List[Dict[str, Any]] = field(default_factory=list)
+
+    def _handle_length_finish_reason(
+        self,
+        *,
+        response: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        request: EngineRequest,
+        context: TurnContext,
+    ) -> "_LengthHandlingOutcome":
+        """Handle ``finish_reason == "length"`` before normal tool/text split.
+
+        Sprint 1 / PR 1.2 introduces the first half of Hermes' length-handling
+        behaviour:
+
+        1. **Thinking-budget exhaustion** — if the model used its output budget
+           entirely on hidden reasoning-like text (``<think>`` / ``<reasoning>``)
+           and produced no visible answer, stop politely instead of returning an
+           empty response.
+        2. **Continuation retry** — append the partial assistant message plus a
+           user continuation instruction, raise an ephemeral max token budget,
+           and re-enter PRE_LLM up to ``max_length_continue_retries`` times.
+        3. **Rollback / partial return** — once retries are exhausted, drop the
+           continuation scaffolding and return the best visible prefix we have,
+           marking the turn as ``LENGTH_EXHAUSTED``.
+
+        P0-4's truncated tool-call detection is intentionally NOT implemented
+        here yet; tool-call + length currently falls into the same continuation
+        path and will be tightened in PR 1.3.
+        """
+        if not getattr(self.config, "length_continuation_enabled", True):
+            merged = list(messages)
+            self._append_assistant_text_message(merged, response)
+            return AgentEngine._LengthHandlingOutcome(
+                action="finalize",
+                messages=merged,
+                final_response=response.content or "",
+                exit_reason=ExitReason.TEXT_RESPONSE,
+            )
+
+        visible_text = self._extract_visible_text(response.content or "")
+        attempts = int(context.metadata.get("length_continue_attempts", 0))
+
+        if self._looks_like_thinking_only_length_response(response):
+            merged = list(messages)
+            friendly = (
+                "The model ran out of output budget while reasoning and did not produce a visible answer. "
+                "Please try again with a lower reasoning effort or a larger max token limit."
+            )
+            merged.append(
+                {
+                    "role": "assistant",
+                    "content": friendly,
+                    "finish_reason": response.finish_reason,
+                    "metadata": {"partial": True, "length_reason": "thinking_budget"},
+                }
+            )
+            context.metadata["partial"] = True
+            context.metadata["length_exit_reason"] = "thinking_budget"
+            return AgentEngine._LengthHandlingOutcome(
+                action="finalize",
+                messages=merged,
+                final_response=friendly,
+                exit_reason=ExitReason.LENGTH_EXHAUSTED,
+            )
+
+        max_retries = max(0, int(getattr(self.config, "max_length_continue_retries", 3)))
+        if attempts < max_retries:
+            continuation_messages = list(messages)
+            continuation_messages.append(
+                {
+                    "role": "assistant",
+                    "content": response.content or "",
+                    "finish_reason": response.finish_reason,
+                    "metadata": {
+                        "partial": True,
+                        "length_continue_attempt": attempts + 1,
+                    },
+                }
+            )
+            continuation_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[System: Your previous response was truncated by the output limit. "
+                        "Continue exactly where you left off without repeating earlier text.]"
+                    ),
+                    "metadata": {"_length_continue_prompt": True},
+                }
+            )
+            context.metadata["length_continue_attempts"] = attempts + 1
+            if visible_text:
+                prefix_parts = context.metadata.setdefault("truncated_response_prefix_parts", [])
+                if isinstance(prefix_parts, list):
+                    prefix_parts.append(visible_text)
+            base_max_tokens = request.model_config.max_tokens or 0
+            if base_max_tokens > 0:
+                context.metadata["_ephemeral_max_output_tokens"] = min(32000, base_max_tokens * (attempts + 2))
+            context.metadata["_messages_override"] = continuation_messages
+            return AgentEngine._LengthHandlingOutcome(action="continue", messages=continuation_messages)
+
+        rollback_messages = self._get_messages_up_to_last_assistant(messages)
+        prefix_parts = context.metadata.get("truncated_response_prefix_parts", [])
+        prefix_items = [part.strip() for part in prefix_parts if isinstance(part, str) and part.strip()]
+        if visible_text:
+            prefix_items.append(visible_text)
+        prefix = " ".join(prefix_items).strip()
+        context.metadata["partial"] = True
+        context.metadata["length_exit_reason"] = "retries_exhausted"
+        context.metadata["truncated_response_prefix"] = prefix
+        if prefix:
+            rollback_messages.append(
+                {
+                    "role": "assistant",
+                    "content": prefix,
+                    "finish_reason": response.finish_reason,
+                    "metadata": {"partial": True, "length_exhausted": True},
+                }
+            )
+        return AgentEngine._LengthHandlingOutcome(
+            action="finalize",
+            messages=rollback_messages,
+            final_response=prefix or (response.content or ""),
+            exit_reason=ExitReason.LENGTH_EXHAUSTED,
+        )
+
+    @staticmethod
+    def _strip_reasoning_markup(text: str) -> str:
+        cleaned = text.replace("<think>", "").replace("</think>", "")
+        cleaned = cleaned.replace("<reasoning>", "").replace("</reasoning>", "")
+        return cleaned
+
+    def _extract_visible_text(self, text: str) -> str:
+        """Remove reasoning blocks entirely, then trim remaining visible text."""
+        cleaned = text
+        while True:
+            lowered = cleaned.lower()
+            start = lowered.find("<think>")
+            if start == -1:
+                break
+            end = lowered.find("</think>", start)
+            if end == -1:
+                cleaned = cleaned[:start]
+                break
+            cleaned = cleaned[:start] + cleaned[end + len("</think>"):]
+        while True:
+            lowered = cleaned.lower()
+            start = lowered.find("<reasoning>")
+            if start == -1:
+                break
+            end = lowered.find("</reasoning>", start)
+            if end == -1:
+                cleaned = cleaned[:start]
+                break
+            cleaned = cleaned[:start] + cleaned[end + len("</reasoning>"):]
+        return cleaned.strip()
+
+    def _looks_like_thinking_only_length_response(self, response: NormalizedResponse) -> bool:
+        if response.finish_reason != "length":
+            return False
+        raw_text = (response.content or "").strip()
+        if not raw_text:
+            return False
+        visible = self._extract_visible_text(raw_text)
+        if visible:
+            return False
+        lowered = raw_text.lower()
+        return "<think>" in lowered or "<reasoning>" in lowered
+
+    # ------------------------------------------------------------------
+    # Truncated tool-call detection (Sprint 1 / PR 1.3, P0-4)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_truncated_tool_call(tool_calls: List[Any]) -> bool:
+        """Heuristic for "the model ran out of tokens while emitting tool args".
+
+        Sprint 1 / PR 1.3 — mirrors the hermes-agent detector at
+        ``run_agent.py`` lines 13362-13366.  We look at each tool_call's
+        ``arguments`` payload after stripping trailing whitespace.  A
+        well-formed JSON object/array always ends with ``}`` or ``]``; if
+        we see anything else the args were almost certainly cut mid-stream.
+
+        Why a heuristic rather than ``json.loads``?  Because some models
+        emit args in slightly non-canonical JSON (single quotes, trailing
+        commas) that ``json.loads`` rejects but that downstream tools are
+        happy with after a normalisation pass.  We only want to refuse
+        dispatch when the *shape* looks incomplete, not when the *syntax*
+        is loose.
+
+        We also tolerate already-parsed dict/list arguments — those came
+        in fully decoded by the provider so they are by definition
+        non-truncated.  Empty / whitespace-only strings are ignored
+        (treated as "{}" elsewhere) and never count as truncation.
+        """
+        for call in tool_calls:
+            raw = getattr(call, "arguments", None)
+            if isinstance(raw, (dict, list)):
+                continue
+            text = "" if raw is None else str(raw)
+            stripped = text.rstrip()
+            if not stripped:
+                continue
+            if not stripped.endswith(("}", "]")):
+                return True
+        return False
+
+    def _validate_tool_call_arguments(
+        self,
+        *,
+        response: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> "AgentEngine._ToolCallValidationOutcome":
+        """Normalise tool_call args, detect truncation, decide retry vs dispatch.
+
+        Sprint 1 / PR 1.3 — implements P0-4 entirely:
+
+        1. **Type normalisation.**  ``arguments`` arrives as ``str`` 99% of
+           the time, but providers occasionally hand us a pre-parsed
+           ``dict`` / ``list`` (already-decoded JSON), or a non-string scalar
+           (e.g. integer mistakenly serialised as the args field), or an
+           empty string (treated as ``"{}"``).  We coerce all of these into
+           their canonical string form before any further checks so the
+           rest of the pipeline only sees well-typed args.
+        2. **JSON parse.**  We attempt ``json.loads`` on each arg string and
+           collect every (tool_name, error_message) pair that fails.  An
+           empty ``invalid_json_args`` list is the dispatch-OK fast path.
+        3. **Truncation heuristic.**  If *any* parse failure looks truncated
+           (``_detect_truncated_tool_call``) we treat the whole response
+           as a length-class failure: refuse to dispatch and either retry
+           silently (if the caller has budget left) or finalise as
+           TOOL_CALL_TRUNCATED.  This branch is critical because some
+           routers rewrite ``finish_reason`` from ``"length"`` to
+           ``"tool_calls"``, hiding the real cause from the length
+           handler — the heuristic catches that case.
+        4. **Pure-syntax JSON error.**  When the args don't look truncated
+           but still don't parse, we fall back to silently re-issuing the
+           call up to ``max_invalid_json_retries`` times.  After that we
+           give up the silent path and ask the model to fix it: we append
+           the assistant tool_calls message followed by one ``role=tool``
+           error stub per failing call.  Hermes shows that this is the
+           single most reliable recovery for cheap JSON formatting bugs;
+           it doesn't poison the conversation because the assistant
+           message is the *real* one the model just emitted (just badly
+           formatted).  Compatible callers that want to opt out of this
+           injection set ``invalid_json_recovery_enabled=False``.
+
+        The method **mutates** ``response.tool_calls[*].arguments`` in
+        place to install the normalised representation so downstream
+        dispatch sees consistent types.  The mutation is safe: by the
+        time we reach this point the response object is owned by this
+        turn and not shared.
+
+        ``context.metadata`` is updated with the running counters so the
+        recovery decisions trail and ``EngineResult.metadata.runtime``
+        view stay accurate.
+        """
+        invalid_json_args: list[tuple[str, str]] = []
+
+        for call in response.tool_calls:
+            raw = getattr(call, "arguments", None)
+
+            # 1) Pre-parsed dict / list — leave alone.  These are
+            # produced by ``OpenAICompatibleModel._parse_tool_call`` after
+            # a successful upstream JSON parse, or by ScriptedProvider in
+            # tests.  They are never truncated by definition.
+            if isinstance(raw, (dict, list)):
+                continue
+
+            # 2) Non-string scalars: coerce to ``str()``.  A model can
+            # technically emit ``"arguments": 42`` if the provider does
+            # not enforce the schema; falling back to ``str()`` keeps the
+            # downstream JSON parse honest about what we received.
+            if raw is not None and not isinstance(raw, str):
+                call.arguments = str(raw)
+                raw = call.arguments
+
+            # 3) Empty / whitespace-only string: treat as empty object.
+            # OpenAI sometimes emits this for tools with no required
+            # parameters; rejecting it would create needless noise.
+            args_text = "" if raw is None else str(raw)
+            if not args_text or not args_text.strip():
+                call.arguments = {}
+                continue
+
+            try:
+                parsed = json.loads(args_text)
+            except json.JSONDecodeError as exc:
+                invalid_json_args.append((call.name, str(exc)))
+                # Keep the raw string on ``call.arguments`` so the
+                # truncation heuristic and the error-injection path can
+                # both see it.  Dispatch will not see this call —
+                # ``invalid_json_args`` gates that.
+                continue
+
+            # Successful parse: store the decoded form so dispatch sees
+            # the canonical dict/list payload regardless of how the wire
+            # protocol delivered it.
+            call.arguments = parsed if isinstance(parsed, (dict, list)) else {}
+
+        # 4) Fast path: no JSON errors, dispatch.
+        if not invalid_json_args:
+            context.metadata[TURN_KEY_INVALID_JSON_RETRIES] = 0
+            return AgentEngine._ToolCallValidationOutcome(action="ok")
+
+        # 5) Truncation guard.  If the failing args don't terminate with
+        # ``}`` / ``]`` we treat this as a length-class failure regardless
+        # of what ``finish_reason`` said — see the docstring for why.
+        invalid_names = {name for name, _ in invalid_json_args}
+        truncated = any(
+            (not (str(getattr(c, "arguments", "")) or "").rstrip().endswith(("}", "]")))
+            and c.name in invalid_names
+            for c in response.tool_calls
+        )
+        if truncated and getattr(self.config, "truncated_tool_call_detection_enabled", True):
+            attempts = int(context.metadata.get(TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES, 0))
+            max_attempts = max(0, int(getattr(self.config, "max_truncated_tool_call_retries", 1)))
+            if attempts < max_attempts:
+                context.metadata[TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES] = attempts + 1
+                # Reset the JSON retry counter — we burned this attempt on
+                # the truncation path, not on a JSON-format mistake.
+                context.metadata[TURN_KEY_INVALID_JSON_RETRIES] = 0
+                return AgentEngine._ToolCallValidationOutcome(
+                    action="retry", invalid_json_args=invalid_json_args
+                )
+            return AgentEngine._ToolCallValidationOutcome(
+                action="truncated", invalid_json_args=invalid_json_args
+            )
+
+        # 6) Pure-syntax JSON error path: silent retry, then injection.
+        attempts = int(context.metadata.get(TURN_KEY_INVALID_JSON_RETRIES, 0)) + 1
+        context.metadata[TURN_KEY_INVALID_JSON_RETRIES] = attempts
+        max_attempts = max(0, int(getattr(self.config, "max_invalid_json_retries", 3)))
+        if attempts < max_attempts:
+            return AgentEngine._ToolCallValidationOutcome(
+                action="retry", invalid_json_args=invalid_json_args
+            )
+
+        # Exhausted silent retries — fall through to injection.  The
+        # caller is responsible for appending these messages to history
+        # and continuing the loop; we surface them here rather than
+        # mutating ``messages`` so the validation routine has zero
+        # side-effects on the turn message list.
+        if not getattr(self.config, "invalid_json_recovery_enabled", True):
+            # Operator opted out of injection — fail the turn instead.
+            return AgentEngine._ToolCallValidationOutcome(
+                action="truncated", invalid_json_args=invalid_json_args
+            )
+
+        injection: list[Dict[str, Any]] = []
+        # Build the assistant message first so role-alternation is
+        # preserved (assistant tool_calls → tool result(s)).  The args
+        # we send back are the **raw** strings — that is what the model
+        # actually produced and rebroadcasting them lets the model see
+        # exactly what was wrong.
+        injection.append(
+            {
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": [
+                    {
+                        "id": c.id,
+                        "type": "function",
+                        "function": {
+                            "name": c.name,
+                            "arguments": c.arguments
+                            if isinstance(c.arguments, str)
+                            else json.dumps(c.arguments, ensure_ascii=False),
+                        },
+                    }
+                    for c in response.tool_calls
+                ],
+                "finish_reason": response.finish_reason,
+                "metadata": {"_invalid_json_recovery": True},
+            }
+        )
+        invalid_lookup = {name: err for name, err in invalid_json_args}
+        for c in response.tool_calls:
+            if c.name in invalid_lookup:
+                err_msg = invalid_lookup[c.name]
+                injection.append(
+                    {
+                        "role": "tool",
+                        "name": c.name,
+                        "tool_call_id": c.id,
+                        "content": (
+                            f"Error: Invalid JSON arguments. {err_msg}. "
+                            "For tools with no required parameters, use an empty object: {}. "
+                            "Please retry with valid JSON."
+                        ),
+                        "is_error": True,
+                        "metadata": {"_invalid_json_recovery": True},
+                    }
+                )
+            else:
+                injection.append(
+                    {
+                        "role": "tool",
+                        "name": c.name,
+                        "tool_call_id": c.id,
+                        "content": "Skipped: another tool call in this response had invalid JSON.",
+                        "is_error": True,
+                        "metadata": {"_invalid_json_recovery": True},
+                    }
+                )
+
+        # Reset the silent-retry budget so a *future* JSON error in the
+        # same turn gets its own clean count.  Without this, a model that
+        # emits one bad JSON, gets injection, then emits another bad JSON
+        # would skip the silent-retry path entirely and immediately
+        # inject again.
+        context.metadata[TURN_KEY_INVALID_JSON_RETRIES] = 0
+
+        return AgentEngine._ToolCallValidationOutcome(
+            action="inject_error",
+            invalid_json_args=invalid_json_args,
+            injection_messages=injection,
+        )
+
+    def _handle_length_with_tool_calls(
+        self,
+        *,
+        response: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> "AgentEngine._LengthHandlingOutcome":
+        """``finish_reason="length"`` AND ``tool_calls`` non-empty.
+
+        Sprint 1 / PR 1.3 — mirrors hermes-agent ``run_agent.py``
+        11793-11819.  When a model exhausts its output budget *while*
+        producing tool_calls, the canonical recovery is **not** to
+        continue (the next chunk would be more tool args, not prose) but
+        rather to give the model a single chance to produce complete
+        arguments by re-issuing the same request.  We deliberately do
+        NOT append the broken assistant message to history during this
+        retry: the goal is to remove the bad attempt from the model's
+        view of the conversation rather than ask it to recover from it.
+
+        After ``max_truncated_tool_call_retries`` (default 1) we surrender
+        and finalise the turn with ExitReason.TOOL_CALL_TRUNCATED.
+        """
+        attempts = int(context.metadata.get(TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES, 0))
+        max_attempts = max(0, int(getattr(self.config, "max_truncated_tool_call_retries", 1)))
+
+        if attempts < max_attempts:
+            context.metadata[TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES] = attempts + 1
+            return AgentEngine._LengthHandlingOutcome(
+                action="continue",
+                # Re-issue the same request from the current message
+                # state — the broken assistant tool_calls do NOT enter
+                # history.
+                messages=messages,
+            )
+
+        # Out of retries — finalise as TOOL_CALL_TRUNCATED.  Any visible
+        # text the model emitted before the truncation is preserved on
+        # ``truncated_response_prefix_parts`` so downstream finalisation
+        # (or upstream observability) can still surface it.
+        visible_text = self._extract_visible_text(response.content or "")
+        if visible_text:
+            prefix_parts = context.metadata.setdefault("truncated_response_prefix_parts", [])
+            if isinstance(prefix_parts, list):
+                prefix_parts.append(visible_text)
+        context.metadata["partial"] = True
+        context.metadata["length_exit_reason"] = "tool_call_truncated"
+
+        rollback = self._get_messages_up_to_last_assistant(messages)
+        return AgentEngine._LengthHandlingOutcome(
+            action="finalize",
+            messages=rollback,
+            final_response=visible_text or None,
+            exit_reason=ExitReason.TOOL_CALL_TRUNCATED,
+        )
+
+    @staticmethod
+    def _get_messages_up_to_last_assistant(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return a copy of ``messages`` with trailing continuation scaffolding removed.
+
+        We only want to roll back the artificial continuation user prompts /
+        partial assistant fragments introduced by PR 1.2.  The last fully-
+        committed assistant turn from the *original* conversation should stay.
+        """
+        trimmed = list(messages)
+        while trimmed:
+            tail = trimmed[-1]
+            if not isinstance(tail, dict):
+                trimmed.pop()
+                continue
+            metadata = tail.get("metadata") if isinstance(tail.get("metadata"), dict) else {}
+            if metadata.get("_length_continue_prompt") or metadata.get("partial"):
+                trimmed.pop()
+                continue
+            break
+        return trimmed
 
     @staticmethod
     def _pop_context_response(context: TurnContext, key: str) -> NormalizedResponse | None:
@@ -906,6 +1934,23 @@ class AgentEngine:
             # all retries.  Same terminal class as PROVIDER_ERROR but with
             # a distinct ExitReason so observers can branch.
             ExitReason.RESPONSE_INVALID,
+            # Sprint 1 / PR 1.2: the model repeatedly hit its output budget
+            # and we had to stop with a partial / rolled-back answer.
+            ExitReason.LENGTH_EXHAUSTED,
+            # Sprint 1 / PR 1.3: tool_call arguments were cut off
+            # mid-stream and we refused to dispatch them.  Treat as
+            # FAILED so callers can branch (the alternative — COMPLETED —
+            # would silently look like success, hiding a real recovery
+            # failure).
+            ExitReason.TOOL_CALL_TRUNCATED,
+            # Sprint 1.5 / phantom-tool recovery: model wrote tool
+            # invocations as prose for the entire retry budget.  The
+            # turn produced text but no actual work was done — the
+            # user explicitly asked for action and got narration.
+            # Classifying as FAILED ensures the green checkmark in
+            # the CLI footer flips to a warning state by default,
+            # so users notice without needing ``-v``.
+            ExitReason.PHANTOM_TOOL_INTENT,
         }:
             status = EngineStatus.FAILED
         else:
@@ -930,6 +1975,32 @@ class AgentEngine:
                 ),
                 "provider_error_retries": int(
                     context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)
+                ),
+                # Sprint 1 / PR 1.3 — exposed so observability dashboards
+                # and tests can confirm the truncated-tool-call detector
+                # actually fired.  Both reset to 0 at turn entry.
+                "truncated_tool_call_retries": int(
+                    context.metadata.get(TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES, 0)
+                ),
+                "invalid_json_retries": int(
+                    context.metadata.get(TURN_KEY_INVALID_JSON_RETRIES, 0)
+                ),
+                # Sprint 1.5 / P0-9 — count of synthesized phantom
+                # ``ToolCall``s dispatched this turn (prose intents
+                # that mapped cleanly to registered tools).  ``0``
+                # for a normal turn; non-zero whenever the engine
+                # had to repair a Kimi-class "tool call as prose"
+                # response into structured calls inline.
+                "phantom_tool_synthesized": int(
+                    context.metadata.get(TURN_KEY_PHANTOM_TOOL_SYNTHESIZED, 0)
+                ),
+                # Sprint 1.5 / phantom-tool recovery — counts how
+                # many corrective ``role=user`` nudges this turn sent
+                # before the model produced a structured ``tool_calls``
+                # (or PHANTOM_TOOL_INTENT exited).  ``0`` means the
+                # turn never triggered the detector.
+                "phantom_tool_retries": int(
+                    context.metadata.get(TURN_KEY_PHANTOM_TOOL_RETRIES, 0)
                 ),
             },
         }

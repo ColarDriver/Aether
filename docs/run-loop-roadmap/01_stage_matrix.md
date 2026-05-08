@@ -109,10 +109,10 @@
 |---|---|
 | Hermes 行号 | 11369–11398 |
 | Hermes 关键动作 | 默认走流式以获得 90s stale-stream 检测和 60s 读超时；针对 ACP/Mock 客户端禁用流式；流式失败可降级为非流式 |
-| Aether 现状 | `OpenAICompatibleModel.generate` 是阻塞 `httpx.Client.post`；`stream_callback` 形参存在但**provider 不会按 chunk 回调** |
-| 缺口 | ① provider 增加 SSE 流式路径；② stale-stream 90s 检测；③ on_first_delta 回调（用于停 spinner）；④ 流式失败自动降级 |
+| Aether 现状 | ✅ Sprint 1 / PR 1.1 已对齐：`OpenAICompatibleModel.generate` 在有 `stream_callback` 时走 `_streaming_generate`（SSE 解析 + 90s stale-stream watchdog → `StreamStallError`），失败一次后置位 `_disable_streaming` 自动降级为非流式；`EngineConfig.streaming_enabled` 提供紧急回滚开关 |
+| 缺口 | — |
 | 严重性 | P0 |
-| 对应 Sprint | Sprint 1 |
+| 对应 Sprint | Sprint 1 ✅ |
 
 ---
 
@@ -122,10 +122,10 @@
 |---|---|
 | Hermes 行号 | 11418–11630 |
 | Hermes 关键动作 | 按 api_mode 分别用 transport 的 `validate_response` 校验形状（codex 检查 `output`/`output_text`；anthropic 检查 `content` 列表非空；chat-completions 检查 `choices`）；invalid 响应**直接 eager fallback** 而不是 generic retry |
-| Aether 现状 | ❌ 没有 response-shape 校验，provider 解析失败直接抛异常 |
-| 缺口 | ① provider 抽象增加 `validate_response()`；② run_loop 在 LLM_CALL 后插入校验阶段；③ invalid 响应触发 fallback（依赖阶段 12.8） |
+| Aether 现状 | ⚠️ Sprint 1 / PR 1.1 已落地基础：`ModelProvider.validate_response()` 抽象 + `OpenAICompatibleModel` 默认实现（识别嵌入式 `error` 信封 / 空 `choices`）；引擎在 LLM_CALL 之后立即校验，失败抛 `ResponseInvalidError` 走 recovery 层。eager fallback 仍待 Sprint 2 的 `FallbackChain`，目前走 `GenericBackoffStrategy` 通用重试 |
+| 缺口 | invalid 触发的 eager fallback（依赖 Sprint 2 / P0-7） |
 | 严重性 | P0 |
-| 对应 Sprint | Sprint 2 |
+| 对应 Sprint | Sprint 1 ✅（基础）+ Sprint 2（eager fallback） |
 
 ---
 
@@ -135,10 +135,10 @@
 |---|---|
 | Hermes 行号 | 11632–11848 |
 | Hermes 关键动作 | ① 检测 thinking-budget 耗尽（reasoning 占满 output budget）→ friendly-exit；② 续写 retry 最多 3 次，按 `_ephemeral_max_output_tokens = base × (n+1)` 渐进抬高输出预算（上限 32k）；③ 截断 tool_call 单独 1 次 retry（不进消息历史）；④ 失败时回滚到最后一个完整 assistant turn 再返回 partial=True |
-| Aether 现状 | ❌ 完全没有 |
-| 缺口 | ① `NormalizedResponse.finish_reason` 进入 ExitReason 分流；② 续写 retry 实现；③ 截断 tool_call 检测器；④ "回滚到最后完整 assistant turn"工具方法 |
+| Aether 现状 | ✅ Sprint 1 / PR 1.2 + 1.3 已对齐：`_handle_length_finish_reason` 处理 thinking-budget friendly exit（→ `LENGTH_EXHAUSTED`） + 续写 retry（`_ephemeral_max_output_tokens` × (n+1)，上限 32k） + 回滚 `_get_messages_up_to_last_assistant`（→ `LENGTH_RECOVERED` / `LENGTH_EXHAUSTED`）；`_handle_length_with_tool_calls` 处理 length+tool_calls 的"不进历史 retry 一次"路径（→ `TOOL_CALL_TRUNCATED`） |
+| 缺口 | — |
 | 严重性 | P0 |
-| 对应 Sprint | Sprint 1 |
+| 对应 Sprint | Sprint 1 ✅ |
 
 ---
 
@@ -220,10 +220,10 @@
 | 15.⑥ 实际执行 | `_execute_tool_calls`：含 per-tool steer drain + 每轮总预算 enforcement + tool guardrail halt |
 | 15.⑦ post-tool 压缩 | 工具执行后用真实 `prompt_tokens` 估算，超阈值即压缩 |
 | 15.⑧ 增量持久化 | 每轮 `_save_session_log` 让 Ctrl+C 能恢复进度 |
-| Aether 现状 | dispatch + UnknownToolError/TooLError 处理；其余全部 ❌ |
-| 缺口 | 全部 8 个子步骤 |
-| 严重性 | P0（15.①②③④） + P1（15.⑤⑥⑦⑧） |
-| 对应 Sprint | Sprint 4（①②③④） + Sprint 5（⑦⑧）+ Sprint 6（⑤⑥） |
+| Aether 现状 | ⚠️ 15.② ✅ Sprint 1 / PR 1.3：`_validate_tool_call_arguments` 做类型规整（dict/list pass-through，空串 → `{}`，非 str → `str()`） + JSON parse + 截断启发式（`_detect_truncated_tool_call`）→ 不进 dispatch 直接 retry/refuse；JSON 错误静默重试 `max_invalid_json_retries`(=3) 次后注入 assistant + role=tool 错误消息让模型自纠（保持角色轮替）。其余 15.①③④⑤⑥⑦⑧ ❌ |
+| 缺口 | 15.①③④⑤⑥⑦⑧（共 7 个子步骤） |
+| 严重性 | P0（15.①③④） + P1（15.⑤⑥⑦⑧） |
+| 对应 Sprint | Sprint 1 ✅（②）+ Sprint 2（①③④）+ Sprint 5（⑦⑧）+ Sprint 6（⑤⑥） |
 
 ---
 

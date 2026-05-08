@@ -43,16 +43,23 @@
 
 ---
 
-## Sprint 1 — 流式 + 截断处理（P0 第一波）
+## Sprint 1 — 流式 + 截断处理（P0 第一波） ✅ 已完成
+
+> 完成情况：
+> - PR 1.1 ✅ — P0-1 流式 SSE + 90s stale-stream 检测 + 自动降级；P0-2 `validate_response` 抽象 + OpenAI 默认实现 + 引擎层校验 + `RESPONSE_INVALID` 终态
+> - PR 1.2 ✅ — P0-3 `finish_reason="length"` 续写（×3）+ thinking-budget friendly exit + 回滚到最后完整 assistant turn
+> - PR 1.3 ✅ — P0-4 `_detect_truncated_tool_call` 截断启发式 + `_validate_tool_call_arguments` 类型规整 + JSON 错误静默 retry + tool error 自纠注入 + `_handle_length_with_tool_calls`（不进历史 retry 一次）
+>
+> 所有验收用例通过；测试套件 149 例通过（含 13 例新增）。
 
 ### 目标
 让 `finish_reason="length"` 不再变成"整轮失败"，让流式回调真的是"流式的"。
 
 ### 涉及
-- P0-1：流式健康检查
-- P0-2：响应壳校验
-- P0-3：finish_reason="length" 续写与回滚
-- P0-4：截断 tool_call 检测
+- P0-1：流式健康检查 ✅
+- P0-2：响应壳校验 ✅（基础落地，eager fallback 走 Sprint 2）
+- P0-3：finish_reason="length" 续写与回滚 ✅
+- P0-4：截断 tool_call 检测 ✅
 
 ### 文件改动
 - `backend/harness/aether/models/provider/openai_compatible.py`
@@ -90,6 +97,76 @@
 ### 回滚开关
 - `EngineConfig.streaming_enabled: bool = True`：False 时强制走非流式
 - `EngineConfig.length_continuation_enabled: bool = True`
+
+---
+
+## Sprint 1.5 — 内置工具集 + 散文工具调用合成（P0-9） ✅ 已完成
+
+> 计划外补丁：Sprint 1 期间用户跑 Kimi 模型时反复看到 `└ attempted: Running command…`
+> 然后 loop 中断，溯源发现根因是 `AgentEngine` 默认空注册表 + 模型把工具调用写在 prose 里。
+> 这一档把"内置工具集 + phantom 合成"补齐，让每个 engine 默认都有工具可用、并能从散文修复
+> 回结构化 `tool_calls`。
+
+### 目标
+- 把 `shell` / `read_file` / `write_file` / `list_dir` / `grep` / `glob` 六个工具默认装上
+  `AgentEngine`，让"engine = 没有工具的 agent"这一长期失配消失。
+- 当模型输出 ` ```bash …`、`<function=NAME>`、`<functions.shell:N>`、`<invoke>` 等
+  prose-style 工具调用时，**就地把它们合成为结构化 `ToolCall`** 并 dispatch，避免循环中断。
+- 把"工具组合 + tool-use 契约提示"放在 engine 骨架里，CLI / SDK / 子 agent 一致继承。
+
+### 涉及
+- P0-9：内置工具集 + 散文工具调用合成（新章节，见 02 文档）
+
+### 文件改动
+- `backend/harness/aether/tools/builtins/`（新目录）
+  - `shell.py` / `read_file.py` / `write_file.py` / `list_dir.py` / `grep.py` / `glob.py`
+  - `__init__.py`：`build_default_tool_registry(*, cwd: Path | None = None)` 工厂
+- `backend/harness/aether/agents/core/system_prompt.py`（新文件）
+  - `augment_system_with_tool_contract(system, descriptors)` 在 user system message 之前
+    prepend `<tool_use_contract>` 块
+- `backend/harness/aether/agents/core/phantom_tool.py`
+  - 新 `_FUNCTIONS_SLOT_TAG_RE`、扩展 `<function=NAME>` body 支持 JSON 解析
+  - 新 `SynthesisOutcome` dataclass + `synthesize_tool_calls_from_phantom(intent, registry)`
+  - `_resolve_registered` / `_resolve_shell_tool` / `_normalize_name` / `_SHELL_ALIASES` 工具
+- `backend/harness/aether/agents/core/agent.py`
+  - `__init__` 默认调 `build_default_tool_registry()`，gate by `EngineConfig.use_builtin_tools`
+  - `_prepare_session_and_system_prompt` 通过 `augment_system_with_tool_contract` 注入契约
+  - `_maybe_recover_phantom_tool_intent` 加新 `"synthesized"` 出口
+  - 新 `_dispatch_synthesized_tool_calls` helper：streamlined dispatch（跳过 truncated /
+    invalid-JSON 校验，因为参数是引擎自己造的）
+  - run-loop 新分支：`phantom_outcome == "synthesized"` 时走 helper、`continue`
+- `backend/harness/aether/runtime/session_runtime.py`
+  - 新 `TURN_KEY_PHANTOM_TOOL_SYNTHESIZED`
+- `backend/harness/aether/config/schema.py`
+  - `EngineConfig`：`use_builtin_tools: bool = True`、`tool_use_contract_enabled: bool = True`、
+    `phantom_tool_synthesis_enabled: bool = True`
+- `backend/harness/aether/cli/main.py`
+  - 新 `--no-builtin-tools` flag → `EngineConfig(use_builtin_tools=False)`
+- `backend/harness/aether/cli/ui.py`
+  - phantom warning 推迟到 `end_turn`；新 `_render_phantom_synth_note` 渲染柔和的
+    `↻ synthesized N tool call(s) from prose`
+- `backend/harness/aether/cli/repl.py`
+  - 从 `result.metadata` 取 `phantom_synth_count` / `phantom_synth_notes` 传给 `end_turn`
+
+### 新增测试
+- `tests/test_builtin_tools.py`（26 用例）：六工具的 happy / error / 输出截断 / schema 校验
+- `tests/test_phantom_synthesis.py`（16 用例）：合成函数 + run-loop 集成；含 fuzzy 解析、
+  typo 拒绝、无 shell 工具时跳过、disable 时回退到 corrective
+- `tests/test_run_loop_phantom_tool.py`：新增 2 用例校验 synthesis 走通时 retries=0、
+  metadata 暴露 `phantom_synth_notes`
+- `tests/test_cli_main.py`（新文件）：`--no-builtin-tools` flag 解析、默认 EngineConfig flags
+
+### 验收
+- 现有 239 + 新增 49 = 288 用例通过
+- Kimi-class 模型输出 `<functions.shell:0>{...}` 时不再看到截断警告，loop 顺利推进
+- 子 agent / SDK 消费者 / 测试 fixture 自动继承六个内置工具（不需要任何 CLI 端改动）
+
+### 回滚开关
+- `EngineConfig.use_builtin_tools: bool = True`：False 时引擎退回空注册表
+- `EngineConfig.tool_use_contract_enabled: bool = True`：False 时不注入系统提示契约
+- `EngineConfig.phantom_tool_synthesis_enabled: bool = True`：False 时回到 corrective-message
+  retry 路径
+- CLI: `--no-builtin-tools` 等价于上面三项 + 兼容旧测试 fixture
 
 ---
 
@@ -312,6 +389,7 @@ SaaS 化场景下多 session 互不干扰；凭证过期不再失败；可选启
 |---|---|
 | W1 | Sprint 0（地基） |
 | W2 | Sprint 1（流式 + length） |
+| W2½ | Sprint 1.5（内置工具集 + 散文合成 — P0-9 补丁） |
 | W3 | Sprint 2 上半（ErrorClassifier + Fallback） |
 | W4 | Sprint 2 下半（Tool 容错） |
 | W5 | Sprint 3（压缩 + budget + token） |

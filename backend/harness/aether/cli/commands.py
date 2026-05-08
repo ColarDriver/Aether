@@ -199,6 +199,18 @@ def _switch_model(state: "ReplState", target: str, current: str | None) -> Comma
 
     new_current = getattr(state.engine.services.provider, "model", target)
     state.ui.success(f"model switched: {current or 'unknown'} → {new_current}")
+
+    # Persist the choice so the next ``aether chat`` (without --model /
+    # --resume) starts on this model instead of falling back to the
+    # provider default.  Best-effort: prefs failures must not break the
+    # REPL, so this is a no-op on disk-full / read-only fs.
+    try:
+        from aether.cli import prefs as _prefs  # local import keeps startup lean
+
+        _prefs.set_last_model(state.provider_name, str(new_current))
+    except Exception:        # noqa: BLE001 - prefs are best-effort
+        pass
+
     return CommandResult()
 
 

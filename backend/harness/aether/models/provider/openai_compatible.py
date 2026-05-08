@@ -272,6 +272,19 @@ class OpenAICompatibleModel(ModelProvider):
                 with client.stream(
                     "POST", url, headers=headers, json=streaming_payload
                 ) as resp:
+                    # Materialise the error body **inside** the stream
+                    # context so ``response.text`` is available later.
+                    # Without this, ``raise_for_status`` raises *after*
+                    # the ``with client.stream(...)`` block has already
+                    # closed the response, and any subsequent
+                    # ``response.read()`` / ``.text`` access fails with
+                    # ``httpx.ResponseNotRead`` — masking the real 4xx
+                    # body that the recovery layer would otherwise log.
+                    if resp.status_code >= 400:
+                        try:
+                            resp.read()
+                        except Exception:        # noqa: BLE001 - best effort
+                            pass
                     resp.raise_for_status()
                     return _parse_sse_stream(
                         resp.iter_lines(),
@@ -286,14 +299,11 @@ class OpenAICompatibleModel(ModelProvider):
                 metadata={"url": url, "method": "POST", "phase": "stream-read"},
             ) from exc
         except httpx.HTTPStatusError as exc:
-            # Stream attempt got an HTTP error response (e.g. 429 before
-            # streaming even started).  Body might be small but is worth
-            # capturing for classification.
+            # Stream attempt got an HTTP error response (e.g. 429 / 400
+            # before streaming even started).  Body was already
+            # materialised inside the ``with`` block above — we just
+            # summarise it here for the recovery layer.
             response = exc.response
-            try:
-                response.read()  # ensure body is materialised before .text
-            except Exception:  # pragma: no cover - defensive
-                pass
             raise ProviderInvocationError(
                 raw=exc,
                 status_code=response.status_code,
@@ -694,8 +704,17 @@ def _summarize_body(response: Any) -> str | None:
     We trim to ``_MAX_BODY_SUMMARY_CHARS`` characters and append an ellipsis
     marker when truncated, so readers can tell at a glance whether the
     summary is complete.
+
+    Defensive against ``httpx.ResponseNotRead`` and similar — accessing
+    ``response.text`` on a streaming response that hasn't been read can
+    raise.  Returning ``None`` in that case is preferable to crashing
+    the entire error path (the recovery layer needs the surrounding
+    ``ProviderInvocationError`` to do its job, with or without a body).
     """
-    text = getattr(response, "text", None)
+    try:
+        text = getattr(response, "text", None)
+    except Exception:        # noqa: BLE001 - defensive: never crash the error path
+        return None
     if not isinstance(text, str) or not text:
         return None
     text = text.strip()

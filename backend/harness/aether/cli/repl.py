@@ -1,14 +1,23 @@
 """Interactive REPL loop for the Aether CLI.
 
 Wires together:
-    * ``prompt_toolkit`` for input (history, multiline, Ctrl-C/D handling)
-    * ``rich`` for output (streaming, spinners, panels, colour)
-    * ``CLIUIMiddleware`` for in-loop tool-call rendering
+    * :class:`aether.cli.app.AetherApp` — long-lived ``prompt_toolkit``
+      Application that keeps the input frame visible across turns.
+    * ``rich`` for output (streaming, panels, colour) — captured by
+      :func:`prompt_toolkit.patch_stdout.patch_stdout` so prints land
+      above the prompt.
+    * :class:`aether.cli.ui_middleware.CLIUIMiddleware` for in-loop
+      tool-call rendering.
+
+Engine threading model: the Aether ``AgentEngine`` is synchronous, so
+each user message is dispatched via ``asyncio.to_thread`` from the
+asyncio event loop.  This keeps the bottom region (activity bar,
+active tool group, queued badge) responsive while the engine runs.
 """
 
 from __future__ import annotations
 
-import sys
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -19,9 +28,9 @@ from rich.console import Console
 from aether.agents.core.agent import AgentEngine
 from aether.cli import commands as slash
 from aether.cli import sessions as session_store
+from aether.cli.app import AetherApp
 from aether.cli.banner import BannerInfo, render_banner
 from aether.cli.commands import SlashCompleter
-from aether.cli.input_box import prompt_box
 from aether.cli.sessions import SessionRecord
 from aether.cli.theme import THEME, color_enabled
 from aether.cli.ui import CLIUI
@@ -93,11 +102,7 @@ def run_repl(
 ) -> None:
     """Run the interactive REPL against *engine*.
 
-    Key bindings:
-      Enter          — submit message
-      Escape+Enter   — insert newline (multiline input)
-      Ctrl-C         — interrupt the active turn (or clear the input line)
-      Ctrl-D         — exit the REPL
+    Key bindings are documented inside :class:`aether.cli.app.AetherApp`.
 
     Pass ``resume_record`` to seed the loop with a previously persisted
     conversation; ``session_id`` is then derived from the record.
@@ -153,48 +158,71 @@ def run_repl(
         )
         ui.blank()
 
-    # If we just restored a session, give the user a one-line summary so
-    # the new prompt feels grounded in the existing conversation.
     if resume_record is not None:
         _announce_resume(state, resume_record)
 
-    # ------------------------------ loop ----------------------------------
+    # ------------------------------ async loop ----------------------------
 
-    while True:
-        try:
-            line = prompt_box(history=pt_history, completer=completer)
-        except KeyboardInterrupt:
-            console.print()
-            continue
-        except EOFError:
-            ui.blank()
-            ui.info("Bye.")
-            break
-
+    async def _on_submit(line: str) -> None:
         line = line.strip()
         if not line:
-            continue
-
-        # Echo what the user just submitted — the input box has been
-        # erased by ``erase_when_done=True`` so the conversation log
-        # would otherwise have a hole where the prompt used to be.
+            return
         ui.render_input_echo(line)
-
         if slash.is_slash(line):
             outcome = slash.dispatch(state, line)
             if outcome.exit:
-                ui.info("Bye.")
-                break
-            continue
+                # The ``finally`` clause below is the single source of
+                # the farewell ``Bye.`` line — printing one here as
+                # well would land twice in scrollback once the app
+                # tears down.
+                app.request_exit()
+            return
+        # Engine is synchronous — run it in a worker thread so the
+        # asyncio event loop (and therefore the activity bar / queued
+        # badge / Ctrl-C interrupt) stays responsive.
+        await asyncio.to_thread(_run_turn_blocking, state, line)
 
-        _run_turn(state, line)
+    def _on_interrupt() -> None:
+        try:
+            state.engine.interrupt(
+                session_id=state.session_id,
+                reason="user-interrupt",
+            )
+        except Exception:  # noqa: BLE001 — interrupt is best-effort
+            pass
+        ui.warn("interrupted")
+
+    app = AetherApp(
+        ui,
+        on_submit=_on_submit,
+        history=pt_history,
+        completer=completer,
+        on_interrupt=_on_interrupt,
+    )
+
+    try:
+        asyncio.run(app.run())
+    except KeyboardInterrupt:
+        # Should not normally land here — Ctrl-C inside the running app
+        # is captured by the AetherApp's keybinding.  Be defensive in
+        # case the user signals before/after the event loop is alive.
+        pass
+    finally:
+        ui.info("Bye.")
 
 
 # ---------------------------------------------------------------------------
 # Single agent turn
 # ---------------------------------------------------------------------------
 
-def _run_turn(state: ReplState, user_input: str) -> None:
+def _run_turn_blocking(state: ReplState, user_input: str) -> None:
+    """Synchronous body of one user turn — invoked via ``asyncio.to_thread``.
+
+    Stays sync because :class:`AgentEngine` is sync; the asyncio event
+    loop continues to spin in the main thread so the activity bar, the
+    queued-message badge, and Ctrl-C interrupts all remain responsive
+    while we sit inside ``engine.run_loop``.
+    """
     ui = state.ui
     request = EngineRequest(
         session_id=state.session_id,
@@ -206,38 +234,65 @@ def _run_turn(state: ReplState, user_input: str) -> None:
     )
 
     ui.begin_turn()
+
+    status_value = "FAILED"
+    exit_reason_value = "engine_error"
+    iterations = 0
+    result_messages: list[dict] | None = None
+    phantom_synth_count = 0
+    phantom_synth_notes: list[str] = []
+
     try:
         result = state.engine.run_loop(request)
     except KeyboardInterrupt:
         state.engine.interrupt(session_id=state.session_id, reason="user-interrupt")
-        ui.clear_status()
-        ui.end_stream()
+        status_value = "INTERRUPTED"
+        exit_reason_value = "user_interrupt"
         ui.warn("interrupted")
-        return
     except Exception as exc:  # noqa: BLE001 — surfaced to user
-        ui.clear_status()
-        ui.end_stream()
         ui.error(f"engine error: {exc}")
-        return
-
-    ui.end_stream()
-
-    # If the provider didn't stream and there's a final response left, render it.
-    if result.status != EngineStatus.FAILED and result.final_response and not result.streamed:
-        ui.render_assistant_block(result.final_response)
-
-    if result.status == EngineStatus.FAILED:
-        ui.error(result.error or "engine failed without an error message")
+    else:
+        status_value = result.status.value
+        exit_reason_value = result.exit_reason.value
+        iterations = result.iterations
+        result_messages = list(result.messages)
+        # Sprint 1.5 / P0-9: surface engine-side synthesis to the UI.
+        # ``runtime.phantom_tool_synthesized`` counts how many prose
+        # intents were rescued into structured ``tool_calls``;
+        # ``turn.phantom_synth_notes`` carries the per-call
+        # human-readable hints we want to render in the soft
+        # acknowledgement line.
+        try:
+            runtime_meta = result.metadata.get("runtime", {}) or {}
+            turn_meta = result.metadata.get("turn", {}) or {}
+            phantom_synth_count = int(runtime_meta.get("phantom_tool_synthesized", 0) or 0)
+            raw_notes = turn_meta.get("phantom_synth_notes") or []
+            if isinstance(raw_notes, list):
+                phantom_synth_notes = [str(n) for n in raw_notes]
+        except Exception:  # noqa: BLE001 — UI hint must never fail the turn
+            phantom_synth_count = 0
+            phantom_synth_notes = []
+        if (
+            result.status != EngineStatus.FAILED
+            and result.final_response
+            and not result.streamed
+        ):
+            ui.render_assistant_block(result.final_response)
+        if result.status == EngineStatus.FAILED:
+            ui.error(result.error or "engine failed without an error message")
 
     ui.end_turn(
-        status=result.status.value,
-        exit_reason=result.exit_reason.value,
-        iterations=result.iterations,
+        status=status_value,
+        exit_reason=exit_reason_value,
+        iterations=iterations,
         error=None,
+        phantom_synth_count=phantom_synth_count,
+        phantom_synth_notes=phantom_synth_notes,
     )
 
-    state.messages = list(result.messages)
-    persist_session(state)
+    if result_messages is not None:
+        state.messages = result_messages
+        persist_session(state)
 
 
 # ---------------------------------------------------------------------------

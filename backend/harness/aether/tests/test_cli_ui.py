@@ -6,6 +6,7 @@ import unittest
 from rich.console import Console
 
 from aether.cli.activity import (
+    MIN_DISPLAY_TOKENS,
     SHOW_TOKENS_AFTER_MS,
     TOKEN_CHAR_RATIO,
     ActivityBar,
@@ -375,21 +376,44 @@ class ActivityBarTests(unittest.TestCase):
         self.assertIn("Deciphering", out)
         self.assertIn("12s", out)
 
-    def test_activity_bar_hides_tokens_under_30s_threshold(self) -> None:
+    def test_activity_bar_hides_tokens_below_char_floor(self) -> None:
+        # Tokens are gated by ``MIN_DISPLAY_TOKENS`` (chars / 4) — below
+        # the floor we omit the field entirely so trivial replies
+        # ("ok\n", an emoji) don't flash a "↓ 1 tokens" frame.
         state = TurnState()
         state.verb = "Thinking"
         state.started_at = time.monotonic() - 5.0
-        state.response_chars = 1000  # would be ~250 tokens
+        state.response_chars = TOKEN_CHAR_RATIO * (MIN_DISPLAY_TOKENS - 1)
         out = self._render(state)
         self.assertNotIn("tokens", out)
 
-    def test_activity_bar_shows_tokens_after_30s_threshold(self) -> None:
+    def test_activity_bar_shows_tokens_immediately_above_floor(self) -> None:
+        # claude-code parity: the moment streaming produces enough
+        # output to clear the floor, the counter appears — no time
+        # gate, even on a 2-second turn.  This test is the regression
+        # guard for the legacy 30s ``SHOW_TOKENS_AFTER_MS`` lockout.
         state = TurnState()
         state.verb = "Thinking"
-        state.started_at = time.monotonic() - (SHOW_TOKENS_AFTER_MS / 1000 + 1)
-        state.response_chars = TOKEN_CHAR_RATIO * 241  # exactly 241 tokens
+        state.started_at = time.monotonic() - 2.0  # well under any time gate
+        state.response_chars = TOKEN_CHAR_RATIO * 69  # 69 tokens, like the screenshot
+        out = self._render(state)
+        self.assertIn("69 tokens", out)
+        self.assertIn("↓", out)
+
+    def test_activity_bar_shows_large_token_count_after_long_turn(self) -> None:
+        state = TurnState()
+        state.verb = "Thinking"
+        state.started_at = time.monotonic() - 35.0
+        state.response_chars = TOKEN_CHAR_RATIO * 241
         out = self._render(state)
         self.assertIn("241 tokens", out)
+
+    def test_legacy_show_tokens_after_ms_constant_is_zero(self) -> None:
+        # Backwards compat: keep the symbol importable but ensure it's
+        # a no-op so any external integration that still consults it
+        # (e.g. as a min-elapsed gate) does not silently re-suppress
+        # the counter.
+        self.assertEqual(SHOW_TOKENS_AFTER_MS, 0)
 
     def test_activity_bar_renders_thinking_state(self) -> None:
         state = TurnState()

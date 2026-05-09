@@ -19,7 +19,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 from aether import AgentEngine
 from aether.config.schema import ModelCallConfig
@@ -71,6 +71,7 @@ class _FailingProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: Any = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         self.calls += 1
         if not self._script:

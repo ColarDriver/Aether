@@ -12,7 +12,13 @@ import httpx
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, ToolCall, TurnContext
+from aether.runtime.contracts import (
+    NormalizedResponse,
+    StreamDeltaCallback,
+    StreamSilentCallback,
+    ToolCall,
+    TurnContext,
+)
 from aether.runtime.provider_errors import (
     ProviderInvocationError,
     ResponseInvalidError,
@@ -53,6 +59,12 @@ class OpenAICompatibleModel(ModelProvider):
     # instance.
     stream_read_timeout_sec: float = _DEFAULT_STREAM_READ_TIMEOUT_SEC
 
+    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the openai-compatible
+    # parser for OpenAI / Kimi / Zhipu / Doubao / vLLM / etc.  Subclasses
+    # serving non-chat endpoints should override.
+    provider_name: str = "openai"
+    api_mode: str = "chat"
+
     def __init__(
         self,
         *,
@@ -89,6 +101,7 @@ class OpenAICompatibleModel(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,  # noqa: ARG002
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         """Dispatcher that picks streaming vs non-streaming based on context.
 
@@ -123,6 +136,7 @@ class OpenAICompatibleModel(ModelProvider):
                     headers=headers,
                     payload=payload,
                     stream_callback=stream_callback,
+                    stream_silent_callback=stream_silent_callback,
                 )
             except StreamStallError as stall:
                 # Hot path for stuck SSE streams.  Disable streaming for the
@@ -218,6 +232,7 @@ class OpenAICompatibleModel(ModelProvider):
         headers: dict[str, str],
         payload: dict[str, Any],
         stream_callback: StreamDeltaCallback,
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         """SSE-based streaming path.
 
@@ -289,6 +304,7 @@ class OpenAICompatibleModel(ModelProvider):
                     return _parse_sse_stream(
                         resp.iter_lines(),
                         stream_callback=stream_callback,
+                        stream_silent_callback=stream_silent_callback,
                         fallback_model=self.model,
                     )
         except httpx.ReadTimeout as exc:
@@ -733,6 +749,7 @@ def _parse_sse_stream(
     *,
     stream_callback: StreamDeltaCallback,
     fallback_model: str,
+    stream_silent_callback: StreamSilentCallback | None = None,
 ) -> NormalizedResponse:
     """Consume an SSE ``data:`` event stream and reconstruct a NormalizedResponse.
 
@@ -750,10 +767,14 @@ def _parse_sse_stream(
     - Every visible content delta is forwarded **immediately** via
       ``stream_callback(delta)``.  Empty strings are silently dropped so
       consumers don't see noise.
-    - We do **not** forward tool-call argument fragments — they are
-      buffered and will be exposed as a fully-parsed ``ToolCall`` list on
-      the final response.  Forwarding them as text would just paint
-      half-formed JSON onto the user's terminal.
+    - Tool-call argument fragments are buffered per-index for the final
+      ``ToolCall`` list (they would be ill-formed JSON in transit).  If
+      the optional ``stream_silent_callback`` is provided we ALSO push
+      each fragment to it so the CLI's "↓ N tokens" estimator keeps
+      ticking during long tool-only generation phases — Sprint 3 / PR
+      3.1, mirrors claude-code's ``input_json_delta`` → onUpdateLength
+      contract.  The silent callback is wired only to the count
+      estimator; no JSON ever lands in the visible body.
 
     The function is a free function rather than a method so that tests can
     feed it a synthetic line iterator without spinning up an HTTP server.
@@ -840,6 +861,19 @@ def _parse_sse_stream(
                     args_chunk = fn.get("arguments")
                     if isinstance(args_chunk, str) and args_chunk:
                         buf["arguments"] += args_chunk
+                        # Sprint 3 / PR 3.1 — feed tool-arg fragments
+                        # to the count-only sibling so the activity
+                        # bar advances during long tool-call phases.
+                        # Empty / failed callbacks must not abort the
+                        # SSE drain (same isolation rule as the
+                        # visible-text branch above).
+                        if stream_silent_callback is not None:
+                            try:
+                                stream_silent_callback(args_chunk)
+                            except Exception:
+                                logger.exception(
+                                    "openai SSE stream_silent_callback raised; suppressing"
+                                )
 
         if choice.get("finish_reason"):
             finish_reason = str(choice["finish_reason"])

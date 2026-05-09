@@ -6,12 +6,28 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from aether.config.schema import ModelCallConfig
-from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, TurnContext
+from aether.runtime.contracts import (
+    NormalizedResponse,
+    StreamDeltaCallback,
+    StreamSilentCallback,
+    TurnContext,
+)
 from aether.tools.base import ToolDescriptor
 
 
 class ModelProvider(ABC):
     """Provider contract used by AgentEngine."""
+
+    # Sprint 3 / PR 3.1: stable identifier consumed by
+    # ``aether.runtime.usage.normalize_usage`` to pick the right parser.
+    # Subclasses MUST override.  Defaults are openai-compatible (best-effort
+    # fallback) so tests / scripted providers don't crash on lookup.
+    provider_name: str = "openai"
+    # ``api_mode`` further disambiguates within a provider family — currently
+    # used only to distinguish Anthropic Messages from anthropic-compatible
+    # text-completion endpoints.  Default ``"chat"`` matches the OpenAI
+    # Chat Completions schema the openai-compatible parser expects.
+    api_mode: str = "chat"
 
     @abstractmethod
     def generate(
@@ -21,6 +37,14 @@ class ModelProvider(ABC):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        # Sprint 3 / PR 3.1 — count-only sibling of ``stream_callback``.
+        # Providers SHOULD forward non-visible streaming chunks (tool-arg
+        # JSON fragments, signatures) here so the CLI's "↓ N tokens"
+        # counter advances even during long tool-only generation phases.
+        # Optional with a default of ``None`` so legacy callers / older
+        # provider subclasses that don't yet wire it through keep
+        # working (the engine's wrapper handles the missing-arg case).
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         raise NotImplementedError
 

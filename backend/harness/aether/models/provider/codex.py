@@ -12,7 +12,13 @@ import httpx
 from aether.config.schema import ModelCallConfig
 from aether.models.credential_loader import CodexCliCredential, load_codex_cli_credential
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, ToolCall, TurnContext
+from aether.runtime.contracts import (
+    NormalizedResponse,
+    StreamDeltaCallback,
+    StreamSilentCallback,
+    ToolCall,
+    TurnContext,
+)
 from aether.tools.base import ToolDescriptor
 
 logger = logging.getLogger(__name__)
@@ -23,6 +29,12 @@ MAX_RETRIES = 3
 
 class CodexChatModel(ModelProvider):
     """ModelProvider backed by ChatGPT Codex Responses API."""
+
+    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the Codex / Responses
+    # parser — input_tokens already excludes cached_tokens (unlike OpenAI
+    # Chat Completions), and reasoning lives in output_tokens_details.
+    provider_name: str = "codex"
+    api_mode: str = "responses"
 
     def __init__(
         self,
@@ -61,6 +73,13 @@ class CodexChatModel(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,  # noqa: ARG002
         stream_callback: StreamDeltaCallback | None = None,  # noqa: ARG002
+        # Accepted for signature parity with the base contract — Codex
+        # responses-stream events don't currently expose a separable
+        # tool-arg fragment channel that we forward, so the silent
+        # callback is unused here.  Wired through ``_call_codex_api``
+        # so a future refinement can plumb it without changing public
+        # signatures.
+        stream_silent_callback: StreamSilentCallback | None = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         response = self._call_codex_api(
             messages,

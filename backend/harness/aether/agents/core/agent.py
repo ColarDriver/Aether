@@ -51,12 +51,23 @@ from aether.runtime.session_runtime import (
 )
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
+from aether.runtime.usage import CanonicalUsage, normalize_usage
 from aether.tools.base import UnknownToolError
 from aether.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from aether.subagents.contracts import SubagentResult, SubagentTask
     from aether.subagents.manager import SubagentManager
+
+
+# Sprint 3 / PR 3.1: keys that live on context.metadata as runtime helpers
+# but should NOT leak into the JSON-serialisable ``EngineResult.metadata['turn']``
+# snapshot.  Their normalised, public-facing form lives at the metadata top
+# level (e.g. ``usage_accumulator`` → ``metadata['usage']``).  Add new
+# internal-only keys here whenever a future PR introduces one.
+_METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
+    "usage_accumulator",
+})
 
 
 class AgentEngine:
@@ -219,6 +230,9 @@ class AgentEngine:
             )
             self._apply_turn_nudges(context)
             stream_callback_wrapped = self._build_stream_callback(request, context)
+            stream_silent_callback_wrapped = self._build_stream_silent_callback(
+                request, context
+            )
 
             state_machine.transition(LoopState.PREPARE)
             if self._is_interrupted(request.session_id):
@@ -275,6 +289,7 @@ class AgentEngine:
                             request=request,
                             prepared_messages=prepared_messages,
                             stream_callback=stream_callback_wrapped,
+                            stream_silent_callback=stream_silent_callback_wrapped,
                             context=context,
                         )
                         if invoke_outcome.interrupted:
@@ -316,6 +331,13 @@ class AgentEngine:
                         state_machine.transition(LoopState.FAILED)
                         break
 
+                    # Sprint 3 / PR 3.1: accumulate token usage per LLM call.
+                    # We do this AFTER the after_llm middleware pipeline so any
+                    # response-level normalisation it performed is reflected in
+                    # the raw ``metadata["usage"]`` dict we read here.  The
+                    # accumulator lives on context.metadata so it is per-turn
+                    # and per-session safe (no cross-session leak).
+                    self._accumulate_usage(response, context)
                     iterations += 1
 
                     self._safe_call_hook(
@@ -687,12 +709,21 @@ class AgentEngine:
         turn_id = str(uuid.uuid4())
 
         metadata = dict(request.metadata)
+        # Sprint 3 / PR 3.1: stamp the active provider's identity onto the
+        # turn so middleware (TokenUsageMiddleware) and downstream tools can
+        # pick the right ``normalize_usage`` parser without dragging
+        # ``EngineServices`` into the middleware contract.  Re-read from
+        # ``self.services.provider`` each turn so PR 3.4's fallback chain
+        # (which swaps the active provider mid-session) gets a fresh value.
+        active_provider = self.services.provider
         metadata.update(
             {
                 "entry_prepared": True,
                 "task_id": task_id,
                 "turn_id": turn_id,
                 "request_has_stream_callback": bool(request.stream_callback),
+                "active_provider_name": getattr(active_provider, "provider_name", "openai"),
+                "active_provider_api_mode": getattr(active_provider, "api_mode", "chat"),
                 # Per-turn retry counters live on TurnContext.metadata so they
                 # cannot leak across concurrent sessions sharing this engine.
                 # Initialised to 0 here; mutated by the run-loop's empty-
@@ -1090,6 +1121,42 @@ class AgentEngine:
 
         return _wrapped
 
+    def _build_stream_silent_callback(self, request: EngineRequest, context: TurnContext):
+        """Wrap :attr:`EngineRequest.stream_silent_callback` for provider use.
+
+        Sprint 3 / PR 3.1 — the silent counterpart of
+        :meth:`_build_stream_callback`.  Providers forward count-only
+        chunks (tool-arg JSON, signatures) here; the wrapped callback
+        bumps a separate ``stream_silent_callback_calls`` metadata
+        counter so observability can tell how often the live token
+        estimator was advanced via this path.
+
+        Same rollback semantics: when ``streaming_enabled`` is off we
+        return ``None`` so providers don't try to emit silent deltas
+        either.  Same isolation guarantee: any exception from the
+        downstream callback is logged and swallowed — a UI render
+        failure must never poison the model call.
+        """
+        callback = request.stream_silent_callback
+        if callback is None:
+            return None
+
+        if not getattr(self.config, "streaming_enabled", True):
+            return None
+
+        def _wrapped_silent(delta: str) -> None:
+            if not isinstance(delta, str) or not delta:
+                return
+            try:
+                callback(delta)
+                context.metadata["stream_silent_callback_calls"] = (
+                    int(context.metadata.get("stream_silent_callback_calls", 0)) + 1
+                )
+            except Exception:
+                self.services.logger.exception("stream silent callback failed")
+
+        return _wrapped_silent
+
     def _safe_call_hook(self, name: str, **kwargs: Any) -> None:
         hook = getattr(self._hooks, name, None)
         if hook is None:
@@ -1206,6 +1273,7 @@ class AgentEngine:
         request: EngineRequest,
         prepared_messages: List[Dict[str, Any]],
         stream_callback,
+        stream_silent_callback,
         context: TurnContext,
     ) -> "_ProviderInvocationOutcome":
         """Issue ``provider.generate`` and apply the recovery strategy on failure.
@@ -1255,6 +1323,7 @@ class AgentEngine:
                     call_config,
                     context,
                     stream_callback=stream_callback,
+                    stream_silent_callback=stream_silent_callback,
                 )
                 # Sprint 1 / PR 1.1: post-LLM response-shape validation.
                 # ``validate_response`` is non-mutating; if it returns False
@@ -1909,6 +1978,36 @@ class AgentEngine:
             }
         )
 
+    def _accumulate_usage(self, response: NormalizedResponse, context: TurnContext) -> None:
+        """Add this LLM call's usage to the per-turn accumulator.
+
+        Sprint 3 / PR 3.1.  Tolerant by design: any failure to extract /
+        normalise usage degrades to a no-op rather than crashing the turn —
+        accumulation is observability, not correctness-critical.
+
+        Reads ``response.metadata["usage"]`` (the raw provider dict) and
+        normalises via ``aether.runtime.usage.normalize_usage`` using the
+        provider's ``provider_name`` / ``api_mode`` class attributes.
+        Writes the running ``CanonicalUsage`` to
+        ``context.metadata["usage_accumulator"]`` and bumps
+        ``context.metadata["api_calls"]``.
+        """
+        try:
+            raw = (response.metadata or {}).get("usage") if response else None
+            provider_name = getattr(self.services.provider, "provider_name", "openai")
+            api_mode = getattr(self.services.provider, "api_mode", "chat")
+            this_call = normalize_usage(raw, provider=provider_name, api_mode=api_mode)
+            acc = context.metadata.get("usage_accumulator")
+            if not isinstance(acc, CanonicalUsage):
+                acc = CanonicalUsage()
+            context.metadata["usage_accumulator"] = acc.add(this_call)
+            context.metadata["api_calls"] = int(context.metadata.get("api_calls", 0)) + 1
+        except Exception:  # noqa: BLE001 — observability path, never crash a turn
+            self.services.logger.debug(
+                "usage accumulation failed; leaving accumulator unchanged",
+                exc_info=True,
+            )
+
     def _build_result(
         self,
         request: EngineRequest,
@@ -1961,6 +2060,36 @@ class AgentEngine:
         # straight from ``context.metadata`` (their authoritative home, since
         # Sprint 0) instead of from ``self.*`` — the latter would re-introduce
         # the multi-session leak this PR was supposed to fix.
+        #
+        # Sprint 3 / PR 3.1 (P1-4 + P1-11): the top-level keys ``usage`` /
+        # ``api_calls`` / ``iteration_budget`` / ``exit`` / ``reasoning`` /
+        # ``compaction`` form the **stable v1 metadata schema** documented in
+        # ``EngineResult`` — additive only after this PR.  See that docstring
+        # for consumer guarantees.
+        usage_acc = context.metadata.get("usage_accumulator")
+        if not isinstance(usage_acc, CanonicalUsage):
+            usage_acc = CanonicalUsage()
+
+        last_msg = messages[-1] if messages else None
+        last_msg_role = (
+            last_msg.get("role", "unknown") if isinstance(last_msg, dict) else "unknown"
+        )
+        stuck_after_tool = (
+            isinstance(last_msg, dict)
+            and last_msg.get("role") == "tool"
+            and exit_reason in {ExitReason.MAX_ITERATIONS, ExitReason.EMPTY_RESPONSE}
+        )
+
+        # PR 3.1: ``turn`` is a flat snapshot of context.metadata for
+        # downstream observability.  We exclude internal accumulator objects
+        # (CanonicalUsage instances etc.) that are not JSON-serializable —
+        # their normalised dict form is exposed at the top level under ``usage``.
+        turn_snapshot = {
+            k: v
+            for k, v in context.metadata.items()
+            if k not in _METADATA_INTERNAL_KEYS
+        }
+
         metadata = {
             "request": {
                 "session_id": request.session_id,
@@ -1968,7 +2097,7 @@ class AgentEngine:
                 "system_message_present": bool(request.system_message),
                 "stream_callback_present": bool(request.stream_callback),
             },
-            "turn": dict(context.metadata),
+            "turn": turn_snapshot,
             "runtime": {
                 "empty_response_retries": int(
                     context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)
@@ -2001,6 +2130,57 @@ class AgentEngine:
                 # turn never triggered the detector.
                 "phantom_tool_retries": int(
                     context.metadata.get(TURN_KEY_PHANTOM_TOOL_RETRIES, 0)
+                ),
+            },
+            # ----------------- Sprint 3 / PR 3.1: stable v1 ----------------- #
+            # Aggregated token usage across every LLM call this turn.
+            # Always present (zero-valued on turns with no LLM call).
+            "usage": usage_acc.to_dict(),
+            "api_calls": int(context.metadata.get("api_calls", 0)),
+            # Iteration budget snapshot.  Filled with structured data by
+            # PR 3.2; for now we surface the legacy max_iterations bound
+            # so consumers can already key off the "exhausted" semantic.
+            "iteration_budget": {
+                "used": iterations,
+                "max": int(getattr(self.config, "max_iterations", 0) or 0),
+                "remaining": max(
+                    0,
+                    int(getattr(self.config, "max_iterations", 0) or 0) - iterations,
+                ),
+                "grace_consumed": False,
+            },
+            # Why the loop terminated, in a structured form distinct from
+            # the top-level ``exit_reason`` enum (which is the canonical
+            # source — ``exit`` is the auxiliary diagnostic block).
+            "exit": {
+                "reason": exit_reason.value,
+                "last_msg_role": last_msg_role,
+                "stuck_after_tool": bool(stuck_after_tool),
+            },
+            # Reasoning block (Sprint 5 will populate ``last_reasoning``
+            # from provider-emitted thinking blocks; Sprint 3 just reserves
+            # the shape so consumers can rely on its presence).
+            "reasoning": {
+                "last_reasoning": context.metadata.get("last_reasoning_text"),
+            },
+            # Compaction counters (PR 3.4..3.7 will increment these as the
+            # five-tier pipeline fires; PR 3.1 reserves the shape so
+            # downstream consumers can already render zero-valued footers).
+            "compaction": {
+                "tier1_spilled_count": int(
+                    context.metadata.get("tier1_spilled_count", 0)
+                ),
+                "tier2_snipped_count": int(
+                    context.metadata.get("tier2_snipped_count", 0)
+                ),
+                "tier3_cleared_count": int(
+                    context.metadata.get("tier3_cleared_count", 0)
+                ),
+                "tier4_collapse_segments": int(
+                    context.metadata.get("tier4_collapse_segments", 0)
+                ),
+                "tier5_summaries_generated": int(
+                    context.metadata.get("tier5_summaries_generated", 0)
                 ),
             },
         }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterator
@@ -423,8 +425,59 @@ REGISTRY: dict[str, SlashCommand] = {
 }
 
 
+# Same alphabet open-claude-code uses for ``looksLikeCommand`` —
+# slash command names are identifier-shaped so anything containing '/',
+# '.', '~', whitespace, CJK characters, etc. in the head token is
+# almost certainly a file path or prose input that should reach the
+# model untouched.
+_COMMAND_NAME_RE = re.compile(r"^[a-zA-Z0-9:_-]+$")
+
+
+def _looks_like_command_name(head: str) -> bool:
+    """Whether *head* (the token after a leading '/') is shaped like a slash command.
+
+    Mirrors open-claude-code's ``looksLikeCommand`` (see
+    ``src/utils/processUserInput/processSlashCommand.tsx``).
+    """
+    return bool(_COMMAND_NAME_RE.fullmatch(head))
+
+
 def is_slash(line: str) -> bool:
-    return line.startswith("/")
+    """Return True only when *line* should be routed to the slash-command dispatcher.
+
+    Three gates, in order — modelled directly on open-claude-code's
+    slash-vs-prose disambiguation so users can paste paths like
+    ``/workspace/hermes-agent 帮我看下这个项目`` without the REPL
+    swallowing them as ``Unknown command``:
+
+    1. Trimmed line must start with ``/`` and have at least one char
+       after it.
+    2. The token between ``/`` and the first whitespace must look like
+       an identifier (``[a-zA-Z0-9:_-]+``).  Anything else (slash,
+       dot, tilde, CJK, …) → almost certainly a path or prose, hand
+       it to the model.
+    3. ``"/" + head`` must not exist on disk.  Filters absolute paths
+       whose first segment happens to be identifier-shaped (``/var``,
+       ``/tmp``, ``/workspace``, ``/Users``, …).
+
+    Genuine typos like ``/halp`` still pass all three gates, so the
+    dispatcher continues to surface ``Unknown command`` for them.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("/") or len(stripped) < 2:
+        return False
+    head = stripped[1:].split(maxsplit=1)[0]
+    if not head or not _looks_like_command_name(head):
+        return False
+    try:
+        if os.path.exists("/" + head):
+            return False
+    except OSError:
+        # ``os.path.exists`` is documented as never raising, but a
+        # broken symlink or permission edge case shouldn't crash the
+        # REPL — fall through and treat as a command attempt.
+        pass
+    return True
 
 
 # ---------------------------------------------------------------------------

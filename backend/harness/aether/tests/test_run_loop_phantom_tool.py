@@ -39,7 +39,7 @@ floating model behaviour.
 from __future__ import annotations
 
 import unittest
-from typing import List
+from typing import Any, List
 
 from aether import AgentEngine
 from aether.agents.core.phantom_tool import (
@@ -89,6 +89,7 @@ class _RecordingProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: Any = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         if not self._responses:
             raise RuntimeError("RecordingProvider exhausted")

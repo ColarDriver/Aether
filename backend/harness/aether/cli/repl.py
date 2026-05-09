@@ -231,6 +231,10 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
         system_message=state.system_prompt,
         model_config=state.model_config,
         stream_callback=ui.make_stream_callback(),
+        # Sprint 3 / PR 3.1: separate count-only channel so providers
+        # can tick the live token estimator during long tool-call
+        # generation phases without polluting the visible body.
+        stream_silent_callback=ui.make_stream_silent_callback(),
     )
 
     ui.begin_turn()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from typing import List
+from typing import Any, List
 
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
@@ -36,6 +36,7 @@ class RecordingProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: Any = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         self.calls.append(
             {

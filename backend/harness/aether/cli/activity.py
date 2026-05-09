@@ -12,8 +12,12 @@ middleware bridge — never touched directly from the bar.
 
 Token estimation: we use ``response_chars // 4`` as an approximation —
 matches open-claude-code's heuristic and avoids running ``tiktoken`` on
-the hot animation path.  The counter only appears once a turn has been
-running for ≥30 s (``SHOW_TOKENS_AFTER_MS``) so quick replies stay clean.
+the hot animation path.  The counter appears as soon as we have at
+least :data:`MIN_DISPLAY_TOKENS` accumulated (≈ a handful of words),
+mirroring claude-code's ``SpinnerAnimationRow`` which shows the value
+the moment streaming produces output — no time gate, just a small
+character floor to stop sub-second replies from flashing
+``↓ 1 tokens`` for one frame.
 
 Width-aware: when the terminal is narrow we drop fields in order
 ``thinking → tokens → timer`` so the verb is always visible.
@@ -31,10 +35,21 @@ from rich.text import Text
 from aether.cli.theme import AETHER_DIM, TOOL_ACCENT, TOOL_SHIMMER, icon
 
 
-# Tokens are hidden until the turn has been running this long.  Mirrors
-# open-claude-code's SHOW_TOKENS_AFTER_MS — short replies don't need a
-# counter and would just clutter the bar.
-SHOW_TOKENS_AFTER_MS = 30_000
+# Minimum estimated tokens before we show the ``↓ N tokens`` field.
+# claude-code shows the live value the instant any output exists; we
+# add a tiny floor (≈ a few words / one short sentence) so a turn that
+# replies with "ok\n" doesn't flash ``↓ 1 tokens`` for a single frame
+# before disappearing.  Below the floor the suffix simply omits the
+# counter — no time gate, so a 3 s turn with 200 chars of streamed
+# output already shows ``↓ 50 tokens``.
+MIN_DISPLAY_TOKENS = 3
+
+# Legacy time gate retained for backwards compatibility with callers /
+# tests that still reference it (e.g. external integrations that
+# tweaked the threshold).  No longer consulted by ``ActivityBar`` —
+# kept at ``0`` so any code that *does* still apply it as a guard
+# becomes a no-op rather than silently keeping the counter hidden.
+SHOW_TOKENS_AFTER_MS = 0
 
 # Animated leading glyph — cycled via a wall-clock derived frame index so
 # the bar feels alive ("processing…") even when no other field is changing.
@@ -214,12 +229,15 @@ class ActivityBar:
         if elapsed_ms >= 1000:
             suffix_fields.append(format_duration_ms(elapsed_ms))
 
-        # Token counter — gated by 30 s so quick turns stay tidy.
+        # Token counter — appears as soon as ``≥ MIN_DISPLAY_TOKENS``
+        # have been streamed.  Mirrors claude-code's
+        # ``SpinnerAnimationRow``: no time gate, just a small char
+        # floor so trivial replies don't flash ``↓ 1 tokens``.
         # Down-arrow convention matches Claude Code's "tokens flowing
         # out of the model" visual; theme's ``arrow`` icon (→) reads as
         # navigation, not direction-of-flow.
         approx_tokens = max(0, st.response_chars // TOKEN_CHAR_RATIO)
-        if approx_tokens > 0 and elapsed_ms >= SHOW_TOKENS_AFTER_MS:
+        if approx_tokens >= MIN_DISPLAY_TOKENS:
             suffix_fields.append(f"↓ {format_tokens(approx_tokens)} tokens")
 
         # Thinking state — either "thinking" while waiting for the first

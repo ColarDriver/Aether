@@ -7,7 +7,12 @@ from typing import Iterable, List
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, TurnContext
+from aether.runtime.contracts import (
+    NormalizedResponse,
+    StreamDeltaCallback,
+    StreamSilentCallback,
+    TurnContext,
+)
 from aether.tools.base import ToolDescriptor
 
 
@@ -24,6 +29,11 @@ class ScriptedProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        # Sprint 3 / PR 3.1: signature parity with the base contract.
+        # ScriptedProvider has no streamed phase, so the silent counter
+        # is unused — accepting it here keeps the engine's call-site
+        # uniform across real and test providers.
+        stream_silent_callback: StreamSilentCallback | None = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         if not self._responses:
             raise RuntimeError("ScriptedProvider has no remaining responses")

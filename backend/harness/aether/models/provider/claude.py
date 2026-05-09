@@ -20,7 +20,13 @@ from aether.models.credential_loader import (
     load_claude_code_credential,
 )
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, StreamDeltaCallback, ToolCall, TurnContext
+from aether.runtime.contracts import (
+    NormalizedResponse,
+    StreamDeltaCallback,
+    StreamSilentCallback,
+    ToolCall,
+    TurnContext,
+)
 from aether.tools.base import ToolDescriptor
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,12 @@ OAUTH_BILLING_HEADER = os.environ.get("ANTHROPIC_BILLING_HEADER", _DEFAULT_BILLI
 
 class ClaudeChatModel(ModelProvider):
     """ModelProvider backed by the Anthropic Messages API."""
+
+    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the Anthropic
+    # parser so cache_read_input_tokens / cache_creation_input_tokens
+    # are split correctly for billing math.
+    provider_name: str = "anthropic"
+    api_mode: str = "messages"
 
     def __init__(
         self,
@@ -70,15 +82,43 @@ class ClaudeChatModel(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        # Accepted for signature parity with the base contract.
+        # Anthropic's high-level ``messages.stream`` only exposes a
+        # ``text_stream`` (text + thinking deltas already covered by
+        # the visible ``stream_callback``); ``input_json_delta``
+        # forwarding to a silent counter is a follow-up that needs
+        # the lower-level event stream and is out of scope for PR 3.1.
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         payload = self._build_request_payload(messages, tools=tools, config=config, context=context)
 
         last_error: Exception | None = None
         for attempt in range(1, self.retry_max_attempts + 1):
             try:
-                response = self._create(payload)
+                # Sprint 3 / PR 3.1: route through the streaming API
+                # whenever the caller supplied a ``stream_callback``.
+                # Anthropic returns a single blob from ``messages.create``
+                # and only signals usage at the end of the call — without
+                # streaming, the CLI's ``↓ N tokens`` counter stays at 0
+                # for the entire wait (response_chars is only fed by
+                # ``stream_callback``).  Streaming forwards each text /
+                # thinking chunk as it arrives, so the activity bar
+                # ticks live, mirroring claude-code's behaviour.
+                if stream_callback is not None:
+                    response, streamed = self._create_streaming(payload, stream_callback)
+                else:
+                    response = self._create(payload)
+                    streamed = False
                 parsed = self._parse_response(response)
-                if stream_callback and parsed.content and not parsed.tool_calls:
+                # Only emit the fallback delta when we *didn't* already
+                # stream — otherwise we'd duplicate every visible char
+                # in the activity bar (response_chars would double).
+                if (
+                    stream_callback
+                    and not streamed
+                    and parsed.content
+                    and not parsed.tool_calls
+                ):
                     try:
                         stream_callback(parsed.content)
                     except Exception:
@@ -448,6 +488,53 @@ class ClaudeChatModel(ModelProvider):
             self._patch_client_oauth(self._client)
             self._strip_cache_control(request_payload)
         return self._client.messages.create(**request_payload)
+
+    def _create_streaming(
+        self,
+        payload: dict[str, Any],
+        stream_callback: StreamDeltaCallback,
+    ) -> tuple[Any, bool]:
+        """Stream the Anthropic Messages call and forward text deltas.
+
+        Returns ``(final_message, streamed)``:
+
+        * ``final_message`` is the same shape as ``messages.create``
+          returns — fed into :meth:`_parse_response` as before.
+        * ``streamed`` is ``True`` when at least one text/thinking
+          chunk was forwarded to ``stream_callback``; the caller uses
+          this to decide whether to emit the legacy "full content"
+          fallback (which would otherwise double-count).
+
+        The Anthropic Python SDK exposes a high-level ``text_stream``
+        iterator that already de-multiplexes ``content_block_delta``
+        events for us — we don't need to re-implement the SSE state
+        machine.  Tool-use, signature, and ping events are handled
+        internally by the SDK; ``get_final_message`` returns the
+        same fully-assembled message we'd get from the blocking call,
+        including ``tool_use`` blocks and accurate ``usage`` totals.
+        """
+        request_payload = dict(payload)
+        if self._is_oauth:
+            self._patch_client_oauth(self._client)
+            self._strip_cache_control(request_payload)
+
+        streamed = False
+        with self._client.messages.stream(**request_payload) as stream:
+            for chunk in stream.text_stream:
+                if not chunk:
+                    continue
+                streamed = True
+                try:
+                    stream_callback(chunk)
+                except Exception:
+                    # Match the engine wrapper's contract: a UI/render
+                    # failure must not poison the model call.  Log
+                    # once and keep draining the stream so usage and
+                    # the final message still land correctly.
+                    logger.exception("Claude stream_callback raised; suppressing")
+            final_message = stream.get_final_message()
+
+        return final_message, streamed
 
     def _parse_response(self, response: Any) -> NormalizedResponse:
         response_dict = _as_dict(response)

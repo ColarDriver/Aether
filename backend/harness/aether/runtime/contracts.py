@@ -68,6 +68,21 @@ class ExitReason(str, Enum):
 
 StreamDeltaCallback = Callable[[str], None]
 
+# Sprint 3 / PR 3.1 — silent (count-only) streaming callback.
+#
+# Some providers spend many seconds emitting tool-call argument JSON
+# fragments (``delta.tool_calls.function.arguments`` for OpenAI-style
+# APIs, ``input_json_delta`` for Anthropic) before any visible body
+# content is produced.  Those fragments must NOT render in the visible
+# transcript — they're internal control plane — but they DO represent
+# real model output that should drive the activity bar's "↓ N tokens"
+# counter.  This callback is the count-only sibling of
+# ``StreamDeltaCallback``: providers forward each non-visible chunk
+# here so the UI estimator advances even during long tool-only turns,
+# mirroring claude-code's ``onUpdateLength`` semantics where every
+# delta type increases the live token count regardless of visibility.
+StreamSilentCallback = Callable[[str], None]
+
 class EngineStatus(str, Enum):
     COMPLETED = "COMPLETED"
     INTERRUPTED = "INTERRUPTED"
@@ -114,6 +129,12 @@ class EngineRequest:
     user_message: str | None = None
     system_message: str | None = None
     stream_callback: StreamDeltaCallback | None = None
+    # Optional count-only sibling of ``stream_callback`` — providers
+    # forward non-visible streaming chunks (tool-arg JSON fragments,
+    # signatures, redacted thinking) here so the UI's token estimator
+    # keeps ticking during long tool-only turns without polluting the
+    # visible body.  See :data:`StreamSilentCallback` for rationale.
+    stream_silent_callback: StreamSilentCallback | None = None
     messages: List[Dict[str, Any]] = field(default_factory=list)
     model_config: ModelCallConfig = field(default_factory=ModelCallConfig)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -121,6 +142,48 @@ class EngineRequest:
 
 @dataclass(slots=True)
 class EngineResult:
+    """Result of one ``AgentEngine.run_loop`` invocation.
+
+    Most fields are self-explanatory.  ``metadata`` deserves a contract:
+
+    Sprint 3 / PR 3.1 — Stable ``metadata`` v1 schema (additive only).
+    The following top-level keys are part of the public API and will not
+    be renamed or have their value shape narrowed without a major version
+    bump:
+
+    * ``request`` — snapshot of the originating ``EngineRequest``.
+    * ``turn`` — flat snapshot of ``TurnContext.metadata`` (excluding a
+      small set of internal-only accumulator objects, which are exposed
+      in their normalised form at the top level instead).
+    * ``runtime`` — per-turn retry counters surfaced for observability.
+    * ``usage`` — ``CanonicalUsage.to_dict()``: input/output/cache_read/
+      cache_write/reasoning + derived prompt/completion/total totals.
+      Always present (zero-valued when no LLM call ran).
+    * ``api_calls`` — int, number of provider ``generate()`` calls in
+      this turn.
+    * ``iteration_budget`` — ``{used, max, remaining, grace_consumed}``.
+      Filled with structured data by PR 3.2 (IterationBudget); PR 3.1
+      surfaces ``max == EngineConfig.max_iterations`` so downstream
+      footers can already render the bound.
+    * ``exit`` — ``{reason, last_msg_role, stuck_after_tool}``.  Auxiliary
+      diagnostic to the canonical ``exit_reason`` enum.
+    * ``reasoning`` — ``{last_reasoning}``.  Reserved shape; populated by
+      Sprint 5 reasoning-block extraction.
+    * ``compaction`` — ``{tier1_spilled_count, tier2_snipped_count,
+      tier3_cleared_count, tier4_collapse_segments,
+      tier5_summaries_generated}``.  Reserved shape; PR 3.3..3.7
+      five-tier compaction pipeline increments these as it fires.
+
+    Other keys present in ``metadata`` (``phantom_synth_count``,
+    ``tool_names_repaired``, ``recovery_decisions``, etc.) are
+    **non-stable ad-hoc** observability fields — useful for
+    debugging but consumers SHOULD only depend on the keys listed
+    above for production behaviour.
+
+    Underscore-prefixed keys (``_active_tool_call`` etc.) are strictly
+    internal engine state and MUST NOT be consumed externally.
+    """
+
     session_id: str
     status: EngineStatus
     exit_reason: ExitReason

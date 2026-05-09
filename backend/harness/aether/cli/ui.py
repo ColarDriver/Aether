@@ -2111,6 +2111,51 @@ class CLIUI:
             self.stream_delta(delta)
         return _cb
 
+    def bump_response_chars(self, delta: str) -> None:
+        """Advance the live token estimator without rendering ``delta``.
+
+        Sprint 3 / PR 3.1 — pair with
+        :attr:`EngineRequest.stream_silent_callback`.  Providers call
+        this for streamed content that contributes to model output
+        length but should NOT appear in the visible body — primarily
+        OpenAI's ``delta.tool_calls.function.arguments`` fragments and
+        Anthropic's ``input_json_delta`` events.
+
+        Why a separate path (vs. just calling
+        :meth:`stream_delta`)?  ``stream_delta`` appends to
+        ``_stream_buffer`` so the markdown preview can re-render the
+        cleaned body each tick; tool-arg JSON would land verbatim in
+        that buffer and either pollute the body or force every
+        consumer to filter it out.  Keeping the two channels distinct
+        mirrors claude-code, where ``onUpdateLength`` (counter) is
+        independent of the visible message store.
+
+        Counts also flow into ``stats.streamed_chars`` so the per-turn
+        footer / debug overlays see the same figure the activity bar
+        uses.  No-op for empty / non-string deltas so providers don't
+        need to filter at the call site.
+        """
+        if not isinstance(delta, str) or not delta:
+            return
+        n = len(delta)
+        # Don't append to ``_stream_buffer`` — the body preview must
+        # not see this content.  Updating ``response_chars`` directly
+        # is enough for ``ActivityBar`` to tick.
+        self._stream.char_count += n
+        self.stats.streamed_chars += n
+        self._turn_state.response_chars = self._stream.char_count
+
+    def make_stream_silent_callback(self):
+        """Return a closure suitable for ``EngineRequest.stream_silent_callback``.
+
+        Symmetric with :meth:`make_stream_callback` — kept as a
+        separate factory so REPL / app integrations can pass either
+        callback (or both) without coupling.
+        """
+        def _cb(delta: str) -> None:
+            self.bump_response_chars(delta)
+        return _cb
+
     # ---------------------------- /tools listing ---------------------------
 
     def render_tool_table(self, descriptors: list[Any]) -> None:

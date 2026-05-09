@@ -9,7 +9,7 @@ a gateway's SSE is broken — graceful degradation to one-shot output.
 from __future__ import annotations
 
 import unittest
-from typing import List
+from typing import Any, List
 
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
@@ -38,6 +38,7 @@ class _CallbackSpyProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: Any = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         self.callback_was_present_calls.append(stream_callback is not None)
         if stream_callback is not None and self._response.content:

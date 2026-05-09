@@ -24,7 +24,7 @@ Coverage layout:
 from __future__ import annotations
 
 import unittest
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 from aether import AgentEngine
 from aether.agents.core.tool_hardening import (
@@ -403,6 +403,12 @@ class _ScriptedProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
+        # Cross-PR hotfix: PR 3.1 (sprint-3) added this kwarg to the
+        # base ``ModelProvider.generate`` contract; this test file was
+        # authored against the pre-PR-3.1 signature.  Accept it so the
+        # engine's call site (which now always passes both callbacks)
+        # doesn't trip a TypeError before tool-hardening runs.
+        stream_silent_callback: Any = None,  # noqa: ARG002
     ) -> NormalizedResponse:
         self.calls += 1
         if not self._script:

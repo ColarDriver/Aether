@@ -409,7 +409,6 @@ def _cmd_stats(state: "ReplState", _args: list[str]) -> CommandResult:
 REGISTRY: dict[str, SlashCommand] = {
     "/help": SlashCommand("/help", "Show this help table", _cmd_help),
     "/exit": SlashCommand("/exit", "Exit the REPL", _cmd_exit),
-    "/quit": SlashCommand("/quit", "Exit the REPL", _cmd_exit),
     "/new": SlashCommand("/new", "Start a new session (saves the current one first)", _cmd_new),
     "/clear": SlashCommand("/clear", "Clear conversation history (keep session)", _cmd_clear),
     "/session": SlashCommand("/session", "Show current session info", _cmd_session),

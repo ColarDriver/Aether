@@ -12,5 +12,5 @@
 
 ## 已执行
 
-- `python -m unittest aether.tests.test_engine -v`
-- `python -m unittest aether.tests.test_subagents aether.tests.test_state_machine -v`
+- `python -m unittest aether.tests.engine.test_engine -v`
+- `python -m unittest aether.tests.subagents.test_subagents aether.tests.runtime.test_state_machine -v`

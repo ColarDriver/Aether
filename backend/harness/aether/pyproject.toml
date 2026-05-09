@@ -23,6 +23,7 @@ dependencies = [
     "duckdb>=1.4.4",
     "prompt_toolkit>=3.0.0",
     "rich>=13.0.0",
+    "anthropic>=0.100.0",
 ]
 
 [project.scripts]
@@ -37,3 +38,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aether"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

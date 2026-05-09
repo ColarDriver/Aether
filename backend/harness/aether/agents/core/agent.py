@@ -67,7 +67,7 @@ from aether.services.compact.collapse import (
 )
 from aether.services.compact.llm_fork import LLMForkSummarizer
 from aether.services.compact.microcompact import TimeBasedMicrocompactor
-from aether.services.compact.snip import NoOpSnipper
+from aether.services.compact.snip import Snipper
 from aether.tools.base import UnknownToolError
 from aether.tools.registry import ToolRegistry
 
@@ -1002,7 +1002,17 @@ class AgentEngine:
             )
             self._compaction_pipeline = CompactionPipeline(
                 tiers=[
-                    NoOpSnipper(),
+                    # Sprint 3 / PR 3.6 — Tier 2 redundancy snipper.
+                    # Cheap, local, no LLM round-trip; deletes
+                    # repeated read_file/list_dir/glob/grep calls,
+                    # superseded failed pairs, and empty assistant
+                    # frames.  Runs first so downstream tiers see
+                    # the lean view (their token estimates and
+                    # commit/blocking thresholds get the benefit).
+                    Snipper(
+                        config=self.config,
+                        logger=self.services.logger,
+                    ),
                     # Sprint 3 / PR 3.5 — Tier 3 lives between snip
                     # (Tier 2) and collapse (Tier 4).  Cheap and local;
                     # consults ``_aether_meta.timestamp`` stamped on

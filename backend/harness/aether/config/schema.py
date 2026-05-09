@@ -276,6 +276,37 @@ class EngineConfig:
         "glob",
         "list_dir",
     )
+    # Sprint 3 / PR 3.6 — Tier 2 (Snipper) tuning.
+    #
+    # ``snip_enabled``: master switch for the Tier 2 snipper.  Can
+    # be disabled even when the rest of the pipeline is active —
+    # e.g. if a specific snip rule causes unexpected behaviour and
+    # we want to ship a hotfix without reverting the whole
+    # pipeline.  Default ON because the three rules are conservative
+    # by design (only delete provably-redundant content).
+    snip_enabled: bool = True
+    # Per-rule switches.  All on by default; flip individual rules
+    # off if one misbehaves on real workloads.
+    #
+    # ``snip_dupe_enabled`` (Rule 1): keep only the LAST occurrence
+    # of each ``(name, input)`` tuple for a small whitelist of
+    # read-only tools (read_file, list_dir, glob, grep).  Earlier
+    # duplicate calls and their results are deleted.  shell /
+    # write_file are intentionally excluded — same input there can
+    # have side-effects.
+    snip_dupe_enabled: bool = True
+    # ``snip_fail_enabled`` (Rule 2): drop a failed (``is_error=True``)
+    # tool_result + its tool_use when a later same-key call
+    # succeeds.  Applies to any tool name (failure superseded by
+    # success is universally redundant).  Pure failures with no
+    # follow-up success are preserved (failure itself is signal).
+    snip_fail_enabled: bool = True
+    # ``snip_empty_enabled`` (Rule 3): drop assistant messages whose
+    # content is empty / whitespace / only-empty thinking-blocks /
+    # only-empty text-blocks (and no tool_use).  These appear when
+    # a streaming response was interrupted between blocks or when
+    # the model emitted a blank "let me think..." pause.
+    snip_empty_enabled: bool = True
     # Sprint 3 / PR 3.7 — Tier 4 (ContextCollapseTier) tuning.
     #
     # ``context_collapse_enabled``: master switch for the projection-

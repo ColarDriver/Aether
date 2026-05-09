@@ -461,10 +461,10 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
             "ContextCollapseTier",
             "CollapseSegment",
             "CollapseStore",
-            # Tier 2 placeholder — exported so the future PR can drop
-            # in a real implementation without changing how the agent
-            # imports it.
-            "NoOpSnipper",
+            # Tier 2 (PR 3.6) — local redundancy snipper plus the
+            # tool-name whitelist consumed by Rule 1 (DUPE).
+            "Snipper",
+            "SNIP_DUPE_RULE_TOOLS",
             # Token estimator the pipeline binds to by default.
             "estimate_messages_tokens",
         }
@@ -496,15 +496,15 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
         from aether.services.compact import (
             CachedMicrocompactor,
             CompactorTier,
-            NoOpSnipper,
         )
 
-        # Structural conformance — every NoOp/stub tier shipped in this
-        # module satisfies the protocol shape.  ``ContextCollapseTier``
-        # has a non-trivial ``__init__`` (needs config/summarizer/logger)
-        # so we don't construct it here; the dedicated tier tests cover
-        # its protocol conformance via real construction.
-        for tier in (NoOpSnipper(), CachedMicrocompactor()):
+        # Structural conformance — every stub tier shipped in this
+        # module satisfies the protocol shape.  ``Snipper``,
+        # ``ContextCollapseTier``, ``TimeBasedMicrocompactor`` and
+        # ``AutoCompactor`` have non-trivial ``__init__`` signatures
+        # (config/logger/summarizer); the dedicated tier tests cover
+        # their protocol conformance via real construction.
+        for tier in (CachedMicrocompactor(),):
             self.assertTrue(hasattr(tier, "name"))
             self.assertTrue(callable(getattr(tier, "maybe_run", None)))
         # CompactorTier is a class-like object usable in annotations.

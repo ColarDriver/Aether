@@ -7,9 +7,10 @@ single observable contract for what counts as "the compaction API".
 
 Tiers are numbered to match
 ``docs/sprint-3-compaction-pipeline/04_pr3_4_tier5_autocompact.md``
-and the follow-up tier PRs (PR 3.5 Tier 3, PR 3.7 Tier 4):
+and the follow-up tier PRs (PR 3.5 Tier 3, PR 3.6 Tier 2, PR 3.7 Tier 4):
 
-* Tier 2 — :class:`NoOpSnipper` (placeholder, future PR)
+* Tier 2 — :class:`Snipper` (live; PR 3.6) plus the
+  :data:`SNIP_DUPE_RULE_TOOLS` whitelist consumed by Rule 1
 * Tier 3 — :class:`TimeBasedMicrocompactor` (live; PR 3.5)
   — :class:`CachedMicrocompactor` (stub, Sprint 5+ cache_edits path)
   — :data:`TIME_BASED_MC_CLEARED_MESSAGE` (placeholder string the
@@ -52,7 +53,7 @@ from aether.services.compact.microcompact import (
     CachedMicrocompactor,
     TimeBasedMicrocompactor,
 )
-from aether.services.compact.snip import NoOpSnipper
+from aether.services.compact.snip import SNIP_DUPE_RULE_TOOLS, Snipper
 from aether.services.compact.token_estimation import estimate_messages_tokens
 
 __all__ = [
@@ -68,7 +69,8 @@ __all__ = [
     "ContextCollapseTier",
     "DEFAULT_COMPACTABLE_TOOLS",
     "LLMForkSummarizer",
-    "NoOpSnipper",
+    "SNIP_DUPE_RULE_TOOLS",
+    "Snipper",
     "TIME_BASED_MC_CLEARED_MESSAGE",
     "TimeBasedMicrocompactor",
     "UsageSink",

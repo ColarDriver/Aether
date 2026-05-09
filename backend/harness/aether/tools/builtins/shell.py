@@ -2,15 +2,25 @@
 
 Mirrors the ergonomics of claude-code's ``Bash`` and hermes-agent's
 ``terminal`` tool: a single ``command`` string is executed via the user's
-shell, stdout/stderr are captured (with size caps so a misbehaving
-command can't blow the context window), and a structured ``ToolResult``
-is returned with an exit code, duration, and a ``truncated`` flag.
+shell, stdout/stderr are captured, and a structured ``ToolResult`` is
+returned with an exit code, duration, and a ``truncated`` flag.
 
-Output cap rationale: 16 KB per stream keeps the round-trip token bill
-bounded while still showing 100+ lines of typical CLI output.  Past
-that we keep the head **and** the tail — the head identifies what
-command ran / what its banner looked like, the tail is where errors and
-final output usually live.
+Output handling \u2014 Sprint 3.5 / PR 3.5.1
+----------------------------------------
+The pre-3.5 head+tail truncation has been replaced with the unified
+spill mechanism shared across builtins.  Combined ``$ command`` +
+exit_code header + stdout + stderr is built first; if the total exceeds
+``max_result_chars`` (40 KB), the full payload is written to disk and
+``ToolResult.content`` retains only the inline preview plus a standard
+``... [output truncated: ... saved to ...] ...`` notice.  The model
+follows the notice with ``read_file <spilled-path>`` to retrieve the
+complete output.
+
+Why head+tail was retired: with disk spill we no longer need to
+synthesise a "head + tail" view to stay under context budget \u2014 the
+model can read the exact same contiguous output it would have seen
+without truncation.  Single-form preview also makes the spill notice
+cleaner (no mid-content marker).
 """
 
 from __future__ import annotations
@@ -21,11 +31,15 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.tools.base import ToolDescriptor, ToolExecutor
+from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_TIMEOUT_SEC = 60
-_MAX_BYTES_PER_STREAM = 16 * 1024
+# Sprint 3.5 / PR 3.5.1 \u2014 see module docstring.  40 KB is roughly 800
+# lines of typical CLI output, ~10 KB tokens; large enough that most
+# shell calls render inline, small enough that runaway ``find /`` style
+# commands trigger spill rather than blowing the context.
+_MAX_RESULT_CHARS = 40_000
 
 
 class ShellTool(ToolExecutor):
@@ -36,18 +50,21 @@ class ShellTool(ToolExecutor):
         *,
         default_cwd: Path | None = None,
         default_timeout_sec: int = _DEFAULT_TIMEOUT_SEC,
-        max_bytes_per_stream: int = _MAX_BYTES_PER_STREAM,
+        max_result_chars: int = _MAX_RESULT_CHARS,
     ) -> None:
         self.default_cwd = default_cwd
         self.default_timeout_sec = default_timeout_sec
-        self.max_bytes_per_stream = max_bytes_per_stream
+        self.max_result_chars = max_result_chars
         self._descriptor = ToolDescriptor(
             name="shell",
             description=(
                 "Run a shell command and return its stdout / stderr / exit "
                 "code. Use this for anything that requires a real subprocess "
-                "(git, find, npm, pytest, etc.). Output is truncated to "
-                f"{self.max_bytes_per_stream // 1024} KB per stream."
+                "(git, find, npm, pytest, etc.). When combined output exceeds "
+                f"{self.max_result_chars // 1024} KB the full payload spills "
+                "to disk and the inline preview ends with a ``[output truncated"
+                " ... saved to ...]`` notice; use ``read_file`` on the saved "
+                "path to retrieve the complete output."
             ),
             parameters={
                 "type": "object",
@@ -118,7 +135,7 @@ class ShellTool(ToolExecutor):
             stderr = exc.stderr or ""
             stdout_text = stdout if isinstance(stdout, str) else stdout.decode("utf-8", "replace")
             stderr_text = stderr if isinstance(stderr, str) else stderr.decode("utf-8", "replace")
-            content = self._format_output(
+            full_output = self._format_output(
                 command=command,
                 cwd=cwd,
                 exit_code=None,
@@ -127,6 +144,14 @@ class ShellTool(ToolExecutor):
                 duration_ms=duration_ms,
                 timed_out=True,
                 timeout=timeout,
+            )
+            content = maybe_spill_for_tool(
+                full_output,
+                call=call,
+                context=context,
+                max_chars=self.max_result_chars,
+                extension="txt",
+                full_lines=full_output.count("\n") + 1,
             )
             return ToolResult(
                 tool_call_id=call.id,
@@ -152,20 +177,33 @@ class ShellTool(ToolExecutor):
             )
 
         duration_ms = int((time.monotonic() - started) * 1000)
-        stdout, stdout_truncated = self._cap(completed.stdout or "")
-        stderr, stderr_truncated = self._cap(completed.stderr or "")
-        truncated = stdout_truncated or stderr_truncated
+        stdout_text = completed.stdout or ""
+        stderr_text = completed.stderr or ""
 
-        content = self._format_output(
+        full_output = self._format_output(
             command=command,
             cwd=cwd,
             exit_code=completed.returncode,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=stdout_text,
+            stderr=stderr_text,
             duration_ms=duration_ms,
             timed_out=False,
             timeout=timeout,
         )
+
+        # Pre-spill length is the canonical "real" payload size that
+        # downstream observers care about; capture it here so the
+        # metadata doesn't lie about whether the model saw the full body.
+        original_chars = len(full_output)
+        content = maybe_spill_for_tool(
+            full_output,
+            call=call,
+            context=context,
+            max_chars=self.max_result_chars,
+            extension="txt",
+            full_lines=full_output.count("\n") + 1,
+        )
+        spilled = len(content) != original_chars
 
         return ToolResult(
             tool_call_id=call.id,
@@ -175,7 +213,7 @@ class ShellTool(ToolExecutor):
             metadata={
                 "exit_code": completed.returncode,
                 "duration_ms": duration_ms,
-                "truncated": truncated,
+                "truncated": spilled,
                 "cwd": str(cwd) if cwd else None,
                 "command": command,
             },
@@ -204,18 +242,6 @@ class ShellTool(ToolExecutor):
             timeout = self.default_timeout_sec
         return min(max(timeout, 1), 600)
 
-    def _cap(self, text: str) -> tuple[str, bool]:
-        encoded = text.encode("utf-8", errors="replace")
-        if len(encoded) <= self.max_bytes_per_stream:
-            return text, False
-        head_size = self.max_bytes_per_stream * 2 // 3
-        tail_size = self.max_bytes_per_stream - head_size
-        head = encoded[:head_size].decode("utf-8", errors="replace")
-        tail = encoded[-tail_size:].decode("utf-8", errors="replace")
-        omitted = len(encoded) - head_size - tail_size
-        marker = f"\n... [{omitted} bytes truncated] ...\n"
-        return head + marker + tail, True
-
     @staticmethod
     def _format_output(
         *,
@@ -228,16 +254,25 @@ class ShellTool(ToolExecutor):
         timed_out: bool,
         timeout: int,
     ) -> str:
+        # Header order is intentional: the model needs ``exit`` (or
+        # timeout) and ``stderr_lines`` to judge success even if the
+        # body is later spilled and only the preview survives in
+        # context.  Matches the contract described in the module
+        # docstring.
         lines: list[str] = []
         lines.append(f"$ {command}")
         if cwd is not None:
             lines.append(f"(cwd: {cwd})")
         if timed_out:
             lines.append(
-                f"[timeout after {timeout}s, partial output below — duration {duration_ms}ms]"
+                f"[timeout after {timeout}s, partial output below \u2014 duration {duration_ms}ms]"
             )
         else:
-            lines.append(f"[exit {exit_code} in {duration_ms}ms]")
+            stderr_line_count = stderr.count("\n") if stderr else 0
+            lines.append(
+                f"[exit {exit_code} in {duration_ms}ms, "
+                f"stderr_lines={stderr_line_count}]"
+            )
         if stdout:
             lines.append("--- stdout ---")
             lines.append(stdout.rstrip("\n"))

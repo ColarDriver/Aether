@@ -79,6 +79,14 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # (also on ``context.metadata``) and is mirrored into
     # ``EngineResult.metadata['iteration_budget']`` by ``_build_result``.
     "_iteration_budget_obj",
+    # Sprint 3.5 / PR 3.5.1: live ``EngineConfig`` reference — tools
+    # consult it via ``maybe_spill_for_tool`` to read the per-tool
+    # spill master switch and override directory.  Storing the live
+    # object (not a snapshot) keeps tools picking up config changes
+    # mid-session if a future feature ever rebuilds config; the price
+    # is that we MUST exclude it from the JSON-serialised
+    # ``EngineResult.metadata['turn']`` snapshot.
+    "_engine_config",
 })
 
 
@@ -945,6 +953,14 @@ class AgentEngine:
             task_id=task_id,
             turn_id=turn_id,
         )
+        # Sprint 3.5 / PR 3.5.1: inject the live ``EngineConfig`` so
+        # tools can consult per-tool feature switches (currently
+        # ``tool_result_spill_enabled`` / ``tool_result_spill_dir``)
+        # without us threading a config argument through every
+        # ToolExecutor.execute signature.  The key is in
+        # ``_METADATA_INTERNAL_KEYS`` so the live dataclass never
+        # leaks into the JSON-serialised EngineResult.metadata['turn'].
+        context.metadata["_engine_config"] = self.config
         return state_machine, messages, context
 
     def _prepare_session_and_system_prompt(

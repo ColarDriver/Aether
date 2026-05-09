@@ -381,5 +381,102 @@ class GroupKMetadataExposure(unittest.TestCase):
         self.assertTrue(_budget(result)["grace_consumed"])
 
 
+# --------------------------------------------------------------------- #
+# Group L \u2014 Sprint 3.5 / PR 3.5.3 closure: real TodoWriteTool refund   #
+# --------------------------------------------------------------------- #
+
+
+class GroupLRealTodoWriteRefund(unittest.TestCase):
+    """T-L1..T-L2 \u2014 the actual ``TodoWriteTool`` (not a stub) triggers
+    cheap-tool refund.
+
+    Sprint 3 / PR 3.2 wired up the cheap-tool refund machinery and seeded
+    ``EngineConfig.cheap_tool_names`` with ``"todo_write"`` (among others)
+    in anticipation of this PR.  Until Sprint 3.5 / PR 3.5.3 there was
+    no actual ``todo_write`` tool registered, so the entry was a dangling
+    reference that nothing exercised.  These tests close that loop by
+    wiring the bundled :class:`TodoWriteTool` into the engine and
+    verifying the budget snapshot reports ``refund_count == 1`` for a
+    turn whose only tool call is ``todo_write``.
+    """
+
+    def _build_engine_with_real_todo(
+        self, *, max_iterations: int = 5
+    ) -> AgentEngine:
+        # Local import keeps the module-level imports tight and matches
+        # how production code lazy-imports the builtins.
+        from aether.tools.builtins.todo_write import TodoWriteTool, clear_session_todos
+
+        # Each test starts with a fresh per-session todo store so the
+        # "all done" auto-clear from a previous test never leaks in.
+        clear_session_todos("sL1")
+        clear_session_todos("sL2")
+
+        registry = ToolRegistry()
+        registry.register(TodoWriteTool())
+        registry.register(_NoOpTool("shell"))
+        provider = _QueuedProvider([
+            NormalizedResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="c0-todo_write",
+                        name="todo_write",
+                        arguments={
+                            "todos": [
+                                {
+                                    "id": "1",
+                                    "content": "do thing",
+                                    "status": "in_progress",
+                                }
+                            ]
+                        },
+                    )
+                ],
+                metadata={"usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+            ),
+            _final_text("ack"),
+        ])
+        return AgentEngine(
+            provider,
+            tool_registry=registry,
+            config=EngineConfig(
+                max_iterations=max_iterations,
+                use_builtin_tools=False,
+                summary_on_budget_exhausted=False,
+            ),
+        )
+
+    def test_l1_real_todo_write_call_refunds_iteration(self) -> None:
+        """T-L1: a turn calling the real TodoWriteTool only \u2192 budget.used == 0."""
+        from aether.tools.builtins.todo_write import get_session_todos
+
+        engine = self._build_engine_with_real_todo()
+        result = engine.run_turn(
+            EngineRequest(session_id="sL1", user_message="go")
+        )
+
+        budget = _budget(result)
+        # The cheap-tool refund cancels the iteration the cheap call
+        # consumed, so refund_count == 1 proves the engine identified
+        # ``todo_write`` as cheap.
+        self.assertEqual(
+            budget["refund_count"], 1, "todo_write should be cheap-refunded"
+        )
+        self.assertNotEqual(result.exit_reason, ExitReason.MAX_ITERATIONS)
+        # Sanity-check the real TodoWriteTool actually ran rather than
+        # being swallowed by the engine: the session's stored todo list
+        # must reflect the canned argument we sent.
+        stored = get_session_todos("sL1")
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["status"], "in_progress")
+
+    def test_l2_todo_write_in_default_cheap_list(self) -> None:
+        """T-L2 \u2014 ``todo_write`` lives in the default cheap_tool_names
+        tuple (regression-only assertion; if a future config edit
+        drops it the refund stops firing in production)."""
+        cfg = EngineConfig()
+        self.assertIn("todo_write", cfg.cheap_tool_names)
+
+
 if __name__ == "__main__":
     unittest.main()

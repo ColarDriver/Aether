@@ -17,10 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.tools.base import ToolDescriptor, ToolExecutor
+from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_MAX_RESULTS = 200
+# Sprint 3.5 / PR 3.5.1 \u2014 path lists are dense (one path per line);
+# 20 KB is roughly 600-800 typical paths.
+_MAX_RESULT_CHARS = 20_000
 _DEFAULT_SKIP = {
     ".git",
     "node_modules",
@@ -127,7 +130,18 @@ class GlobTool(ToolExecutor):
             f"# matches: {len(filtered)}" + (" (truncated)" if truncated else ""),
         ]
         body = "\n".join(str(p) for p in filtered) if filtered else "(no matches)"
-        content = "\n".join(header) + "\n" + body
+        full_output = "\n".join(header) + "\n" + body
+
+        original_chars = len(full_output)
+        content = maybe_spill_for_tool(
+            full_output,
+            call=call,
+            context=context,
+            max_chars=_MAX_RESULT_CHARS,
+            extension="txt",
+            full_lines=full_output.count("\n") + 1,
+        )
+        spilled = len(content) != original_chars
 
         return ToolResult(
             tool_call_id=call.id,
@@ -138,7 +152,8 @@ class GlobTool(ToolExecutor):
                 "pattern": pattern,
                 "path": str(path),
                 "match_count": len(filtered),
-                "truncated": truncated,
+                "truncated": truncated or spilled,
+                "spilled": spilled,
             },
         )
 

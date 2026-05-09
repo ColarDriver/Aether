@@ -13,10 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.tools.base import ToolDescriptor, ToolExecutor
+from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_MAX_ENTRIES = 256
+# Sprint 3.5 / PR 3.5.1 \u2014 list_dir is naturally bounded by
+# ``max_entries``; spill is a last-resort backstop in case a caller
+# bumps that limit and a colossal directory still overflows the
+# context.  20 KB \u2248 256 typical entries.
+_MAX_RESULT_CHARS = 20_000
 _DEFAULT_SKIP = (
     ".git",
     "node_modules",
@@ -145,7 +150,18 @@ class ListDirTool(ToolExecutor):
             header.append("# (output truncated — pass a larger max_entries to see more)")
 
         body = "\n".join(rows) if rows else "(empty)"
-        content = "\n".join(header) + "\n" + body
+        full_output = "\n".join(header) + "\n" + body
+
+        original_chars = len(full_output)
+        content = maybe_spill_for_tool(
+            full_output,
+            call=call,
+            context=context,
+            max_chars=_MAX_RESULT_CHARS,
+            extension="txt",
+            full_lines=full_output.count("\n") + 1,
+        )
+        spilled = len(content) != original_chars
 
         return ToolResult(
             tool_call_id=call.id,
@@ -156,7 +172,8 @@ class ListDirTool(ToolExecutor):
                 "path": str(path),
                 "entries_returned": len(rows),
                 "entries_skipped": skipped,
-                "truncated": truncated,
+                "truncated": truncated or spilled,
+                "spilled": spilled,
             },
         )
 

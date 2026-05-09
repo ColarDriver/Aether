@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -219,3 +220,20 @@ class EngineConfig:
     # behaviour (e.g. for benchmarks where the empty-string response
     # is part of the test contract).
     summary_on_budget_exhausted: bool = True
+    # Sprint 3.5 / PR 3.5.1: master switch for per-tool result spill.
+    # When ``True`` (default), tools that produce more than their own
+    # ``MAX_RESULT_CHARS`` write the full output to disk under
+    # ``tool_result_spill_dir`` and keep only an inline preview plus a
+    # standardised ``... [output truncated: ... saved to ...] ...``
+    # notice in ``ToolResult.content``.  When ``False``, tools fall back
+    # to plain truncation behaviour with a generic ``[output truncated]``
+    # marker — emergency rollback if the spill directory becomes
+    # problematic (read-only NFS, full disk, untrusted on shared host).
+    tool_result_spill_enabled: bool = True
+    # Sprint 3.5 / PR 3.5.1: override directory for spilled results.
+    # When ``None`` (default) the helpers in
+    # :mod:`aether.runtime.tool_result_storage` use
+    # ``~/.aether/tool_results/<session_id>/<call_id>.<ext>``.  Set to a
+    # faster local disk on systems where ``$HOME`` is on slow networked
+    # storage, or to a tmpfs path on ephemeral CI workers.
+    tool_result_spill_dir: Path | None = None

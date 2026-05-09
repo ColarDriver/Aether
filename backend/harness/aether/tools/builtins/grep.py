@@ -18,10 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.tools.base import ToolDescriptor, ToolExecutor
+from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_MAX_MATCHES = 200
+# Sprint 3.5 / PR 3.5.1 \u2014 grep results are line-formatted (``path:lineno:
+# content``), so spill kicks in late and the preview is line-aligned
+# (no half-line tails).  30 KB roughly covers 250-300 typical hits.
+_MAX_RESULT_CHARS = 30_000
 _DEFAULT_SKIP = {
     ".git",
     "node_modules",
@@ -48,7 +52,17 @@ class GrepTool(ToolExecutor):
     ) -> None:
         self.default_cwd = default_cwd
         self.default_max_matches = default_max_matches
-        self._rg_path: str | None | object = object()
+        # Sprint 3.5 / PR 3.5.1 \u2014 fixed a pre-existing bug where the
+        # initial sentinel was ``object()`` (each call returned a new
+        # instance, so ``self._rg_path is object()`` was always False
+        # and the resolution branch never fired).  Existing callers
+        # masked it via ``try: subprocess.run except OSError`` falling
+        # back to the python walker.  Replaced with explicit
+        # ``_rg_resolved`` flag for clarity \u2014 None now legitimately
+        # means "ripgrep not available", distinct from "not yet
+        # resolved".
+        self._rg_path: str | None = None
+        self._rg_resolved: bool = False
         self._descriptor = ToolDescriptor(
             name="grep",
             description=(
@@ -118,24 +132,26 @@ class GrepTool(ToolExecutor):
         rg = self._ripgrep()
         if rg is not None:
             try:
-                return self._run_ripgrep(call, rg, pattern, path, glob, case_insensitive)
+                return self._run_ripgrep(call, context, rg, pattern, path, glob, case_insensitive)
             except OSError:
                 pass
 
-        return self._run_python_walker(call, pattern, path, glob, case_insensitive)
+        return self._run_python_walker(call, context, pattern, path, glob, case_insensitive)
 
     # ------------------------------------------------------------------
     # ripgrep
     # ------------------------------------------------------------------
 
     def _ripgrep(self) -> str | None:
-        if self._rg_path is object():  # not yet resolved
+        if not self._rg_resolved:
             self._rg_path = shutil.which("rg")
-        return self._rg_path  # type: ignore[return-value]
+            self._rg_resolved = True
+        return self._rg_path
 
     def _run_ripgrep(
         self,
         call: ToolCall,
+        context: TurnContext,
         rg: str,
         pattern: str,
         path: Path,
@@ -176,7 +192,7 @@ class GrepTool(ToolExecutor):
         if truncated:
             matches = matches[: self.default_max_matches]
 
-        return _format_result(call, pattern, path, matches, truncated, engine="ripgrep")
+        return _format_result(call, context, pattern, path, matches, truncated, engine="ripgrep")
 
     # ------------------------------------------------------------------
     # python fallback
@@ -185,6 +201,7 @@ class GrepTool(ToolExecutor):
     def _run_python_walker(
         self,
         call: ToolCall,
+        context: TurnContext,
         pattern: str,
         path: Path,
         glob: str | None,
@@ -222,7 +239,7 @@ class GrepTool(ToolExecutor):
             except OSError:
                 continue
 
-        return _format_result(call, pattern, path, matches, truncated, engine="python")
+        return _format_result(call, context, pattern, path, matches, truncated, engine="python")
 
     def _iter_files(self, path: Path, glob: str | None):
         for entry in path.rglob("*"):
@@ -249,6 +266,7 @@ class GrepTool(ToolExecutor):
 
 def _format_result(
     call: ToolCall,
+    context: TurnContext,
     pattern: str,
     path: Path,
     matches: list[str],
@@ -266,7 +284,42 @@ def _format_result(
         body = "\n".join(matches)
     else:
         body = "(no matches)"
-    content = "\n".join(header) + "\n" + body
+    full_output = "\n".join(header) + "\n" + body
+
+    # Line-aligned preview: maybe_spill_for_tool slices at exactly
+    # ``max_chars``, which can split the last grep line in half.  We
+    # nudge the preview boundary back to the nearest newline so models
+    # never see ``"path:42:def foo("`` followed by a truncation notice
+    # mid-token.  This is grep-specific tidying \u2014 other tools whose
+    # output is naturally line-uniform (glob, list_dir) don't need it.
+    spilled = False
+    if (
+        len(full_output) > _MAX_RESULT_CHARS
+        and getattr(
+            context.metadata.get("_engine_config") if context.metadata else None,
+            "tool_result_spill_enabled",
+            True,
+        )
+    ):
+        # Land the cut on (and including) the newline that closes the
+        # previous match line, so the preview always ends with ``\n``
+        # rather than mid-line.  ``rfind`` returns the newline's
+        # position; ``+ 1`` includes it in the preview slice.
+        cutoff = full_output.rfind("\n", 0, _MAX_RESULT_CHARS)
+        line_aligned_max = (cutoff + 1) if cutoff > 0 else _MAX_RESULT_CHARS
+        original_chars = len(full_output)
+        content = maybe_spill_for_tool(
+            full_output,
+            call=call,
+            context=context,
+            max_chars=line_aligned_max,
+            extension="txt",
+            full_lines=full_output.count("\n") + 1,
+        )
+        spilled = len(content) != original_chars
+    else:
+        content = full_output
+
     return ToolResult(
         tool_call_id=call.id,
         name=call.name,
@@ -277,7 +330,8 @@ def _format_result(
             "path": str(path),
             "engine": engine,
             "match_count": len(matches),
-            "truncated": truncated,
+            "truncated": truncated or spilled,
+            "spilled": spilled,
         },
     )
 

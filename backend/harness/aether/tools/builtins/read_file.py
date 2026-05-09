@@ -2,6 +2,20 @@
 
 Output format mirrors Cursor / claude-code: ``     12| line content`` so
 the model can reference specific line ranges in subsequent edits.
+
+Sprint 3.5 / PR 3.5.1 changes
+-----------------------------
+* The pre-3.5 hard ``256 KB`` cap (which raised ``is_error=True``) is
+  retired.  Files larger than ``MAX_RESULT_CHARS`` (60 KB rendered) now
+  flow through the shared spill path: full numbered output goes to
+  disk under ``~/.aether/tool_results``, ``ToolResult.content`` keeps
+  the inline preview plus the standard ``[output truncated ... saved
+  to ...]`` notice.  The model retrieves the rest by reading the
+  spilled file back \u2014 which is what the notice tells it to do.
+* **Recursion guard**: if the requested ``path`` lives under the spill
+  directory itself, we deliberately skip the spill check.  Without this
+  guard, the model's "follow the notice" call would re-spill its own
+  spill file on every read, exhausting disk and breaking the contract.
 """
 
 from __future__ import annotations
@@ -10,11 +24,15 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.tools.base import ToolDescriptor, ToolExecutor
+from aether.runtime.tool_result_storage import DEFAULT_SPILL_ROOT
+from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_LIMIT = 2000
-_MAX_BYTES = 256 * 1024
+# Sprint 3.5 / PR 3.5.1 \u2014 see module docstring.  60 KB \u2248 1500 numbered
+# lines, intentionally generous because users explicitly asked to read
+# the file (vs. shell whose output was incidental).
+_MAX_RESULT_CHARS = 60_000
 
 
 class ReadFileTool(ToolExecutor):
@@ -25,11 +43,11 @@ class ReadFileTool(ToolExecutor):
         *,
         default_cwd: Path | None = None,
         default_limit: int = _DEFAULT_LIMIT,
-        max_bytes: int = _MAX_BYTES,
+        max_result_chars: int = _MAX_RESULT_CHARS,
     ) -> None:
         self.default_cwd = default_cwd
         self.default_limit = default_limit
-        self.max_bytes = max_bytes
+        self.max_result_chars = max_result_chars
         self._descriptor = ToolDescriptor(
             name="read_file",
             description=(
@@ -93,17 +111,6 @@ class ReadFileTool(ToolExecutor):
         except OSError as exc:
             return _error(call, f"could not stat {path}: {exc}")
 
-        if stat.st_size > self.max_bytes:
-            return _error(
-                call,
-                (
-                    f"file too large: {stat.st_size} bytes > {self.max_bytes} byte cap. "
-                    "Use offset/limit, or run a `shell` command (head/tail/grep) for "
-                    "targeted reads."
-                ),
-                metadata={"path": str(path), "size_bytes": stat.st_size},
-            )
-
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -118,7 +125,7 @@ class ReadFileTool(ToolExecutor):
         end = min(total_lines, offset - 1 + limit)
         slice_ = all_lines[offset - 1: end]
 
-        truncated = end < total_lines
+        line_truncated = end < total_lines
 
         rendered_lines: list[str] = []
         for i, line in enumerate(slice_, start=offset):
@@ -130,11 +137,33 @@ class ReadFileTool(ToolExecutor):
         else:
             header_lines.append(
                 f"# lines {offset}-{end} of {total_lines}"
-                + (" (truncated)" if truncated else "")
+                + (" (truncated)" if line_truncated else "")
             )
 
         body = "\n".join(rendered_lines) if rendered_lines else "(no lines in range)"
-        content = "\n".join(header_lines) + "\n" + body
+        full_output = "\n".join(header_lines) + "\n" + body
+
+        # Sprint 3.5 / PR 3.5.1 \u2014 recursion guard for the spill path.
+        # When the model follows a previous truncation notice and reads
+        # back a spilled file, we MUST NOT re-spill it: the file lives
+        # under the configured spill root, so detecting that and
+        # short-circuiting the maybe_spill_for_tool call breaks the
+        # otherwise-infinite "preview \u2192 read \u2192 preview \u2192 read" loop.
+        if self._is_under_spill_root(path, context=context):
+            content = full_output
+            spilled = False
+        else:
+            original_chars = len(full_output)
+            content = maybe_spill_for_tool(
+                full_output,
+                call=call,
+                context=context,
+                max_chars=self.max_result_chars,
+                extension="txt",
+                full_lines=total_lines,
+                full_bytes=stat.st_size,
+            )
+            spilled = len(content) != original_chars
 
         return ToolResult(
             tool_call_id=call.id,
@@ -147,10 +176,43 @@ class ReadFileTool(ToolExecutor):
                 "limit": limit,
                 "lines_returned": len(slice_),
                 "total_lines": total_lines,
-                "truncated": truncated,
+                "truncated": line_truncated or spilled,
                 "size_bytes": stat.st_size,
+                "spilled": spilled,
             },
         )
+
+    @staticmethod
+    def _is_under_spill_root(path: Path, *, context: TurnContext) -> bool:
+        """Return True if ``path`` lives under the spill root for this run.
+
+        We resolve symlinks on both sides so a tool that read back a
+        spilled file via a symlink-into-tmpdir still hits the guard.
+        Configured override (``EngineConfig.tool_result_spill_dir``) is
+        consulted first; the canonical default acts as a fallback so
+        even ad-hoc TurnContexts (no engine config) still benefit.
+        """
+        cfg = context.metadata.get("_engine_config") if context.metadata else None
+        configured = getattr(cfg, "tool_result_spill_dir", None)
+        candidates: list[Path] = []
+        if configured is not None:
+            candidates.append(Path(configured))
+        candidates.append(DEFAULT_SPILL_ROOT)
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            return False
+        for root in candidates:
+            try:
+                root_resolved = root.resolve()
+            except (OSError, RuntimeError):
+                continue
+            try:
+                resolved.relative_to(root_resolved)
+                return True
+            except ValueError:
+                continue
+        return False
 
     # ------------------------------------------------------------------
     # helpers

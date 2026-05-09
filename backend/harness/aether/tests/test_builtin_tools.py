@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from aether.config.schema import EngineConfig
 from aether.runtime.contracts import ToolCall, TurnContext
 from aether.tools.builtins import (
     GlobTool,
@@ -38,6 +39,16 @@ def _ctx() -> TurnContext:
     return TurnContext(session_id="builtin-tests", iteration=1)
 
 
+def _ctx_with_spill(spill_root: str) -> TurnContext:
+    """Return a TurnContext whose engine config redirects spill files
+    into the given temp dir \u2014 keeps the test hermetic and avoids
+    polluting ``~/.aether/tool_results`` on the CI runner."""
+    cfg = EngineConfig(tool_result_spill_dir=Path(spill_root))
+    ctx = TurnContext(session_id="builtin-tests", iteration=1)
+    ctx.metadata["_engine_config"] = cfg
+    return ctx
+
+
 def _call(name: str, **args) -> ToolCall:
     return ToolCall(id=f"call-{name}", name=name, arguments=args)
 
@@ -48,12 +59,27 @@ def _call(name: str, **args) -> ToolCall:
 
 
 class FactoryTests(unittest.TestCase):
-    def test_factory_registers_six_canonical_tools(self) -> None:
+    def test_factory_registers_canonical_tools(self) -> None:
+        # Sprint 3.5 / PR 3.5.1 expanded the kit from six to nine
+        # tools; ``file_edit`` / ``notebook_edit`` / ``todo_write``
+        # join the original six.  Asserting the full sorted list
+        # documents the contract and trips loudly if someone drops
+        # a tool by accident.
         reg = build_default_tool_registry()
         names = sorted(d.name for d in reg.list_descriptors())
         self.assertEqual(
             names,
-            ["glob", "grep", "list_dir", "read_file", "shell", "write_file"],
+            [
+                "file_edit",
+                "glob",
+                "grep",
+                "list_dir",
+                "notebook_edit",
+                "read_file",
+                "shell",
+                "todo_write",
+                "write_file",
+            ],
         )
 
     def test_each_descriptor_advertises_object_schema_with_required(self) -> None:
@@ -91,17 +117,26 @@ class ShellToolTests(unittest.TestCase):
         self.assertTrue(result.is_error)
         self.assertIn("non-empty string", result.content)
 
-    def test_caps_oversize_stdout(self) -> None:
-        tool = ShellTool(max_bytes_per_stream=128)
-        big = "abcdefgh" * 200  # 1600 bytes
-        result = tool.execute(
-            _call("shell", command=f"printf '{big}'"),
-            _ctx(),
-        )
-        self.assertFalse(result.is_error)
-        self.assertTrue(result.metadata["truncated"])
-        self.assertIn("[", result.content)  # contains a "[N bytes truncated]" marker
-        self.assertIn("truncated", result.content)
+    def test_oversize_stdout_spills_to_disk(self) -> None:
+        # Sprint 3.5 / PR 3.5.1 \u2014 the head+tail truncation has been
+        # replaced with disk spill.  Lower the threshold so a tiny
+        # printf still trips it.  We don't care about the exact spill
+        # path here (covered by test_tool_result_spill); only that the
+        # content truncates with the canonical notice and metadata
+        # records the fact.
+        with tempfile.TemporaryDirectory() as spill_root:
+            tool = ShellTool(max_result_chars=128)
+            big = "abcdefgh" * 200  # 1600 bytes
+            ctx = _ctx_with_spill(spill_root)
+            result = tool.execute(
+                _call("shell", command=f"printf '{big}'"),
+                ctx,
+            )
+            self.assertFalse(result.is_error)
+            self.assertTrue(result.metadata["truncated"])
+            self.assertIn("output truncated", result.content)
+            self.assertIn("use read_file to retrieve", result.content)
+            self.assertEqual(ctx.metadata["tier1_spilled_count"], 1)
 
 
 # ---------------------------------------------------------------------------
@@ -153,15 +188,26 @@ class ReadFileToolTests(unittest.TestCase):
         self.assertTrue(result.is_error)
         self.assertIn("list_dir", result.content)
 
-    def test_oversize_file_is_rejected_with_size_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+    def test_oversize_file_spills_to_disk(self) -> None:
+        # Sprint 3.5 / PR 3.5.1 \u2014 the pre-3.5 hard 256 KB cap (which
+        # raised ``is_error=True`` and refused to read) has been
+        # replaced with disk spill.  A file exceeding ``max_result_chars``
+        # is still **read** successfully; the response just carries a
+        # truncation notice and the full output lives on disk for the
+        # model to retrieve via ``read_file <spilled-path>``.
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as spill_root:
             path = Path(tmp) / "big.bin"
             path.write_bytes(b"x" * 2048)
-            tool = ReadFileTool(default_cwd=Path(tmp), max_bytes=512)
-            result = tool.execute(_call("read_file", path="big.bin"), _ctx())
-        self.assertTrue(result.is_error)
+            tool = ReadFileTool(default_cwd=Path(tmp), max_result_chars=512)
+            ctx = _ctx_with_spill(spill_root)
+            result = tool.execute(_call("read_file", path="big.bin"), ctx)
+        self.assertFalse(result.is_error)
         self.assertEqual(result.metadata["size_bytes"], 2048)
-        self.assertIn("too large", result.content)
+        self.assertTrue(result.metadata["spilled"])
+        self.assertTrue(result.metadata["truncated"])
+        self.assertIn("output truncated", result.content)
+        self.assertIn("use read_file to retrieve", result.content)
+        self.assertEqual(ctx.metadata["tier1_spilled_count"], 1)
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +322,11 @@ class GrepToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._populate(Path(tmp))
             tool = GrepTool(default_cwd=Path(tmp))
-            tool._rg_path = None  # force python fallback
+            # Force the python fallback regardless of whether ``rg`` is
+            # actually installed on the test runner.  Setting both
+            # fields short-circuits the lazy ``shutil.which`` probe.
+            tool._rg_path = None
+            tool._rg_resolved = True
             result = tool.execute(
                 _call("grep", pattern="foo", path="."),
                 _ctx(),
@@ -290,6 +340,7 @@ class GrepToolTests(unittest.TestCase):
             self._populate(Path(tmp))
             tool = GrepTool(default_cwd=Path(tmp))
             tool._rg_path = None
+            tool._rg_resolved = True
             result = tool.execute(
                 _call("grep", pattern="foo", path=".", glob="*.py"),
                 _ctx(),
@@ -301,6 +352,7 @@ class GrepToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tool = GrepTool(default_cwd=Path(tmp))
             tool._rg_path = None
+            tool._rg_resolved = True
             result = tool.execute(
                 _call("grep", pattern="[unclosed", path="."),
                 _ctx(),

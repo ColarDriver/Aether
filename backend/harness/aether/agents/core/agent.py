@@ -99,6 +99,14 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # Sprint 3.5 / PR 3.5.8 — live SkillCatalog reference used by
     # ``SkillTool`` when no catalog was injected via constructor.
     "_skill_catalog",
+    # Sprint 3.5 / PR 3.5.9 — live LSPManager reference for
+    # :class:`LSPTool`.  Same rationale as the other live-object
+    # keys above: must never leak into the JSON-serialised
+    # ``EngineResult.metadata['turn']`` snapshot.
+    "_lsp_manager",
+    # Sprint 3.5 / PR 3.5.10 — live BrowserManager reference for
+    # :class:`WebBrowserTool`.
+    "_browser_manager",
 })
 
 
@@ -123,6 +131,8 @@ class AgentEngine:
         recovery_strategy: RecoveryStrategy | None = None,
         fallback_chain: FallbackChain | None = None,
         skill_catalog: "object | None" = None,
+        lsp_manager: "object | None" = None,
+        browser_manager: "object | None" = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -181,6 +191,13 @@ class AgentEngine:
         # an explicit catalog.  Stored on the engine so subagents can
         # inherit (see DefaultSubagentBuilder).
         self._skill_catalog = skill_catalog
+        # Sprint 3.5 / PR 3.5.9 / 3.5.10 — optional shared LSP /
+        # browser managers.  Both default to ``None`` so callers that
+        # never use the corresponding tool pay zero cost (no LSP
+        # binary lookup, no Playwright import).  When set, they're
+        # forwarded into ``TurnContext.metadata`` for tools to pick up.
+        self._lsp_manager = lsp_manager
+        self._browser_manager = browser_manager
 
         self._current_session_id: str | None = None
         self._active_children: dict[str, AgentEngine] = {}
@@ -991,6 +1008,12 @@ class AgentEngine:
             request, "approval_prompter", None
         )
         context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
+        # Sprint 3.5 / PR 3.5.9 / 3.5.10 — LSP + browser manager
+        # references.  Tools fetch them lazily; passing the live
+        # objects (not config snapshots) keeps subagents and parent
+        # sharing one warm subprocess pool.
+        context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
+        context.metadata["_browser_manager"] = getattr(self, "_browser_manager", None)
         return state_machine, messages, context
 
     def _prepare_session_and_system_prompt(

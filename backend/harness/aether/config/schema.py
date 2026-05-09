@@ -269,3 +269,25 @@ class EngineConfig:
     skill_tool_enabled: bool = True
     skill_search_paths: tuple[Path, ...] = ()
     skill_list_in_system_prompt: bool = False
+    # Sprint 3.5 / PR 3.5.9 — LSP tool gate.  ``True`` by default
+    # because the tool degrades gracefully (it returns a friendly
+    # "language server not installed" message when no LSP binary is
+    # on PATH), so leaving it on never crashes a turn that doesn't
+    # need it.  ``lsp_server_overrides`` lets operators steer specific
+    # languages at a custom binary (e.g. ``"python": [["pylsp"]]``)
+    # without re-publishing the harness.
+    lsp_tool_enabled: bool = True
+    lsp_server_overrides: Dict[str, Any] = field(default_factory=dict)
+    lsp_request_timeout_seconds: int = 8
+    # Sprint 3.5 / PR 3.5.10 — Headless Chromium browser tool.
+    # **Disabled by default** because Playwright is a heavyweight
+    # optional dependency (~150 MB Chromium download) and most
+    # turns don't need a real browser.  Flip on after running
+    # ``pip install playwright && playwright install chromium``.
+    # ``web_browser_idle_timeout_seconds`` controls how long an idle
+    # browser stays warm before the manager shuts it down to free
+    # memory.  ``web_browser_navigation_timeout_seconds`` bounds any
+    # single page load.
+    web_browser_enabled: bool = False
+    web_browser_idle_timeout_seconds: int = 30
+    web_browser_navigation_timeout_seconds: int = 30

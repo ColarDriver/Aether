@@ -1,7 +1,7 @@
 """Built-in tool kit shipped with the Aether harness.
 
 This package exposes the executors any ``AgentEngine`` can use out of
-the box.  After Sprint 3.5 / PR-2 the kit ships **18 tools**:
+the box.  After Sprint 3.5 / PR-3 the kit ships **20 tools**:
 
 * Filesystem & shell (PR-1): ``shell``, ``read_file``, ``write_file``,
   ``list_dir``, ``grep``, ``glob``, ``file_edit``, ``notebook_edit``,
@@ -11,12 +11,15 @@ the box.  After Sprint 3.5 / PR-2 the kit ships **18 tools**:
 * Interaction (PR-2): ``enter_plan_mode``, ``exit_plan_mode``,
   ``ask_user_question``.
 * Skill loader (PR-2): ``skill``.
+* Semantic code nav (PR-3): ``lsp``.
+* Headless browser (PR-3): ``web_browser``.
 
 Each new tool family is gated by an ``EngineConfig`` switch
 (``web_fetch_enabled`` / ``allow_subagent_dispatch`` /
 ``plan_mode_enabled`` / ``ask_user_question_enabled`` /
-``skill_tool_enabled``); flipping any of these to ``False`` makes the
-corresponding tool refuse with a structured error rather than
+``skill_tool_enabled`` / ``lsp_tool_enabled`` /
+``web_browser_enabled``); flipping any of these to ``False`` makes
+the corresponding tool refuse with a structured error rather than
 disappearing from the registry, so the model gets a clear message and
 the surrounding observability/telemetry stays consistent.
 
@@ -42,6 +45,7 @@ from aether.tools.builtins.file_edit import FileEditTool
 from aether.tools.builtins.glob import GlobTool
 from aether.tools.builtins.grep import GrepTool
 from aether.tools.builtins.list_dir import ListDirTool
+from aether.tools.builtins.lsp import LSPTool
 from aether.tools.builtins.notebook_edit import NotebookEditTool
 from aether.tools.builtins.read_file import ReadFileTool
 from aether.tools.builtins.shell import ShellTool
@@ -49,6 +53,7 @@ from aether.tools.builtins.skill import SkillTool
 from aether.tools.builtins.task_output import TaskOutputTool
 from aether.tools.builtins.task_stop import TaskStopTool
 from aether.tools.builtins.todo_write import TodoWriteTool
+from aether.tools.builtins.web_browser import WebBrowserTool
 from aether.tools.builtins.web_fetch import WebFetchTool
 from aether.tools.builtins.web_search import WebSearchTool
 from aether.tools.builtins.write_file import WriteFileTool
@@ -60,6 +65,8 @@ def build_default_tool_registry(
     cwd: Path | None = None,
     skill_catalog: Any | None = None,
     approval_prompter: Any | None = None,
+    lsp_manager: Any | None = None,
+    browser_manager: Any | None = None,
 ) -> ToolRegistry:
     """Return a :class:`ToolRegistry` populated with the bundled tool kit.
 
@@ -80,6 +87,14 @@ def build_default_tool_registry(
         ``AskUserQuestionTool``.  In production the engine forwards
         ``EngineRequest.approval_prompter`` via metadata, so passing
         ``None`` here is the common case.
+    lsp_manager:
+        Optional :class:`~aether.runtime.lsp_manager.LSPManager`
+        pre-bound onto :class:`LSPTool`.  When omitted the tool builds
+        a lazy default the first time it runs.
+    browser_manager:
+        Optional :class:`~aether.runtime.browser_manager.BrowserManager`
+        pre-bound onto :class:`WebBrowserTool`.  When omitted the tool
+        builds one on demand using ``EngineConfig`` settings.
     """
     registry = ToolRegistry()
     registry.register(ShellTool(default_cwd=cwd))
@@ -102,6 +117,9 @@ def build_default_tool_registry(
     registry.register(ExitPlanModeTool(prompter=approval_prompter))
     registry.register(AskUserQuestionTool(prompter=approval_prompter))
     registry.register(SkillTool(catalog=skill_catalog))
+    # Sprint 3.5 / PR-3.
+    registry.register(LSPTool(manager=lsp_manager))
+    registry.register(WebBrowserTool(manager=browser_manager))
     return registry
 
 
@@ -124,5 +142,7 @@ __all__ = [
     "ExitPlanModeTool",
     "AskUserQuestionTool",
     "SkillTool",
+    "LSPTool",
+    "WebBrowserTool",
     "build_default_tool_registry",
 ]

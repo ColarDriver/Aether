@@ -454,10 +454,16 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
             "CachedMicrocompactor",
             "TIME_BASED_MC_CLEARED_MESSAGE",
             "DEFAULT_COMPACTABLE_TOOLS",
-            # Tier 2/4 placeholders — exported so future PRs can drop
-            # in real implementations without changing how the agent
-            # imports them.
-            "NoOpCollapseTier",
+            # Tier 4 (PR 3.7) — projection-based collapse.  Both the
+            # tier and its data-model classes (segment + store) are
+            # exposed so callers can introspect the projection without
+            # poking at the submodule.
+            "ContextCollapseTier",
+            "CollapseSegment",
+            "CollapseStore",
+            # Tier 2 placeholder — exported so the future PR can drop
+            # in a real implementation without changing how the agent
+            # imports it.
             "NoOpSnipper",
             # Token estimator the pipeline binds to by default.
             "estimate_messages_tokens",
@@ -494,7 +500,10 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
         )
 
         # Structural conformance — every NoOp/stub tier shipped in this
-        # module satisfies the protocol shape.
+        # module satisfies the protocol shape.  ``ContextCollapseTier``
+        # has a non-trivial ``__init__`` (needs config/summarizer/logger)
+        # so we don't construct it here; the dedicated tier tests cover
+        # its protocol conformance via real construction.
         for tier in (NoOpSnipper(), CachedMicrocompactor()):
             self.assertTrue(hasattr(tier, "name"))
             self.assertTrue(callable(getattr(tier, "maybe_run", None)))

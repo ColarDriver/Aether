@@ -61,7 +61,10 @@ from aether.runtime.usage import CanonicalUsage, normalize_usage
 from aether.services.compact import estimate_messages_tokens
 from aether.services.compact.autocompact import AutoCompactor
 from aether.services.compact.compactor import CompactionPipeline, CompactionResult
-from aether.services.compact.collapse import NoOpCollapseTier
+from aether.services.compact.collapse import (
+    CollapseStore,
+    ContextCollapseTier,
+)
 from aether.services.compact.llm_fork import LLMForkSummarizer
 from aether.services.compact.microcompact import TimeBasedMicrocompactor
 from aether.services.compact.snip import NoOpSnipper
@@ -403,6 +406,20 @@ class AgentEngine:
                         exit_reason = ExitReason.MIDDLEWARE_ERROR
                         state_machine.transition(LoopState.FAILED)
                         break
+
+                    # Sprint 3 / PR 3.7 — projection-view application.
+                    # Tier 4 (``ContextCollapseTier``) writes a
+                    # ``CollapseStore`` onto ``context.metadata`` but
+                    # never mutates the local ``messages`` list (so
+                    # session_record / replay sees the un-collapsed
+                    # past).  The view is applied here, on the
+                    # post-middleware payload, so every provider call
+                    # within this turn sees the same projection — and
+                    # only the wire payload changes, not the stored
+                    # transcript.
+                    prepared_messages = self._apply_collapse_view(
+                        prepared_messages, context
+                    )
 
                     state_machine.transition(LoopState.LLM_CALL)
                     # Allow middleware to short-circuit the provider call (e.g. circuit breaker).
@@ -966,6 +983,23 @@ class AgentEngine:
             self._compaction_pipeline is None
             or self._compaction_pipeline_provider is not provider
         ):
+            # Sprint 3 / PR 3.4-3.7 — both Tier 4 (collapse) and
+            # Tier 5 (autocompact) need an LLM-fork summariser.  We
+            # construct a single shared instance and let both tiers
+            # share it: same provider, same usage-bridge, identical
+            # accounting semantics.  Sharing avoids double-binding
+            # the provider object and keeps the usage_sink wiring
+            # in one place.
+            shared_summarizer = LLMForkSummarizer(
+                provider=provider,
+                config=self.config,
+                logger=self.services.logger,
+                # Sprint 3 / PR 3.4 — bridge fork-call usage back
+                # into the parent turn's accumulator so the cost of
+                # compaction is *not* silently excluded from
+                # ``metadata['usage']`` / ``api_calls``.
+                usage_sink=self._accumulate_usage,
+            )
             self._compaction_pipeline = CompactionPipeline(
                 tiers=[
                     NoOpSnipper(),
@@ -977,23 +1011,20 @@ class AgentEngine:
                         config=self.config,
                         logger=self.services.logger,
                     ),
-                    NoOpCollapseTier(),
+                    # Sprint 3 / PR 3.7 — Tier 4 projection-based
+                    # collapse.  Default disabled
+                    # (``context_collapse_enabled=False``); when on,
+                    # owns the headroom flag that Tier 5 respects so
+                    # the two tiers don't both fire on the same
+                    # pass.
+                    ContextCollapseTier(
+                        config=self.config,
+                        summarizer=shared_summarizer,
+                        logger=self.services.logger,
+                    ),
                     AutoCompactor(
                         config=self.config,
-                        summarizer=LLMForkSummarizer(
-                            provider=provider,
-                            config=self.config,
-                            logger=self.services.logger,
-                            # Sprint 3 / PR 3.4 — bridge fork-call usage
-                            # back into the parent turn's accumulator so
-                            # the cost of compaction is *not* silently
-                            # excluded from ``metadata['usage']`` /
-                            # ``api_calls``.  ``_accumulate_usage`` is
-                            # idempotent on bad inputs (logs + no-op),
-                            # so this stays safe even if the fork
-                            # response shape is unexpected.
-                            usage_sink=self._accumulate_usage,
-                        ),
+                        summarizer=shared_summarizer,
                         logger=self.services.logger,
                     ),
                 ],
@@ -1003,6 +1034,33 @@ class AgentEngine:
             )
             self._compaction_pipeline_provider = provider
         return self._compaction_pipeline
+
+    def _apply_collapse_view(
+        self,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> List[Dict[str, Any]]:
+        """Return ``CollapseStore.as_view(messages)`` if a store is live.
+
+        Sprint 3 / PR 3.7 — applied right before each
+        ``provider.generate`` call so every provider invocation in
+        this turn sees the same projection.  Returns ``messages``
+        unchanged when:
+
+        * compaction is disabled at master level (no store can exist),
+        * Tier 4 itself is disabled (no store will exist),
+        * a store exists but has no committed segments yet (``as_view``
+          short-circuits to an identity return).
+
+        Crucially we do NOT touch the local ``messages`` list — the
+        view is a *projection* that only affects the wire payload, so
+        ``session_record`` / replay / steer / transcript export still
+        see the full original conversation.
+        """
+        store = context.metadata.get("_collapse_store")
+        if not isinstance(store, CollapseStore):
+            return messages
+        return store.as_view(messages)
 
     def _maybe_compact_messages(
         self,

@@ -276,6 +276,33 @@ class EngineConfig:
         "glob",
         "list_dir",
     )
+    # Sprint 3 / PR 3.7 — Tier 4 (ContextCollapseTier) tuning.
+    #
+    # ``context_collapse_enabled``: master switch for the projection-
+    # based collapse tier.  Default ``False`` because Tier 4 mutates
+    # the *view* sent to the model and competes with Tier 5; we want
+    # production observation first before flipping the default.
+    # Operators enable explicitly when Tier 5 fires too aggressively
+    # on long sessions (e.g. by inflating Tier 5 fork cost).
+    context_collapse_enabled: bool = False
+    # ``context_collapse_commit_pct``: token utilisation (as fraction
+    # of model window) at which Tier 4 starts proposing collapse
+    # segments.  0.90 mirrors claude-code's commit-start threshold.
+    # Below this the tier is read-only — it just applies whatever
+    # committed segments already exist on the store.
+    context_collapse_commit_pct: float = 0.90
+    # ``context_collapse_blocking_pct``: token utilisation at which a
+    # newly-proposed segment becomes *committed* (and therefore takes
+    # effect in subsequent projections).  0.95 mirrors claude-code's
+    # blocking threshold.  Between commit_pct and blocking_pct,
+    # segments are proposed but not committed — the pipeline can
+    # still re-evaluate before they bind.
+    context_collapse_blocking_pct: float = 0.95
+    # ``context_collapse_segment_max_messages``: maximum messages the
+    # tier will fold into a single collapse segment.  Larger values
+    # mean fewer summary calls but each one is harder for the LLM
+    # to summarise well.  Default 20 is a sweet spot in profiling.
+    context_collapse_segment_max_messages: int = 20
     # Sprint 3.5 / PR 3.5.1: master switch for per-tool result spill.
     # When ``True`` (default), tools that produce more than their own
     # ``MAX_RESULT_CHARS`` write the full output to disk under

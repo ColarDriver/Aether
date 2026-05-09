@@ -170,51 +170,70 @@
 
 ---
 
-## Sprint 2 — 错误分类器 + Provider Fallback 链（P0 第二波）
+## Sprint 2 — 错误分类器 + Provider Fallback 链（P0 第二波） ✅ 已完成
+
+> 完成情况（branch `feat/engine-error-recovery-and-tool-hardening`）：
+> - PR 2.1 ✅ — `runtime/error_classifier.py` + 60-fixture 测试套件，分类准确率 100%（验收要求 ≥ 95%）
+> - PR 2.2 ✅ — `runtime/fallback_chain.py` + `ClassifiedRecoveryStrategy`（recovery.py 扩展）+ `EngineServices.provider` 改为 property + `agent.py` 接入；新增 31 例测试
+> - PR 2.3 ✅ — `agents/core/tool_hardening.py`（`prepare_tool_calls` / `repair_tool_name`）+ `agent.py` 集成；新增 24 例测试
+>
+> 测试套件 302 → 357（+55 新增）全部通过。
 
 ### 目标
 让任何错误都有明确的恢复路径，让 rate limit 时能自动切到下一家 provider。
 
 ### 涉及
-- P0-5：工具名模糊修复
-- P0-6：工具调用上限 + 去重
-- P0-7：错误分类器 + Fallback 链
-- P0 中阶段 12.7、12.8、12.10、12.11、12.13 全部具体实现
+- P0-5：工具名模糊修复 ✅
+- P0-6：工具调用上限 + 去重 ✅
+- P0-7：错误分类器 + Fallback 链 ✅
+- P0 中阶段 12.7、12.8、12.10、12.11、12.13 已具体实现
 
 ### 文件改动
-- `backend/harness/aether/runtime/error_classifier.py`（新文件）
-  - `FailoverReason` 枚举（与 Hermes 命名一致）
-  - `classify_api_error(exc, ...) -> ClassifiedError`
-- `backend/harness/aether/runtime/fallback_chain.py`（新文件）
-  - `FallbackChain`、`ProviderFactory`
-- `backend/harness/aether/runtime/recovery.py`
-  - 实现各类 strategy：`RateLimitStrategy / ContextOverflowStrategy / PayloadTooLargeStrategy / ThinkingSignatureStrategy / GenericBackoffStrategy`
-- `backend/harness/aether/runtime/services.py`
-  - `EngineServices.provider` 改为属性，从 `FallbackChain.current_provider` 取
-- `backend/harness/aether/runtime/contracts.py`
-  - `ExitReason` 加 `RATE_LIMITED / FALLBACK_EXHAUSTED / INVALID_TOOL_REPEATED`
-  - `EngineConfig` 加 `max_invalid_tool_retries: int = 3`、`max_delegate_calls_per_turn: int = 4`
-- `backend/harness/aether/agents/core/agent.py`
-  - LLM_CALL 异常分支改为：`classify → strategy.recover() → 决定 retry / fallback / abort`
-  - 新方法 `_repair_tool_call(name)`：模糊匹配
-  - 新方法 `_cap_delegate_task_calls(tool_calls)`：上限
-  - 新方法 `_deduplicate_tool_calls(tool_calls)`：去重
-  - 工具名校验路径用 `_invalid_tool_retries` 计数
+- `backend/harness/aether/runtime/error_classifier.py`（新文件 ✅）
+  - `FailoverReason` 枚举（与 hermes-agent 字符串值 1:1 对齐，便于跨引擎日志关联）
+  - `ClassifiedError` dataclass（4 个正交 hint：`retryable / should_compress / should_rotate_credential / should_fallback`）
+  - `classify_api_error(exc, *, provider, model, approx_tokens, context_length, num_messages) -> ClassifiedError`
+- `backend/harness/aether/runtime/fallback_chain.py`（新文件 ✅）
+  - `FallbackChain`、`ProviderSlot`、`ProviderFactory`、`FallbackChainExhausted`
+  - 懒加载 factory + RLock 线程安全 + 失活 slot 跳过 + cumulative observability counters
+- `backend/harness/aether/runtime/recovery.py`（扩展 ✅）
+  - `RecoveryDecision` 增加 `activate_fallback / compress_context / strip_thinking / classified_reason` 字段
+  - 新 `ClassifiedRecoveryStrategy`：dispatch table 按 `FailoverReason` 决定行为（rate_limit / response_invalid / context_overflow / payload_too_large / thinking_signature / overloaded / server_error / timeout / unknown / hard-stops）
+  - 移除 `GenericBackoffStrategy._is_retriable` 中针对 `ResponseInvalidError` 的 Sprint 1 stop-gap
+- `backend/harness/aether/runtime/services.py`（重写 ✅）
+  - `EngineServices` 改为非 dataclass + `__slots__`（dataclass `slots=True` 与 `@property` 冲突）
+  - `provider` 改为 property：当 `fallback_chain` 存在时从 `chain.current_provider` 读，否则回落 constructor-time 实例
+- `backend/harness/aether/runtime/contracts.py`（扩展 ✅）
+  - `ExitReason` 新增：`RATE_LIMITED / CONTEXT_EXHAUSTED / PAYLOAD_TOO_LARGE / FALLBACK_EXHAUSTED / INVALID_TOOL_REPEATED`
+- `backend/harness/aether/config/schema.py`（扩展 ✅）
+  - `EngineConfig`：`classified_recovery_enabled: bool = True`、`fallback_chain_enabled: bool = False`、`max_fallback_activations_per_turn: int = 4`、`rate_limit_fallback_threshold_seconds: float = 30.0`、`invalid_tool_max_retries: int = 3`、`max_delegate_calls_per_turn: int = 4`、`delegate_tool_names: tuple[str, ...]`、`tool_dedup_enabled: bool = True`
+- `backend/harness/aether/agents/core/agent.py`（扩展 ✅）
+  - 默认注入 `ClassifiedRecoveryStrategy`（受 `classified_recovery_enabled` 控制）
+  - `_invoke_provider_with_recovery` 按 `decision.activate_fallback / compress_context / strip_thinking` 三轴正交分发；命中 fallback 时重置 `attempt_state` 让新 provider 拿到完整 retry 预算
+  - 新 `_resolve_terminal_exit_reason` helper：把 `recovery_terminal_exit_reason` metadata 映射到正确的 `ExitReason`
+  - 工具派发循环前调用 `prepare_tool_calls`（修复 + 上限 + 去重一站式），按 `PreparedToolCall.synthetic_result` 决定派发或注入合成结果
+- `backend/harness/aether/agents/core/tool_hardening.py`（新文件 ✅）
+  - `repair_tool_name`：四阶段管道（exact → prefix-strip → normalise → Levenshtein ≤ 2，tied 时拒绝）
+  - `prepare_tool_calls`：repair → cap → dedup 顺序执行；返回 `ToolDispatchPlan`（含 observability 计数器 + 可选 `exit_reason`）
 
 ### 新增测试
-- `tests/runtime/test_error_classifier.py`：每种 FailoverReason 至少 1 mock 异常
-- `tests/runtime/test_fallback_chain.py`：429 → 切换 → 成功
-- `tests/runtime/test_recovery_strategies.py`：每种 strategy 单测
-- `tests/agents/core/test_tool_name_fuzzy_repair.py`：`readFile` → `read_file`
-- `tests/agents/core/test_tool_dedup_and_cap.py`：5 个 delegate cap 到 4；3 个相同 read 去重
+- `tests/test_error_classifier.py`（14 用例 + 60 fixture 子用例 ✅）：每种 `FailoverReason` 至少 3 个真实 fixture，外加 helper extractor / metadata / 命名契约测试
+- `tests/test_fallback_chain.py`（17 用例 ✅）：链原语单测 + `EngineServices.provider` property 行为 + 端到端 429 → 切换、`ResponseInvalidError` 立即切换、链耗尽 → `FALLBACK_EXHAUSTED`
+- `tests/test_classified_recovery_strategy.py`（14 用例 ✅）：每个 `FailoverReason` 分支独立断言（rate_limit / response_invalid / stream_stalled / context_overflow / payload_too_large / thinking_signature / 5 个 hard-stop / 3 个 backoff / budget exhaustion / unknown）
+- `tests/test_tool_hardening.py`（24 用例 ✅）：`repair_tool_name` 全 4 阶段 + tied refusal；`prepare_tool_calls` cap / dedup / counter / order-independence；3 个端到端 engine 集成
 
-### 验收
-- 模拟 429 自动切 fallback 在 ≤ 1s 内完成
-- ErrorClassifier 在 50+ 真实异常样本上分类准确率 ≥ 95%（用 fixture）
+### 验收 ✅
+- 模拟 429 自动切 fallback 在毫秒级完成（`test_429_rotates_to_fallback_provider_and_succeeds`）
+- ErrorClassifier 在 60 个真实异常 fixture 上分类准确率 100%（验收要求 ≥ 95%）
+- 5 个 delegate cap 到 4 个、3 个相同 read 去重为 1 实际派发
+- `readFile` / `reed_file` / `tool_read_file` 等典型 typo 自动修复为 `read_file`
+- 测试套件 357 例全部通过（无回归）
 
 ### 回滚开关
-- `EngineConfig.fallback_chain_enabled: bool = False`：默认关闭，验证后再开
-- `EngineConfig.tool_dedup_enabled: bool = True`
+- `EngineConfig.fallback_chain_enabled: bool = False`：默认关闭，生产 chain 配置完毕后再开
+- `EngineConfig.classified_recovery_enabled: bool = True`：紧急回退到 Sprint 0 `GenericBackoffStrategy`
+- `EngineConfig.tool_dedup_enabled: bool = True`：False 时跳过 dedup 阶段保留原派发顺序
+- `EngineConfig.max_delegate_calls_per_turn: int`：设 0 禁用 delegate 派发；设 999 等价于不限制
 
 ---
 

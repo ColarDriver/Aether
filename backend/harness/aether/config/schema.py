@@ -109,3 +109,69 @@ class EngineConfig:
     # models that hallucinate tool calls in ``content``.  Suppressed
     # automatically when the registry is empty (no tools to advertise).
     tool_use_contract_enabled: bool = True
+    # Sprint 2 / PR 2.2: master switch for the classifier-aware
+    # recovery composite (rate-limit / context-overflow / payload /
+    # thinking-signature / response-invalid strategies).  When ``False``
+    # the engine falls back to the Sprint 0 ``GenericBackoffStrategy``
+    # — useful as an emergency rollback if a future strategy
+    # mis-classifies a hot upstream failure mode.  Default ``True``
+    # because every shipped strategy is a strict superset of the
+    # generic backoff path (they delegate to it for unknown reasons).
+    classified_recovery_enabled: bool = True
+    # Sprint 2 / PR 2.2: when ``True`` and ``EngineServices.fallback_chain``
+    # carries more than one provider, recovery decisions tagged
+    # ``activate_fallback`` actually rotate the active provider.
+    # Default ``False`` per the sprint plan: failover is only useful
+    # once the chain has been validated end-to-end with real provider
+    # credentials; flipping this on without that prep just hides
+    # configuration mistakes.  Single ``True`` flip after
+    # ``FallbackChain`` is wired in production.
+    fallback_chain_enabled: bool = False
+    # Sprint 2 / PR 2.2: maximum number of provider rotations the
+    # fallback chain may perform inside a single turn.  Bounds the
+    # worst-case "every provider returns 429 in sequence" scenario so
+    # an interactive turn never spins through 10 providers before
+    # giving up.  ``0`` disables fallback entirely (equivalent to
+    # ``fallback_chain_enabled=False``).
+    max_fallback_activations_per_turn: int = 4
+    # Sprint 2 / PR 2.2: ``Retry-After`` waits longer than this many
+    # seconds force an immediate fallback (or give-up if the chain is
+    # exhausted) instead of blocking the turn for the full duration.
+    # Mirrors hermes' "if rate-limit wait > 30s, rotate" heuristic.
+    rate_limit_fallback_threshold_seconds: float = 30.0
+    # Sprint 2 / PR 2.3: per-turn retry budget for unrepairable tool
+    # names.  Each iteration that surfaces at least one unknown +
+    # unrepairable name bumps a counter; once it reaches this cap the
+    # turn finalises with ``ExitReason.INVALID_TOOL_REPEATED`` so
+    # observers see "the model never figured out the right name"
+    # instead of an opaque tool failure.  Default ``3`` matches the
+    # P0-5 acceptance criteria in ``02_p0_critical_gaps.md``.
+    invalid_tool_max_retries: int = 3
+    # Sprint 2 / PR 2.3: maximum delegate-class tool calls that may
+    # actually dispatch in a single turn.  Excess calls become
+    # synthetic error ``ToolResult``s telling the model to consolidate
+    # work into fewer delegations.  ``0`` disables delegate dispatch
+    # entirely (useful for debugging).
+    max_delegate_calls_per_turn: int = 4
+    # Sprint 2 / PR 2.3: tool names treated as "delegate-class" by
+    # the per-turn cap above.  Compared via the same name normalisation
+    # the repair path uses (case-fold + dash↔underscore + namespace
+    # strip) so ``DelegateTask`` / ``delegate-task`` /
+    # ``mcp__router__delegate_task`` all hit the cap.  Defaults cover
+    # the names hermes-agent and Aether's subagent layer use; operators
+    # can extend the tuple to bring custom delegators under the cap.
+    delegate_tool_names: tuple[str, ...] = (
+        "delegate_task",
+        "delegate",
+        "subagent",
+        "subagent_dispatch",
+        "spawn_subagent",
+    )
+    # Sprint 2 / PR 2.3: when ``True`` the engine deduplicates identical
+    # tool calls (same name, same canonicalised args) within a single
+    # iteration — the first call dispatches, the rest become stub
+    # ``ToolResult``s that point at the original call id.  Default
+    # ``True`` because duplicate dispatch is almost always model
+    # confusion (re-reading the same file 5x); set to ``False`` to
+    # restore Sprint 1 behaviour for diagnostics.
+    tool_dedup_enabled: bool = True

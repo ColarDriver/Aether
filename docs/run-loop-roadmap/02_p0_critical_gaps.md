@@ -193,7 +193,18 @@
 
 ## P0-5 工具名校验与模糊修复（阶段 15.①）
 
-### 现状
+### ✅ 已完成（Sprint 2 / PR 2.3）
+
+`backend/harness/aether/agents/core/tool_hardening.py` 提供 `repair_tool_name`
+四阶段管道：exact → prefix-strip（`tool_` / `functions_` / `mcp__server__`）→
+`_normalize_name` 命中（与 Sprint 1.5 phantom-tool 共享 helper）→ Levenshtein
+≤ 2 模糊匹配，tied 距离时拒绝以免误派发。`prepare_tool_calls` 把不可修复的
+名字替换为 `synthetic_result`（含 `Available tools: …` 自纠提示），并维护
+`TURN_KEY_INVALID_TOOL_RETRIES` 计数器；达到 `EngineConfig.invalid_tool_max_retries`
+后 `agent.run_loop` 终止当前 turn 为 `ExitReason.INVALID_TOOL_REPEATED`
+（partial=True）。覆盖测试见 `tests/test_tool_hardening.py`（24 例）。
+
+### 现状（已修复，存档原始描述）
 ```292:306:backend/harness/aether/agents/core/agent.py
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
@@ -237,7 +248,21 @@
 
 ## P0-6 工具调用上限与去重（阶段 15.③④）
 
-### 现状
+### ✅ 已完成（Sprint 2 / PR 2.3）
+
+`tool_hardening.prepare_tool_calls` 在派发循环前依次执行 cap → dedup：
+- **Cap**：把 `_normalize_name(call.name)` 命中
+  `EngineConfig.delegate_tool_names` 的调用纳入 `TURN_KEY_DELEGATE_CALLS`
+  per-turn 计数；超过 `max_delegate_calls_per_turn (默认 4)` 的部分替换为
+  `is_error=True` 的 stub `ToolResult`，告诉模型合并工作。
+- **Dedup**：用 `(_normalize_name(name), json.dumps(args, sort_keys=True))`
+  作为 key（顺序无关），首次派发，后续同 key 的调用替换为 `is_error=False`
+  的 stub 指向首次 call_id。受 `EngineConfig.tool_dedup_enabled` 控制。
+
+覆盖测试 `tests/test_tool_hardening.py`：5 个 `delegate_task` cap 到 3、3 个相同
+`read_file` 去重为 1 实际派发、跨迭代 cap 计数累加、order-independent dedup。
+
+### 现状（已修复，存档原始描述）
 - 没有递归 subagent 数量上限：模型一次 `delegate_task` × 10 会真的 fan-out 10 个子代理。
 - 没有去重：模型在同一轮 `read_file({"path":"/a"})` × 5 会真执行 5 次。
 
@@ -259,7 +284,40 @@
 
 ## P0-7 错误分类器 + Provider Fallback 链（阶段 12.7、12.8、12.10、12.11、12.13）
 
-### 现状
+### ✅ 已完成（Sprint 2 / PR 2.1 + PR 2.2）
+
+- `runtime/error_classifier.py` 提供 `classify_api_error(exc, *, provider, model,
+  approx_tokens, context_length, num_messages) -> ClassifiedError`，覆盖
+  `auth / billing / rate_limit / overloaded / server_error / timeout /
+  context_overflow / payload_too_large / model_not_found / format_error /
+  thinking_signature / long_context_tier / response_invalid / stream_stalled /
+  unknown` 共 15 种 `FailoverReason`（与 hermes-agent 字符串值 1:1 对齐）。
+- `runtime/fallback_chain.py` 提供 `FallbackChain` + `ProviderSlot`，懒加载
+  factory、RLock 线程安全、失活 slot 自动跳过、cumulative observability counters。
+- `runtime/services.py` 把 `EngineServices.provider` 改为 property：当
+  `fallback_chain` 存在时从 `chain.current_provider` 读，单 provider 场景行为
+  保持 Sprint 0 不变（向后兼容）。
+- `runtime/recovery.py` 的 `ClassifiedRecoveryStrategy` 按 `FailoverReason`
+  分发到对应行为（rate_limit + 长 retry-after → fallback；response_invalid →
+  立即 fallback；context_overflow / payload_too_large → 压缩 hint；
+  thinking_signature → strip-thinking hint）。`Retry-After` 头通过
+  `ProviderInvocationError.retry_after_seconds` 直接保留，可中断 sleep 由
+  Sprint 0 的 `wait_interruptible` 提供。
+- `agent.py` 的 `_invoke_provider_with_recovery` 按 `decision.activate_fallback /
+  compress_context / strip_thinking` 三轴正交分发；命中 fallback 时重置
+  `attempt_state` 让新 provider 拿到完整 retry 预算；`recovery_terminal_exit_reason`
+  metadata 经 `_resolve_terminal_exit_reason` 映射到 `RATE_LIMITED /
+  CONTEXT_EXHAUSTED / PAYLOAD_TOO_LARGE / FALLBACK_EXHAUSTED`。
+- 回滚开关：`EngineConfig.classified_recovery_enabled: bool = True`、
+  `EngineConfig.fallback_chain_enabled: bool = False`（默认关闭，验证后再开）、
+  `EngineConfig.max_fallback_activations_per_turn: int = 4`、
+  `EngineConfig.rate_limit_fallback_threshold_seconds: float = 30.0`。
+
+覆盖测试：`tests/test_error_classifier.py`（14 例 + 60 fixture，准确率 100%）、
+`tests/test_classified_recovery_strategy.py`（14 例）、`tests/test_fallback_chain.py`
+（17 例，含端到端 engine 集成）。
+
+### 现状（已修复，存档原始描述）
 - 任何异常都走 `_handle_pipeline_error → _provider_error_retries += 1` → 没救场就失败。
 - `EngineServices.provider` 是单一的，不可热切换。
 

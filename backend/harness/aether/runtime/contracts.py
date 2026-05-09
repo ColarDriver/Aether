@@ -62,6 +62,38 @@ class ExitReason(str, Enum):
     # user sees a clear "the model never got around to actually running
     # anything" footer instead of a misleading green checkmark.
     PHANTOM_TOOL_INTENT = "PHANTOM_TOOL_INTENT"
+    # Sprint 2 / PR 2.2: provider returned 429 (or a 4xx body that
+    # classified to ``rate_limit``) and the recovery strategy gave up
+    # — usually because the fallback chain is exhausted *and* the
+    # rate-limit budget is too long for an interactive turn.  Distinct
+    # from PROVIDER_ERROR so observability can surface "throttled"
+    # specifically (operators tend to react differently to 429-class
+    # failures than to generic 5xx).
+    RATE_LIMITED = "RATE_LIMITED"
+    # Sprint 2 / PR 2.2: server rejected the request because the prompt
+    # exceeds the model's context window.  Surfaced when the recovery
+    # strategy decided compression was needed but no compressor is
+    # configured (Sprint 3 will wire compression in; until then this
+    # exits cleanly so the user knows *why* the call failed instead of
+    # silently retrying forever).
+    CONTEXT_EXHAUSTED = "CONTEXT_EXHAUSTED"
+    # Sprint 2 / PR 2.2: HTTP 413 (or message-pattern-matched
+    # equivalent) — the request body itself is too big regardless of
+    # the model's context window.  Same fallthrough rationale as
+    # CONTEXT_EXHAUSTED above; Sprint 3 compression will remove this
+    # being a user-visible terminal in the common case.
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    # Sprint 2 / PR 2.2: the fallback chain ran out of providers while
+    # the last attempt was still failing.  Distinct from PROVIDER_ERROR
+    # so operators can tell "we tried everyone and they all rejected
+    # us" apart from "single provider blew up".
+    FALLBACK_EXHAUSTED = "FALLBACK_EXHAUSTED"
+    # Sprint 2 / PR 2.3 — model emitted unrepairable tool names (typos
+    # / hallucinated tools) for ``invalid_tool_max_retries`` iterations
+    # in a row.  We surface a distinct terminal so the UI / observability
+    # can tell "the model never figured out which tool to call" apart
+    # from "the tool ran but failed".
+    INVALID_TOOL_REPEATED = "INVALID_TOOL_REPEATED"
 
 
 

@@ -16,6 +16,7 @@ from aether.agents.core.phantom_tool import (
     detect_phantom_tool_intent,
     synthesize_tool_calls_from_phantom,
 )
+from aether.agents.core.tool_hardening import prepare_tool_calls
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
@@ -29,11 +30,14 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
+from aether.runtime.error_classifier import FailoverReason
+from aether.runtime.fallback_chain import FallbackChain
 from aether.runtime.hooks import EngineHooks
 from aether.runtime.interrupts import InterruptController
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
 from aether.runtime.recovery import (
     AttemptState,
+    ClassifiedRecoveryStrategy,
     GenericBackoffStrategy,
     RecoveryStrategy,
     wait_interruptible,
@@ -78,6 +82,7 @@ class AgentEngine:
         session_store: SessionStore | None = None,
         hooks: EngineHooks | None = None,
         recovery_strategy: RecoveryStrategy | None = None,
+        fallback_chain: FallbackChain | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -91,19 +96,38 @@ class AgentEngine:
                 tool_registry = build_default_tool_registry()
             else:
                 tool_registry = ToolRegistry()
+        # Sprint 2 / PR 2.2 — pick the default recovery strategy:
+        # * If the caller injected one, honour it untouched (test
+        #   determinism / scripted-provider compat).
+        # * If ``classified_recovery_enabled`` is True (default),
+        #   install the new ``ClassifiedRecoveryStrategy`` so 429 /
+        #   413 / response-invalid / context-overflow / thinking-
+        #   signature failures get the right recovery shape with no
+        #   call-site changes.
+        # * Otherwise fall back to the Sprint 0 generic backoff —
+        #   single emergency rollback knob if the classifier ever
+        #   misbehaves.
+        if recovery_strategy is None:
+            if getattr(self.config, "classified_recovery_enabled", True):
+                recovery_strategy = ClassifiedRecoveryStrategy()
+            else:
+                recovery_strategy = GenericBackoffStrategy()
+        # When a fallback chain is supplied, defer to it for the
+        # active provider — see ``EngineServices.provider``.  The
+        # constructor-time ``provider`` argument is then only used as
+        # the fallback if no chain is configured.  We deliberately
+        # accept *both* arguments so callers that only have one
+        # provider can keep the old call shape, and callers that have
+        # a chain can still pass ``provider=chain.current_provider``
+        # for type-checker friendliness even though it's redundant.
         self.services = EngineServices(
             provider=provider,
             tool_registry=tool_registry,
             middleware_pipeline=middleware_pipeline or MiddlewarePipeline(),
             interrupt_controller=interrupt_controller or InterruptController(),
             logger=logger or logging.getLogger(__name__),
-            # Default recovery strategy mirrors the pre-Sprint-0 in-provider
-            # retry behaviour (3 attempts, 2s/4s exponential backoff on the
-            # well-known retriable status codes).  Only structured
-            # ``ProviderInvocationError`` errors are routed through this
-            # strategy — generic ``Exception`` instances bypass it and go
-            # straight to the middleware on_error pipeline as before.
-            recovery_strategy=recovery_strategy or GenericBackoffStrategy(),
+            recovery_strategy=recovery_strategy,
+            fallback_chain=fallback_chain,
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger
@@ -293,14 +317,21 @@ class AgentEngine:
                             recovered_response = self._pop_context_response(context, "llm_error_response")
                             if recovered_response is None:
                                 error_text = str(exc)
-                                # Sprint 1 / PR 1.1: surface RESPONSE_INVALID
-                                # as a distinct terminal so observers can
-                                # tell "API kept handing us malformed bodies"
-                                # apart from "API itself errored".
-                                if isinstance(exc, ResponseInvalidError):
-                                    exit_reason = ExitReason.RESPONSE_INVALID
-                                else:
-                                    exit_reason = ExitReason.PROVIDER_ERROR
+                                # Sprint 2 / PR 2.2: the recovery strategy
+                                # may have pinned a more specific terminal
+                                # (RATE_LIMITED / CONTEXT_EXHAUSTED /
+                                # PAYLOAD_TOO_LARGE / FALLBACK_EXHAUSTED)
+                                # via context.metadata.  Honour that hint
+                                # before falling back to the legacy
+                                # PROVIDER_ERROR / RESPONSE_INVALID picks
+                                # so observability surfaces the precise
+                                # cause of the give-up.
+                                terminal_hint = context.metadata.pop(
+                                    "recovery_terminal_exit_reason", None
+                                )
+                                exit_reason = self._resolve_terminal_exit_reason(
+                                    terminal_hint, exc
+                                )
                                 state_machine.transition(LoopState.FAILED)
                                 break
                             response = recovered_response
@@ -428,13 +459,70 @@ class AgentEngine:
                         state_machine.transition(LoopState.TOOL_DISPATCH)
                         self._append_assistant_tool_message(messages, response)
 
+                        # Sprint 2 / PR 2.3 — sanitise the call batch
+                        # before dispatch:
+                        #   * fuzzy-repair tool names (P0-5)
+                        #   * cap delegate-class fan-out per turn (P0-6)
+                        #   * dedup identical calls (P0-6)
+                        # Returns a plan whose entries either dispatch
+                        # normally or carry a synthetic ToolResult that
+                        # the engine appends in lieu of dispatching.
+                        # When the per-turn unrepairable-name budget is
+                        # exhausted the plan also pins a terminal
+                        # exit reason (INVALID_TOOL_REPEATED).
+                        dispatch_plan = prepare_tool_calls(
+                            response.tool_calls,
+                            registry=self.services.tool_registry,
+                            config=self.config,
+                            context=context,
+                        )
+                        # Surface counters in turn metadata for
+                        # observability — the CLI footer reads these
+                        # to render a "↻ repaired 1, deduped 2" hint.
+                        if dispatch_plan.repaired_count:
+                            context.metadata["tool_names_repaired"] = (
+                                int(context.metadata.get("tool_names_repaired", 0))
+                                + dispatch_plan.repaired_count
+                            )
+                        if dispatch_plan.deduped_count:
+                            context.metadata["tool_calls_deduped"] = (
+                                int(context.metadata.get("tool_calls_deduped", 0))
+                                + dispatch_plan.deduped_count
+                            )
+                        if dispatch_plan.capped_count:
+                            context.metadata["tool_calls_capped"] = (
+                                int(context.metadata.get("tool_calls_capped", 0))
+                                + dispatch_plan.capped_count
+                            )
+
                         state_machine.transition(LoopState.TOOL_EXECUTE)
                         tool_failed = False
-                        for call in response.tool_calls:
+                        for prepared in dispatch_plan.prepared:
+                            call = prepared.call
                             if self._is_interrupted(request.session_id):
                                 state_machine.transition(LoopState.INTERRUPTED)
                                 exit_reason = ExitReason.INTERRUPTED
                                 break
+
+                            # Skip dispatch when the sanitiser already
+                            # produced a synthetic result (cap / dedup /
+                            # unrepairable name).  We still go through
+                            # the after_tool middleware path so the
+                            # synthetic result gets the same redaction
+                            # / observability treatment as a real one.
+                            if prepared.synthetic_result is not None:
+                                result = prepared.synthetic_result
+                                try:
+                                    result = self.services.middleware_pipeline.run_after_tool(result, context)
+                                except Exception as exc:
+                                    self._handle_pipeline_error(exc, state_machine.state, context)
+                                    error_text = str(exc)
+                                    exit_reason = ExitReason.MIDDLEWARE_ERROR
+                                    state_machine.transition(LoopState.FAILED)
+                                    tool_failed = True
+                                    break
+                                self._append_tool_result_message(messages, result)
+                                continue
 
                             try:
                                 # before_tool can rewrite a ToolCall or short-circuit with ToolResult
@@ -459,6 +547,13 @@ class AgentEngine:
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
                                 except UnknownToolError:
+                                    # Sprint 2 / PR 2.3 — repair already
+                                    # ran and produced no match; this
+                                    # branch is now hit only if the
+                                    # registry mutated mid-turn (rare).
+                                    # Honour ``fail_on_unknown_tool`` for
+                                    # backward compat with callers that
+                                    # explicitly want hard failure.
                                     if self.config.fail_on_unknown_tool:
                                         error_text = f"Unknown tool: {tool_call.name}"
                                         exit_reason = ExitReason.UNKNOWN_TOOL
@@ -510,6 +605,28 @@ class AgentEngine:
                         if state_machine.state in {LoopState.FAILED, LoopState.INTERRUPTED}:
                             break
                         if tool_failed:
+                            break
+
+                        # Sprint 2 / PR 2.3 — when the per-turn
+                        # invalid-tool retry budget is exhausted the
+                        # sanitiser pinned ``dispatch_plan.exit_reason``.
+                        # Synthetic ToolResults for each unrepairable
+                        # name have already been appended to the
+                        # message stream above, so the model has the
+                        # full diagnostic context — we just need to
+                        # finalise this turn instead of looping again.
+                        # Walk through CHECK_EXIT first so the state
+                        # machine's TOOL_EXECUTE → CHECK_EXIT → FINALIZE
+                        # contract holds (TOOL_EXECUTE → FINALIZE is
+                        # explicitly disallowed in state_machine.py).
+                        if dispatch_plan.exit_reason is not None:
+                            try:
+                                exit_reason = ExitReason(dispatch_plan.exit_reason)
+                            except ValueError:
+                                exit_reason = ExitReason.UNKNOWN_TOOL
+                            context.metadata["partial"] = True
+                            state_machine.transition(LoopState.CHECK_EXIT)
+                            state_machine.transition(LoopState.FINALIZE)
                             break
 
                         # Continue iterative tool-use loop unless max iteration budget is exhausted.
@@ -1169,6 +1286,40 @@ class AgentEngine:
     def _is_interrupted(self, session_id: str) -> bool:
         return self.services.interrupt_controller.is_interrupted(session_id)
 
+    @staticmethod
+    def _resolve_terminal_exit_reason(
+        terminal_hint: Any,
+        exc: Exception,
+    ) -> ExitReason:
+        """Map a recovery-strategy hint string (or fallback exc) to ``ExitReason``.
+
+        Sprint 2 / PR 2.2 — the recovery strategy can pin a precise
+        terminal cause via ``context.metadata['recovery_terminal_exit_reason']``
+        (using the ``ExitReason.<NAME>.value`` string, NOT the enum
+        instance, so the metadata bag stays JSON-serialisable).  This
+        helper consumes that hint with safe fallbacks:
+
+        * Recognised hint string → matching ``ExitReason``.
+        * Hint missing / unrecognised → fall back to Sprint 1's
+          rule: ``ResponseInvalidError`` → ``RESPONSE_INVALID``,
+          else ``PROVIDER_ERROR``.
+
+        The defensive fallback keeps the legacy contract intact for
+        callers that haven't migrated to the new strategy yet (e.g.
+        the test suite's bespoke recovery strategies).
+        """
+        if isinstance(terminal_hint, str) and terminal_hint:
+            try:
+                return ExitReason(terminal_hint)
+            except ValueError:
+                # Unknown hint — fall through to legacy mapping rather
+                # than fail the turn.  Logged at the call site if
+                # needed; here we stay defensive.
+                pass
+        if isinstance(exc, ResponseInvalidError):
+            return ExitReason.RESPONSE_INVALID
+        return ExitReason.PROVIDER_ERROR
+
     def _handle_pipeline_error(self, error: Exception, state: LoopState, context: TurnContext) -> None:
         # Pass ``exc_info=error`` explicitly: this method is sometimes called
         # *outside* the original ``except`` block (e.g. after the recovery
@@ -1210,15 +1361,32 @@ class AgentEngine:
     ) -> "_ProviderInvocationOutcome":
         """Issue ``provider.generate`` and apply the recovery strategy on failure.
 
-        Loop semantics:
+        Loop semantics (Sprint 0 base + Sprint 2 extensions):
 
         * On success → returns ``_ProviderInvocationOutcome(response=...)``.
         * On ``ProviderInvocationError`` → bumps the per-turn provider-error
-          counter, asks the configured ``RecoveryStrategy``.  If the strategy
-          says retry, we sleep interruptibly then loop.  If it says give up
-          (or the wait gets interrupted), we hand the *most recent* error
-          back to the caller so the existing middleware on_error path can
-          run as before.
+          counter, asks the configured ``RecoveryStrategy``.  The decision
+          is then **dispatched along three orthogonal axes**:
+
+          1. ``decision.activate_fallback`` — if the engine has a
+             ``FallbackChain`` (with budget left and
+             ``EngineConfig.fallback_chain_enabled``), rotate the
+             active provider before the next attempt.  When the
+             rotation succeeds the attempt budget is **reset** so the
+             new provider gets its own retry budget.  When the chain
+             is exhausted (or fallback is disabled), we treat the
+             decision as a give-up tagged ``FALLBACK_EXHAUSTED`` so
+             observers can tell "we tried everyone" apart from "the
+             single provider blew up".
+          2. ``decision.compress_context`` — Sprint 2 stop-gap: we
+             have no compressor yet (Sprint 3 lands it), so we
+             surface this as an early give-up tagged
+             ``CONTEXT_EXHAUSTED`` / ``PAYLOAD_TOO_LARGE`` rather
+             than silently retrying the same oversized payload.
+          3. ``decision.retry`` — sleep ``wait_seconds`` interruptibly,
+             then re-issue the call.  The wait is interrupt-aware
+             so user cancellations preempt long backoffs.
+
         * On any other ``Exception`` → bumps the counter once and returns
           immediately with that exception (no retry).  This preserves the
           old behaviour for non-provider bugs (e.g. the test suite's
@@ -1230,11 +1398,25 @@ class AgentEngine:
         ``context.metadata['recovery_decisions']`` as a list of
         ``{"reason": ..., "wait_seconds": ..., "attempt": ...}`` dicts so
         callers and tests can inspect what the strategy did without parsing
-        logs.
+        logs.  Sprint 2 added the ``classified_reason`` /
+        ``activate_fallback`` / ``compress_context`` keys to that schema —
+        see ``RecoveryDecision`` for the full shape.
         """
         attempt_state = AttemptState()
         last_error: Exception | None = None
         decisions_log = context.metadata.setdefault("recovery_decisions", [])
+        # Stash the active provider's name (when known) so the
+        # classifier can use it as observability metadata.  The chain
+        # API exposes ``current_slot_name``; non-chained providers
+        # don't ship a name yet, so we leave the field empty.
+        if self.services.fallback_chain is not None:
+            context.metadata["active_provider_name"] = (
+                self.services.fallback_chain.current_slot_name
+            )
+        # Per-turn rotation counter — capped by
+        # ``EngineConfig.max_fallback_activations_per_turn`` to bound
+        # the worst case (every provider in the chain returns 429).
+        rotations_this_turn = 0
 
         while True:
             try:
@@ -1292,10 +1474,84 @@ class AgentEngine:
                         "reason": decision.reason,
                         "status_code": exc.status_code,
                         "is_network_error": exc.is_network_error,
+                        # Sprint 2 / PR 2.2 — surface the classifier
+                        # verdict + new dispatch hints in the trail
+                        # so observers (and tests) can reason about
+                        # the chain of decisions without re-parsing.
+                        "classified_reason": decision.classified_reason,
+                        "activate_fallback": decision.activate_fallback,
+                        "compress_context": decision.compress_context,
+                        "strip_thinking": decision.strip_thinking,
                     }
                 )
 
+                # ── Strip-thinking hint (Sprint 5 will consume) ───
+                # Surface the breadcrumb now so observability sees
+                # the request even though the message-builder rewrite
+                # lands in Sprint 5.
+                if decision.strip_thinking:
+                    context.metadata["recovery_strip_thinking_requested"] = True
+
+                # ── Compression hint without compressor → terminate cleanly ───
+                # Sprint 3 will replace this branch with a real
+                # compress-then-retry loop.  Until then, surface a
+                # distinct exit reason so users see *why* the call
+                # failed instead of an opaque PROVIDER_ERROR.
+                if decision.compress_context:
+                    context.metadata["recovery_compress_required"] = True
+                    if decision.classified_reason == FailoverReason.payload_too_large.value:
+                        context.metadata["recovery_terminal_exit_reason"] = (
+                            ExitReason.PAYLOAD_TOO_LARGE.value
+                        )
+                    else:
+                        context.metadata["recovery_terminal_exit_reason"] = (
+                            ExitReason.CONTEXT_EXHAUSTED.value
+                        )
+                    return AgentEngine._ProviderInvocationOutcome(error=exc)
+
+                # ── Fallback rotation ─────────────────────────────
+                if (
+                    decision.activate_fallback
+                    and self.services.fallback_chain is not None
+                    and getattr(self.config, "fallback_chain_enabled", False)
+                ):
+                    max_rotations = max(
+                        0,
+                        int(getattr(self.config, "max_fallback_activations_per_turn", 4)),
+                    )
+                    if rotations_this_turn < max_rotations and self.services.fallback_chain.activate_next():
+                        rotations_this_turn += 1
+                        context.metadata["fallback_activations_this_turn"] = rotations_this_turn
+                        context.metadata["active_provider_name"] = (
+                            self.services.fallback_chain.current_slot_name
+                        )
+                        # Reset the attempt budget so the new
+                        # provider gets a fresh retry window.  The
+                        # strategy's ``max_attempts`` is per-provider
+                        # in spirit; without this reset a 5-provider
+                        # chain would exhaust its budget on slot 1.
+                        attempt_state = AttemptState()
+                        # Skip any wait — rotating IS the recovery.
+                        # If the strategy requested both wait and
+                        # rotation we treat the wait as redundant
+                        # because we're switching upstream anyway.
+                        continue
+                    # Either the chain is exhausted, fallback is
+                    # disabled, or we hit the per-turn cap.  Surface
+                    # FALLBACK_EXHAUSTED so observability is precise.
+                    context.metadata["recovery_terminal_exit_reason"] = (
+                        ExitReason.FALLBACK_EXHAUSTED.value
+                    )
+                    return AgentEngine._ProviderInvocationOutcome(error=exc)
+
                 if not decision.retry:
+                    # Pin RATE_LIMITED as the terminal when the strategy
+                    # gave up specifically on a rate-limit failure — the
+                    # generic PROVIDER_ERROR mask would lose that signal.
+                    if decision.classified_reason == FailoverReason.rate_limit.value:
+                        context.metadata["recovery_terminal_exit_reason"] = (
+                            ExitReason.RATE_LIMITED.value
+                        )
                     return AgentEngine._ProviderInvocationOutcome(error=exc)
 
                 # Interruptible wait — if the user cancels mid-retry we abort
@@ -1951,6 +2207,22 @@ class AgentEngine:
             # the CLI footer flips to a warning state by default,
             # so users notice without needing ``-v``.
             ExitReason.PHANTOM_TOOL_INTENT,
+            # Sprint 2 / PR 2.2 — recovery-strategy-pinned terminals.
+            # All four are FAILED-class (the engine could not produce
+            # an assistant response this turn).  The exit reason
+            # itself carries enough signal for the UI / observability
+            # to render a precise "throttled" / "context exhausted"
+            # / "fallback chain exhausted" footer; we don't need
+            # bespoke EngineStatus values for them.
+            ExitReason.RATE_LIMITED,
+            ExitReason.CONTEXT_EXHAUSTED,
+            ExitReason.PAYLOAD_TOO_LARGE,
+            ExitReason.FALLBACK_EXHAUSTED,
+            # Sprint 2 / PR 2.3 — model emitted unrepairable tool
+            # names for the entire retry budget.  Same status class as
+            # PHANTOM_TOOL_INTENT (the model "tried" but produced no
+            # actual work) so the CLI footer reads consistently.
+            ExitReason.INVALID_TOOL_REPEATED,
         }:
             status = EngineStatus.FAILED
         else:

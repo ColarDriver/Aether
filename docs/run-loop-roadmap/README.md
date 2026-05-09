@@ -43,14 +43,16 @@
 
 ### 3. 推荐 Sprint 顺序（详见 `07_sprint_execution_plan.md`）
 
-| Sprint | 主题 | 涉及阶段 | 验收信号 |
-|---|---|---|---|
-| 1 | 流式健康检查 + 截断处理 | 8、10、15.② | 模型撞 max_tokens 时能续写而不是失败 |
-| 2 | 错误分类器 + Provider Fallback 链 | 9、12、13 | 429 触发时能自动切到下一家 provider |
-| 3 | 上下文压缩 + Iteration Budget | 3、5、12.10–12.11、17 | 长会话不再因 413 失败 |
-| 4 | 空响应/Thinking 9 步降级 + Tool 容错 | 14、15、16 | reasoning 模型能完整跑完一轮 |
-| 5 | Prompt cache + Reasoning 续传 + 增量持久化 | 2、7、4、17 | Anthropic cache 命中率 ≥ 70% |
-| 6 | `/steer` + 凭证池 + 后台 review | 6、11.x、22 | 多 session 并发不会互相干扰 |
+| Sprint | 主题 | 涉及阶段 | 验收信号 | 状态 |
+|---|---|---|---|---|
+| 0 | 地基修复（实例属性 → metadata、provider 单次发包、`RecoveryStrategy` 抽象） | 结构问题 1/3/5 | 多 session 并发隔离稳定 | ✅ 已完成 |
+| 1 | 流式健康检查 + 截断处理 | 8、10、15.② | 模型撞 max_tokens 时能续写而不是失败 | ✅ 已完成 |
+| 1.5 | 内置工具集 + 散文 → 结构化合成 | P0-9 | Kimi 类模型不再卡在 phantom-tool 警告 | ✅ 已完成 |
+| 2 | 错误分类器 + Provider Fallback 链 + 工具派发 hardening | 9、12、13、P0-5/6/7 | 429 自动切 fallback、模糊修复 typo、cap/dedup | ✅ 已完成 |
+| 3 | 上下文压缩 + Iteration Budget | 3、5、12.10–12.11、17 | 长会话不再因 413 失败 | 待启动 |
+| 4 | 空响应/Thinking 9 步降级 + Tool 容错 | 14、15、16 | reasoning 模型能完整跑完一轮 | 待启动 |
+| 5 | Prompt cache + Reasoning 续传 + 增量持久化 | 2、7、4、17 | Anthropic cache 命中率 ≥ 70% | 待启动 |
+| 6 | `/steer` + 凭证池 + 后台 review | 6、11.x、22 | 多 session 并发不会互相干扰 | 待启动 |
 
 ### 4. 结构性"地基"问题（先修，详见 `06_aether_structural_issues.md`）
 - `_empty_response_retries` / `_provider_error_retries` 是引擎实例属性 → 多 session 并发会互相覆盖，

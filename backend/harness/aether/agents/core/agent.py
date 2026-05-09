@@ -57,6 +57,13 @@ from aether.runtime.session_runtime import (
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.usage import CanonicalUsage, normalize_usage
+from aether.services.compact import estimate_messages_tokens
+from aether.services.compact.autocompact import AutoCompactor
+from aether.services.compact.compactor import CompactionPipeline, CompactionResult
+from aether.services.compact.collapse import NoOpCollapseTier
+from aether.services.compact.llm_fork import LLMForkSummarizer
+from aether.services.compact.microcompact import NoOpMicrocompactor
+from aether.services.compact.snip import NoOpSnipper
 from aether.tools.base import UnknownToolError
 from aether.tools.registry import ToolRegistry
 
@@ -107,6 +114,8 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # Sprint 3.5 / PR 3.5.10 — live BrowserManager reference for
     # :class:`WebBrowserTool`.
     "_browser_manager",
+    "_compaction_pipeline",
+    "_compaction_in_progress",
 })
 
 
@@ -198,6 +207,8 @@ class AgentEngine:
         # forwarded into ``TurnContext.metadata`` for tools to pick up.
         self._lsp_manager = lsp_manager
         self._browser_manager = browser_manager
+        self._compaction_pipeline: CompactionPipeline | None = None
+        self._compaction_pipeline_provider: ModelProvider | None = None
 
         self._current_session_id: str | None = None
         self._active_children: dict[str, AgentEngine] = {}
@@ -355,6 +366,16 @@ class AgentEngine:
                         state_machine.transition(LoopState.INTERRUPTED)
                         exit_reason = ExitReason.INTERRUPTED
                         break
+
+                    if not context.metadata.get("_preflight_compaction_done"):
+                        context.metadata["_preflight_compaction_done"] = True
+                        preflight = self._maybe_compact_messages(
+                            messages,
+                            context=context,
+                            trigger_reason="preflight",
+                        )
+                        if preflight is not None:
+                            messages = preflight.compressed_messages
 
                     self._safe_call_hook(
                         "pre_llm_call",
@@ -936,6 +957,93 @@ class AgentEngine:
             return result
         finally:
             self._current_session_id = None
+
+    def _get_compaction_pipeline(self) -> CompactionPipeline:
+        """Return a compaction pipeline bound to the currently-active provider."""
+        provider = self.services.provider
+        if (
+            self._compaction_pipeline is None
+            or self._compaction_pipeline_provider is not provider
+        ):
+            self._compaction_pipeline = CompactionPipeline(
+                tiers=[
+                    NoOpSnipper(),
+                    NoOpMicrocompactor(),
+                    NoOpCollapseTier(),
+                    AutoCompactor(
+                        config=self.config,
+                        summarizer=LLMForkSummarizer(
+                            provider=provider,
+                            config=self.config,
+                            logger=self.services.logger,
+                            # Sprint 3 / PR 3.4 — bridge fork-call usage
+                            # back into the parent turn's accumulator so
+                            # the cost of compaction is *not* silently
+                            # excluded from ``metadata['usage']`` /
+                            # ``api_calls``.  ``_accumulate_usage`` is
+                            # idempotent on bad inputs (logs + no-op),
+                            # so this stays safe even if the fork
+                            # response shape is unexpected.
+                            usage_sink=self._accumulate_usage,
+                        ),
+                        logger=self.services.logger,
+                    ),
+                ],
+                token_estimator=estimate_messages_tokens,
+                config=self.config,
+                logger=self.services.logger,
+            )
+            self._compaction_pipeline_provider = provider
+        return self._compaction_pipeline
+
+    def _maybe_compact_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        context: TurnContext,
+        trigger_reason: str,
+    ) -> CompactionResult | None:
+        """Run the compaction pipeline when compression is enabled."""
+        if not getattr(self.config, "compression_enabled", False):
+            return None
+
+        provider = self.services.provider
+        model = str(getattr(provider, "model", "") or "unknown")
+        result = self._get_compaction_pipeline().maybe_compress(
+            messages,
+            turn_context=context,
+            model=model,
+            model_window=self._resolve_model_window(),
+            trigger_reason=trigger_reason,
+        )
+        if result.tiers_run:
+            context.metadata["compaction_last_result"] = {
+                "trigger_reason": trigger_reason,
+                "tokens_before": result.tokens_before,
+                "tokens_after": result.tokens_after,
+                "tiers_run": list(result.tiers_run),
+                "exhausted": result.exhausted,
+            }
+        return result
+
+    def _resolve_model_window(self) -> int:
+        """Best-effort resolve the active model's context window."""
+        provider = self.services.provider
+        for attr in ("context_window", "max_context_tokens", "max_context_length"):
+            window = getattr(provider, attr, None)
+            if isinstance(window, int) and window > 0:
+                return window
+
+        model = str(getattr(provider, "model", "") or "").lower()
+        if "claude" in model:
+            return 200_000
+        if "kimi" in model or "moonshot" in model:
+            return 200_000
+        if "gpt-4o" in model or "gpt-4-turbo" in model:
+            return 128_000
+        if "gpt-4.1" in model or "gpt-5" in model:
+            return 128_000
+        return 32_000
 
     def _prepare_turn_entry(
         self,
@@ -1721,6 +1829,26 @@ class AgentEngine:
                 # failed instead of an opaque PROVIDER_ERROR.
                 if decision.compress_context:
                     context.metadata["recovery_compress_required"] = True
+                    if getattr(self.config, "compression_enabled", False):
+                        trigger_reason = (
+                            "payload_too_large"
+                            if decision.classified_reason == FailoverReason.payload_too_large.value
+                            else "context_overflow"
+                        )
+                        compacted = self._maybe_compact_messages(
+                            prepared_messages,
+                            context=context,
+                            trigger_reason=trigger_reason,
+                        )
+                        if compacted is not None and compacted.tokens_after < compacted.tokens_before:
+                            prepared_messages[:] = compacted.compressed_messages
+                            continue
+                        context.metadata["recovery_terminal_exit_reason"] = (
+                            ExitReason.PAYLOAD_TOO_LARGE.value
+                            if trigger_reason == "payload_too_large"
+                            else ExitReason.COMPRESSION_EXHAUSTED.value
+                        )
+                        return AgentEngine._ProviderInvocationOutcome(error=exc)
                     if decision.classified_reason == FailoverReason.payload_too_large.value:
                         context.metadata["recovery_terminal_exit_reason"] = (
                             ExitReason.PAYLOAD_TOO_LARGE.value
@@ -2575,6 +2703,7 @@ class AgentEngine:
             ExitReason.RATE_LIMITED,
             ExitReason.CONTEXT_EXHAUSTED,
             ExitReason.PAYLOAD_TOO_LARGE,
+            ExitReason.COMPRESSION_EXHAUSTED,
             ExitReason.FALLBACK_EXHAUSTED,
             # Sprint 2 / PR 2.3 — model emitted unrepairable tool
             # names for the entire retry budget.  Same status class as

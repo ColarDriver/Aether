@@ -83,6 +83,11 @@ class ExitReason(str, Enum):
     # CONTEXT_EXHAUSTED above; Sprint 3 compression will remove this
     # being a user-visible terminal in the common case.
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    # Sprint 3 / PR 3.4: the compaction pipeline ran but could not
+    # reduce the prompt under the target threshold.  Distinct from
+    # CONTEXT_EXHAUSTED so observability can tell "we tried all enabled
+    # tiers" apart from the legacy "compression unavailable" terminal.
+    COMPRESSION_EXHAUSTED = "COMPRESSION_EXHAUSTED"
     # Sprint 2 / PR 2.2: the fallback chain ran out of providers while
     # the last attempt was still failing.  Distinct from PROVIDER_ERROR
     # so operators can tell "we tried everyone and they all rejected

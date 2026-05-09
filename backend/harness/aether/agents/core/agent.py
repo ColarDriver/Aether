@@ -34,6 +34,7 @@ from aether.runtime.error_classifier import FailoverReason
 from aether.runtime.fallback_chain import FallbackChain
 from aether.runtime.hooks import EngineHooks
 from aether.runtime.interrupts import InterruptController
+from aether.runtime.iteration_budget import IterationBudget
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
 from aether.runtime.recovery import (
     AttemptState,
@@ -71,6 +72,13 @@ if TYPE_CHECKING:
 # internal-only keys here whenever a future PR introduces one.
 _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "usage_accumulator",
+    # Sprint 3 / PR 3.2: live ``IterationBudget`` instance — kept on
+    # ``context.metadata`` so ``_handle_max_iterations`` can find it
+    # without threading another argument through every recovery path.
+    # The JSON-friendly snapshot lives at ``metadata['iteration_budget']``
+    # (also on ``context.metadata``) and is mirrored into
+    # ``EngineResult.metadata['iteration_budget']`` by ``_build_result``.
+    "_iteration_budget_obj",
 })
 
 
@@ -265,8 +273,39 @@ class AgentEngine:
             else:
                 state_machine.transition(LoopState.PRE_LLM)
 
+                # Sprint 3 / PR 3.2: structured iteration budget replaces
+                # the legacy ``iterations < max_iterations`` guard.  The
+                # live dataclass goes on ``context.metadata`` so
+                # ``_handle_max_iterations`` (and any future per-turn
+                # observability hooks) can read it without a new
+                # argument-threading hop.
+                #
+                # ``iterations`` stays a **monotonic** loop-body counter
+                # so ``context.iteration`` (used by middleware, hooks,
+                # and CLI footer) keeps its pre-PR-3.2 1-indexed
+                # contract — cheap-tool refunds may make
+                # ``iterations`` exceed ``max_iterations``, which is
+                # exactly the desired "extra headroom" the refund
+                # was designed to grant.  ``budget.used`` is the
+                # canonical budget accounting; ``iterations`` is the
+                # observability counter.
+                budget = IterationBudget(max_total=self.config.max_iterations)
+                context.metadata["_iteration_budget_obj"] = budget
+                context.metadata["iteration_budget"] = budget.to_dict()
+
                 # Main iterative loop: each iteration can produce tool calls or a terminal text response.
-                while iterations < self.config.max_iterations:
+                # ``iterations`` is bumped AFTER a successful LLM round
+                # (see the ``iterations += 1`` further down) so failed
+                # turns surface the same iteration count to
+                # ``_build_result`` as before this PR.  ``context.iteration``
+                # is the 1-indexed "we are about to issue round N" view
+                # middleware consumes — kept identical to the pre-PR-3.2
+                # ``iterations + 1`` formula so phantom-tool ID prefixes
+                # and middleware that key off a strictly monotonic
+                # iteration counter remain stable across cheap-tool
+                # refunds (refund affects ``budget.used``, not this
+                # observability counter).
+                while budget.consume():
                     context.iteration = iterations + 1
 
                     if self._is_interrupted(request.session_id):
@@ -406,7 +445,7 @@ class AgentEngine:
                         if handled.action == "continue":
                             messages = handled.messages
                             state_machine.transition(LoopState.CHECK_EXIT)
-                            if iterations >= self.config.max_iterations:
+                            if budget.exhausted:
                                 state_machine.transition(LoopState.FINALIZE)
                                 exit_reason = ExitReason.MAX_ITERATIONS
                                 break
@@ -437,7 +476,7 @@ class AgentEngine:
                             )
                             if validation.action == "retry":
                                 state_machine.transition(LoopState.CHECK_EXIT)
-                                if iterations >= self.config.max_iterations:
+                                if budget.exhausted:
                                     state_machine.transition(LoopState.FINALIZE)
                                     exit_reason = ExitReason.MAX_ITERATIONS
                                     break
@@ -468,7 +507,7 @@ class AgentEngine:
                                 # then has the next iteration to retry.
                                 messages.extend(validation.injection_messages)
                                 state_machine.transition(LoopState.CHECK_EXIT)
-                                if iterations >= self.config.max_iterations:
+                                if budget.exhausted:
                                     state_machine.transition(LoopState.FINALIZE)
                                     exit_reason = ExitReason.MAX_ITERATIONS
                                     break
@@ -651,9 +690,31 @@ class AgentEngine:
                             state_machine.transition(LoopState.FINALIZE)
                             break
 
+                        # Sprint 3 / PR 3.2 — cheap-tool refund.  When
+                        # the model's tool_calls for this round are
+                        # *entirely* drawn from the cheap-tool
+                        # whitelist (todo bookkeeping, memory writes,
+                        # session search...), refund the budget slot
+                        # this iteration consumed so the model gets
+                        # the same effective headroom it would have
+                        # had without the bookkeeping call.  Mixed
+                        # iterations (one cheap call + one real call)
+                        # do NOT refund — the real call still
+                        # warranted the slot.  Refund happens BEFORE
+                        # the exhaustion check so a cheap-only
+                        # iteration that would otherwise have been
+                        # the budget-exhausting one keeps the loop
+                        # alive for substantive follow-up work.
+                        if response.tool_calls and all(
+                            self._is_cheap_tool(call.name)
+                            for call in response.tool_calls
+                        ):
+                            budget.refund()
+                            context.metadata["iteration_budget"] = budget.to_dict()
+
                         # Continue iterative tool-use loop unless max iteration budget is exhausted.
                         state_machine.transition(LoopState.CHECK_EXIT)
-                        if iterations >= self.config.max_iterations:
+                        if budget.exhausted:
                             state_machine.transition(LoopState.FINALIZE)
                             exit_reason = ExitReason.MAX_ITERATIONS
                             break
@@ -728,7 +789,7 @@ class AgentEngine:
                             error_text = synth_error
                             break
                         state_machine.transition(LoopState.CHECK_EXIT)
-                        if iterations >= self.config.max_iterations:
+                        if budget.exhausted:
                             state_machine.transition(LoopState.FINALIZE)
                             exit_reason = ExitReason.MAX_ITERATIONS
                             break
@@ -737,7 +798,7 @@ class AgentEngine:
 
                     if phantom_outcome == "retry":
                         state_machine.transition(LoopState.CHECK_EXIT)
-                        if iterations >= self.config.max_iterations:
+                        if budget.exhausted:
                             state_machine.transition(LoopState.FINALIZE)
                             exit_reason = ExitReason.MAX_ITERATIONS
                             break
@@ -780,8 +841,31 @@ class AgentEngine:
             # Force a deterministic terminal state if loop exits by condition rather than break.
             if state_machine.state not in {LoopState.FAILED, LoopState.INTERRUPTED, LoopState.FINALIZE}:
                 state_machine.transition(LoopState.FINALIZE)
-                if iterations >= self.config.max_iterations:
+                if budget.exhausted:
                     exit_reason = ExitReason.MAX_ITERATIONS
+
+            # Sprint 3 / PR 3.2 — max-iterations summary fallback.
+            # Triggered ONCE per turn (guarded by ``IterationBudget.grace_call``)
+            # when the loop terminated because the iteration budget
+            # was exhausted.  Generates a one-shot non-tool LLM
+            # response so the user sees what got done instead of an
+            # empty ``final_response``.  No-op when:
+            #   * exit_reason isn't MAX_ITERATIONS (other terminations
+            #     either succeeded or have their own diagnostic text);
+            #   * ``final_response`` already carries text (defensive —
+            #     we never want to clobber a real model answer);
+            #   * ``summary_on_budget_exhausted`` is False (rollback);
+            #   * the grace round was already consumed (defensive).
+            if (
+                exit_reason == ExitReason.MAX_ITERATIONS
+                and not final_response
+                and "budget" in locals()
+            ):
+                summary_text = self._handle_max_iterations(
+                    request, messages, context
+                )
+                if summary_text:
+                    final_response = summary_text
 
             # FINALIZE -> DONE transition for successful/terminal completion paths.
             if state_machine.state == LoopState.FINALIZE:
@@ -2264,6 +2348,112 @@ class AgentEngine:
                 exc_info=True,
             )
 
+    def _is_cheap_tool(self, tool_name: str) -> bool:
+        """Whether ``tool_name`` is in the cheap-tool refund whitelist.
+
+        Sprint 3 / PR 3.2.  Names are compared with the same
+        normalisation the tool-repair path uses (case-fold +
+        dash↔underscore + namespace strip via
+        :func:`aether.agents.core.phantom_tool._normalize_name`),
+        so ``UpdateTodo``, ``update-todo`` and
+        ``mcp__router__update_todo`` all match the configured
+        ``update_todo`` entry.  Empty / missing config disables the
+        whitelist (returns ``False`` for everything) and reduces
+        the engine to pre-PR-3.2 "every tool call costs a slot"
+        behaviour without further code changes.
+        """
+        cheap_names = getattr(self.config, "cheap_tool_names", ())
+        if not cheap_names:
+            return False
+        from aether.agents.core.phantom_tool import _normalize_name
+
+        target = _normalize_name(tool_name or "")
+        if not target:
+            return False
+        return any(target == _normalize_name(n) for n in cheap_names)
+
+    def _handle_max_iterations(
+        self,
+        request: EngineRequest,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> str | None:
+        """Generate a summary when the iteration budget is exhausted.
+
+        Sprint 3 / PR 3.2.  Called by ``run_loop`` after a break with
+        ``exit_reason = MAX_ITERATIONS`` (any of the seven exit
+        sites).  Steps:
+
+        1. Bail when ``EngineConfig.summary_on_budget_exhausted`` is
+           ``False`` (rollback switch — restores pre-PR-3.2
+           silent-break behaviour for benchmarks where empty
+           ``final_response`` is part of the test contract).
+        2. Bail when the budget's grace round has already been
+           consumed (defensive — the engine should only call this
+           method once per turn, but multiple call sites converge on
+           the same ``exit_reason`` so we guard anyway).
+        3. Build a one-shot prompt that copies the current message
+           history and appends a bracketed system-style nudge asking
+           the model to summarise what got done / what remains.
+        4. Call ``provider.generate(tools=[], stream_callback=None)``
+           — no tools so the model has no choice but plain text, no
+           streaming so we don't poison the CLI footer mid-summary.
+        5. On any failure (provider raised, returned empty text,
+           ...): log at WARNING level and return ``None`` so the
+           caller falls back to the pre-PR-3.2 empty
+           ``final_response``.  Summary is best-effort observability,
+           never blocking.
+        """
+        if not getattr(self.config, "summary_on_budget_exhausted", True):
+            return None
+
+        budget = context.metadata.get("_iteration_budget_obj")
+        if not isinstance(budget, IterationBudget):
+            return None
+        if not budget.grace_call():
+            return None
+        # Snapshot the new grace_consumed=True state so EngineResult
+        # observers see the grace round happened even before we know
+        # whether the summary text itself succeeded.
+        context.metadata["iteration_budget"] = budget.to_dict()
+
+        summary_messages = list(messages)
+        summary_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "[System: You've used your iteration budget. Please "
+                    "provide a clean summary of:\n"
+                    "  1. What you accomplished in this turn,\n"
+                    "  2. What remains to be done,\n"
+                    "  3. Any important findings the user should know.\n"
+                    "Be concise but specific. Reference actual files / "
+                    "actions taken.]"
+                ),
+            }
+        )
+
+        try:
+            summary_response = self.services.provider.generate(
+                summary_messages,
+                [],
+                request.model_config,
+                context,
+                stream_callback=None,
+                stream_silent_callback=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — summary must never crash a turn
+            self.services.logger.warning(
+                "max_iterations summary generation failed: %s", exc
+            )
+            return None
+
+        text = (getattr(summary_response, "content", None) or "").strip()
+        if not text:
+            return None
+        context.metadata["summary_provided"] = True
+        return text
+
     def _build_result(
         self,
         request: EngineRequest,
@@ -2409,18 +2599,33 @@ class AgentEngine:
             # Always present (zero-valued on turns with no LLM call).
             "usage": usage_acc.to_dict(),
             "api_calls": int(context.metadata.get("api_calls", 0)),
-            # Iteration budget snapshot.  Filled with structured data by
-            # PR 3.2; for now we surface the legacy max_iterations bound
-            # so consumers can already key off the "exhausted" semantic.
-            "iteration_budget": {
-                "used": iterations,
-                "max": int(getattr(self.config, "max_iterations", 0) or 0),
-                "remaining": max(
-                    0,
-                    int(getattr(self.config, "max_iterations", 0) or 0) - iterations,
-                ),
-                "grace_consumed": False,
-            },
+            # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
+            # Filled by the live ``IterationBudget`` instance the loop
+            # carries on ``context.metadata['_iteration_budget_obj']``.
+            # Falls back to a synthesized snapshot keyed off
+            # ``max_iterations`` for the (rare) early-exit paths that
+            # short-circuit before the loop installs the budget — this
+            # keeps the ``EngineResult.metadata['iteration_budget']``
+            # field unconditionally present in the v1 schema.
+            "iteration_budget": (
+                context.metadata["_iteration_budget_obj"].to_dict()
+                if isinstance(
+                    context.metadata.get("_iteration_budget_obj"),
+                    IterationBudget,
+                )
+                else {
+                    "used": iterations,
+                    "max": int(getattr(self.config, "max_iterations", 0) or 0),
+                    "remaining": max(
+                        0,
+                        int(getattr(self.config, "max_iterations", 0) or 0)
+                        - iterations,
+                    ),
+                    "grace_consumed": False,
+                    "consume_count": iterations,
+                    "refund_count": 0,
+                }
+            ),
             # Why the loop terminated, in a structured form distinct from
             # the top-level ``exit_reason`` enum (which is the canonical
             # source — ``exit`` is the auxiliary diagnostic block).

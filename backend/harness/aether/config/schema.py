@@ -175,3 +175,39 @@ class EngineConfig:
     # confusion (re-reading the same file 5x); set to ``False`` to
     # restore Sprint 1 behaviour for diagnostics.
     tool_dedup_enabled: bool = True
+    # Sprint 3 / PR 3.2: cheap-tool refund list.  Tools whose call
+    # doesn't consume real iteration budget — typically bookkeeping
+    # operations (``update_todo``, ``memory_*``) and read-only state
+    # queries (``session_search``).  When an iteration's tool_calls
+    # are *entirely* drawn from this set, ``IterationBudget.refund()``
+    # cancels the slot the loop just consumed so the model gets the
+    # same effective headroom it would have had without the
+    # bookkeeping call.  Names are compared with the same normalisation
+    # the tool-repair path uses (case-fold + dash↔underscore + namespace
+    # strip) so ``UpdateTodo``, ``update-todo`` and
+    # ``mcp__router__update_todo`` all match ``update_todo``.  Set to
+    # ``()`` to restore the legacy "every tool call costs a slot"
+    # behaviour — useful for debugging or for workloads where every
+    # tool has real cost (e.g. paid-API-only tool kits).
+    cheap_tool_names: tuple[str, ...] = (
+        "update_todo",
+        "todo_write",
+        "memory",
+        "memory_write",
+        "memory_read",
+        "skill_manage",
+        "session_search",
+    )
+    # Sprint 3 / PR 3.2: when ``True``, exhausting ``max_iterations``
+    # triggers a single one-shot LLM call (no tools, no streaming) to
+    # generate a summary of what the turn accomplished.  The summary
+    # text becomes ``EngineResult.final_response`` while
+    # ``exit_reason`` stays ``MAX_ITERATIONS`` so observability sees
+    # the same termination signal as before — only the human-facing
+    # response payload changes.  Bounded cost (one extra round per
+    # max-iterations event) and large UX win: previously users saw
+    # ``done · 0.0s`` with an empty body after a 60-second turn.
+    # Set to ``False`` to restore the pre-PR-3.2 silent-break
+    # behaviour (e.g. for benchmarks where the empty-string response
+    # is part of the test contract).
+    summary_on_budget_exhausted: bool = True

@@ -87,6 +87,18 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # is that we MUST exclude it from the JSON-serialised
     # ``EngineResult.metadata['turn']`` snapshot.
     "_engine_config",
+    # Sprint 3.5 / PR 3.5.6 — live references for the subagent /
+    # interaction tool family.  Stored as objects, never as JSON.
+    "_parent_agent",
+    "_subagent_manager",
+    # Sprint 3.5 / PR 3.5.7 — interactive prompter forwarded from
+    # ``EngineRequest.approval_prompter`` to ``ExitPlanModeTool`` and
+    # ``AskUserQuestionTool``.  Excluded for the same reason as the
+    # other live-object keys above.
+    "_approval_prompter",
+    # Sprint 3.5 / PR 3.5.8 — live SkillCatalog reference used by
+    # ``SkillTool`` when no catalog was injected via constructor.
+    "_skill_catalog",
 })
 
 
@@ -110,6 +122,7 @@ class AgentEngine:
         hooks: EngineHooks | None = None,
         recovery_strategy: RecoveryStrategy | None = None,
         fallback_chain: FallbackChain | None = None,
+        skill_catalog: "object | None" = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -163,6 +176,11 @@ class AgentEngine:
         self._subagent_id = subagent_id
         self._parent_subagent_id = parent_subagent_id
         self._subagent_manager = subagent_manager
+        # Sprint 3.5 / PR 3.5.8 — optional shared skill catalog.  When
+        # set the SkillTool will look here if it was registered without
+        # an explicit catalog.  Stored on the engine so subagents can
+        # inherit (see DefaultSubagentBuilder).
+        self._skill_catalog = skill_catalog
 
         self._current_session_id: str | None = None
         self._active_children: dict[str, AgentEngine] = {}
@@ -961,6 +979,18 @@ class AgentEngine:
         # ``_METADATA_INTERNAL_KEYS`` so the live dataclass never
         # leaks into the JSON-serialised EngineResult.metadata['turn'].
         context.metadata["_engine_config"] = self.config
+        # Sprint 3.5 / PR 3.5.6+7+8: expose the parent agent, the
+        # subagent manager, the optional approval prompter and the
+        # optional skill catalog to tools.  Same rationale as
+        # ``_engine_config`` above — every key is in
+        # ``_METADATA_INTERNAL_KEYS`` so live objects never leak into
+        # the JSON-serialised result snapshot.
+        context.metadata["_parent_agent"] = self
+        context.metadata["_subagent_manager"] = self._subagent_manager
+        context.metadata["_approval_prompter"] = getattr(
+            request, "approval_prompter", None
+        )
+        context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
         return state_machine, messages, context
 
     def _prepare_session_and_system_prompt(

@@ -170,6 +170,13 @@ class EngineRequest:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     model_config: ModelCallConfig = field(default_factory=ModelCallConfig)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Sprint 3.5 / PR 3.5.7 — interactive prompter for plan-mode
+    # approval and ``AskUserQuestionTool``.  Optional: when ``None``
+    # the corresponding tools degrade to a clear "non-interactive"
+    # error without crashing.  Untyped (``Any``) to avoid a hard import
+    # of ``aether.cli.approval_prompter`` from the runtime layer; it
+    # is duck-typed against the ``Prompter`` protocol.
+    approval_prompter: Any = None
 
 
 @dataclass(slots=True)

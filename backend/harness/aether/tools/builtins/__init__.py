@@ -1,18 +1,24 @@
 """Built-in tool kit shipped with the Aether harness.
 
 This package exposes the executors any ``AgentEngine`` can use out of
-the box.  Sprint 3.5 / PR 3.5.1 expanded the kit from six tools to
-nine by adding ``file_edit``, ``todo_write`` and ``notebook_edit``,
-and upgraded the original six (``shell`` / ``read_file`` / ``grep`` /
-``glob`` / ``list_dir``) to spill large outputs to disk via
-:mod:`aether.runtime.tool_result_storage`.
+the box.  After Sprint 3.5 / PR-2 the kit ships **18 tools**:
 
-Why these nine?  They cover the claude-code default surface that
-applies to every project (Bash / Read / Write / LS / Grep / Glob /
-Edit / NotebookEdit / TodoWrite) \u2014 enough to read, search, edit and
-maintain a task checklist in any workspace.  More specialised tools
-(web fetch, subagent dispatch, plan mode, skill, LSP, browser) come
-in subsequent PRs of Sprint 3.5.
+* Filesystem & shell (PR-1): ``shell``, ``read_file``, ``write_file``,
+  ``list_dir``, ``grep``, ``glob``, ``file_edit``, ``notebook_edit``,
+  ``todo_write``.
+* Web (PR-2): ``web_fetch``, ``web_search``.
+* Subagent dispatch (PR-2): ``task``, ``task_output``, ``task_stop``.
+* Interaction (PR-2): ``enter_plan_mode``, ``exit_plan_mode``,
+  ``ask_user_question``.
+* Skill loader (PR-2): ``skill``.
+
+Each new tool family is gated by an ``EngineConfig`` switch
+(``web_fetch_enabled`` / ``allow_subagent_dispatch`` /
+``plan_mode_enabled`` / ``ask_user_question_enabled`` /
+``skill_tool_enabled``); flipping any of these to ``False`` makes the
+corresponding tool refuse with a structured error rather than
+disappearing from the registry, so the model gets a clear message and
+the surrounding observability/telemetry stays consistent.
 
 The :func:`build_default_tool_registry` factory is the canonical entry
 point used by :class:`aether.agents.core.agent.AgentEngine` when no
@@ -26,7 +32,12 @@ manually.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+from aether.tools.builtins.agent_tool import AgentTool
+from aether.tools.builtins.ask_user_question import AskUserQuestionTool
+from aether.tools.builtins.enter_plan_mode import EnterPlanModeTool
+from aether.tools.builtins.exit_plan_mode import ExitPlanModeTool
 from aether.tools.builtins.file_edit import FileEditTool
 from aether.tools.builtins.glob import GlobTool
 from aether.tools.builtins.grep import GrepTool
@@ -34,7 +45,12 @@ from aether.tools.builtins.list_dir import ListDirTool
 from aether.tools.builtins.notebook_edit import NotebookEditTool
 from aether.tools.builtins.read_file import ReadFileTool
 from aether.tools.builtins.shell import ShellTool
+from aether.tools.builtins.skill import SkillTool
+from aether.tools.builtins.task_output import TaskOutputTool
+from aether.tools.builtins.task_stop import TaskStopTool
 from aether.tools.builtins.todo_write import TodoWriteTool
+from aether.tools.builtins.web_fetch import WebFetchTool
+from aether.tools.builtins.web_search import WebSearchTool
 from aether.tools.builtins.write_file import WriteFileTool
 from aether.tools.registry import ToolRegistry
 
@@ -42,17 +58,28 @@ from aether.tools.registry import ToolRegistry
 def build_default_tool_registry(
     *,
     cwd: Path | None = None,
+    skill_catalog: Any | None = None,
+    approval_prompter: Any | None = None,
 ) -> ToolRegistry:
     """Return a :class:`ToolRegistry` populated with the bundled tool kit.
 
     Parameters
     ----------
     cwd:
-        Default working directory passed into the file-aware tools
-        (``shell`` / ``read_file`` / ``write_file`` / ``list_dir`` /
-        ``grep`` / ``glob`` / ``file_edit`` / ``notebook_edit``).
+        Default working directory passed into the file-aware tools.
         When ``None`` the tools resolve relative paths against
         :func:`pathlib.Path.cwd` at call time.
+    skill_catalog:
+        Optional :class:`~aether.runtime.skill_catalog.SkillCatalog`
+        injected into :class:`SkillTool`.  When ``None`` the tool
+        falls back to ``context.metadata['_skill_catalog']`` (set by
+        the engine) or builds a lazy default from
+        ``EngineConfig.skill_search_paths``.
+    approval_prompter:
+        Optional CLI prompter pre-bound onto ``ExitPlanModeTool`` /
+        ``AskUserQuestionTool``.  In production the engine forwards
+        ``EngineRequest.approval_prompter`` via metadata, so passing
+        ``None`` here is the common case.
     """
     registry = ToolRegistry()
     registry.register(ShellTool(default_cwd=cwd))
@@ -61,12 +88,20 @@ def build_default_tool_registry(
     registry.register(ListDirTool(default_cwd=cwd))
     registry.register(GrepTool(default_cwd=cwd))
     registry.register(GlobTool(default_cwd=cwd))
-    # Sprint 3.5 / PR 3.5.1 \u2014 new tools.  Order is alphabetical-ish
-    # within the new block; doesn't matter functionally but makes
-    # ``list_descriptors()`` output readable.
+    # Sprint 3.5 / PR-1.
     registry.register(FileEditTool(default_cwd=cwd))
     registry.register(NotebookEditTool(default_cwd=cwd))
     registry.register(TodoWriteTool())
+    # Sprint 3.5 / PR-2.
+    registry.register(WebFetchTool())
+    registry.register(WebSearchTool())
+    registry.register(AgentTool())
+    registry.register(TaskOutputTool())
+    registry.register(TaskStopTool())
+    registry.register(EnterPlanModeTool())
+    registry.register(ExitPlanModeTool(prompter=approval_prompter))
+    registry.register(AskUserQuestionTool(prompter=approval_prompter))
+    registry.register(SkillTool(catalog=skill_catalog))
     return registry
 
 
@@ -80,5 +115,14 @@ __all__ = [
     "FileEditTool",
     "NotebookEditTool",
     "TodoWriteTool",
+    "WebFetchTool",
+    "WebSearchTool",
+    "AgentTool",
+    "TaskOutputTool",
+    "TaskStopTool",
+    "EnterPlanModeTool",
+    "ExitPlanModeTool",
+    "AskUserQuestionTool",
+    "SkillTool",
     "build_default_tool_registry",
 ]

@@ -237,3 +237,35 @@ class EngineConfig:
     # faster local disk on systems where ``$HOME`` is on slow networked
     # storage, or to a tmpfs path on ephemeral CI workers.
     tool_result_spill_dir: Path | None = None
+    # Sprint 3.5 / PR 3.5.5 — web tool master switches and limits.
+    # ``web_search_provider`` selects the search backend; only ``brave``
+    # is implemented today, but having an explicit knob keeps the door
+    # open for ddgs / tavily / serpapi without touching tool code.
+    web_fetch_enabled: bool = True
+    web_search_enabled: bool = True
+    web_search_api_key: str | None = None
+    web_search_provider: str = "brave"
+    web_fetch_max_download_bytes: int = 5 * 1024 * 1024
+    web_fetch_timeout_seconds: int = 30
+    # Sprint 3.5 / PR 3.5.6 — subagent dispatch master switch.  When
+    # ``False`` the ``task`` / ``task_stop`` tools refuse to dispatch
+    # and return a structured error.  Cheap rollback for environments
+    # where letting the model fan out is undesirable (cost, isolation).
+    allow_subagent_dispatch: bool = True
+    # Sprint 3.5 / PR 3.5.7 — interaction tool master switches.
+    # ``plan_mode_enabled`` gates ``EnterPlanMode`` / ``ExitPlanMode``;
+    # ``ask_user_question_enabled`` gates ``AskUserQuestion``.  When
+    # disabled the tools refuse with a clear "disabled by configuration"
+    # error rather than failing silently.
+    plan_mode_enabled: bool = True
+    ask_user_question_enabled: bool = True
+    ask_user_question_timeout_seconds: int = 600
+    # Sprint 3.5 / PR 3.5.8 — skill catalog configuration.  Empty
+    # ``skill_search_paths`` means "use sensible defaults" inside
+    # ``SkillCatalog`` callers (project-root ``skills/`` then
+    # ``~/.aether/skills``).  ``skill_list_in_system_prompt`` is OFF
+    # by default to avoid silently inflating the system prompt with
+    # the discovered ~70 skills; enable explicitly when desired.
+    skill_tool_enabled: bool = True
+    skill_search_paths: tuple[Path, ...] = ()
+    skill_list_in_system_prompt: bool = False

@@ -224,6 +224,13 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
     while we sit inside ``engine.run_loop``.
     """
     ui = state.ui
+    # Sprint 3.5 / PR-2 — interactive prompter forwarded to
+    # ``ExitPlanModeTool`` and ``AskUserQuestionTool``.  Built lazily
+    # per turn so each turn sees the live stdin/stdout (REPL stdio
+    # never changes mid-process today, but constructing on demand keeps
+    # the engine free to swap streams in tests).
+    from aether.cli.approval_prompter import ApprovalPrompter
+
     request = EngineRequest(
         session_id=state.session_id,
         user_message=user_input,
@@ -235,6 +242,7 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
         # can tick the live token estimator during long tool-call
         # generation phases without polluting the visible body.
         stream_silent_callback=ui.make_stream_silent_callback(),
+        approval_prompter=ApprovalPrompter(),
     )
 
     ui.begin_turn()

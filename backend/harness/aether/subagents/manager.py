@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
@@ -28,6 +29,17 @@ class SubagentManager:
         self.max_concurrent_children = max(1, int(max_concurrent_children))
         self.max_spawn_depth = max(1, int(max_spawn_depth))
         self.logger = logger or logging.getLogger(__name__)
+        # Sprint 3.5 / PR 3.5.6 — track running tasks so a peer tool
+        # (``TaskStopTool``) or the parent agent can request a graceful
+        # interrupt.  The mapping is ``task_id -> threading.Event``;
+        # the child agent observes the event at iteration boundaries
+        # via ``AgentEngine.interrupt`` (set in ``_execute_one``).
+        self._stop_events: dict[str, threading.Event] = {}
+        self._stop_events_lock = threading.Lock()
+        # Active children registry, keyed by task_id, used so
+        # ``stop_task`` can route ``interrupt(...)`` to the right
+        # ``AgentEngine`` instance.
+        self._active_children: dict[str, "object"] = {}
 
     def run_task(self, parent, task: SubagentTask) -> SubagentResult:
         return self.run_tasks(parent=parent, tasks=[task])[0]
@@ -76,10 +88,50 @@ class SubagentManager:
 
         return [results_by_task_id[t.task_id] for t in tasks]
 
+    # ---------------------------------------------------------- public ext.
+
+    def stop_task(self, task_id: str) -> bool:
+        """Signal a running task to stop at its next iteration boundary.
+
+        Returns ``True`` if the task was running and the signal was
+        delivered, ``False`` if no such task is known (already finished,
+        never started, or unknown ``task_id``).
+        """
+        if not task_id:
+            return False
+        with self._stop_events_lock:
+            event = self._stop_events.get(task_id)
+            child = self._active_children.get(task_id)
+        if event is None and child is None:
+            return False
+        if event is not None:
+            event.set()
+        if child is not None and hasattr(child, "interrupt"):
+            try:
+                child.interrupt(reason=f"stopped by parent (task_id={task_id})")
+            except Exception:  # pragma: no cover - defensive
+                pass
+        return True
+
+    def is_task_running(self, task_id: str) -> bool:
+        with self._stop_events_lock:
+            return task_id in self._active_children
+
+    # ----------------------------------------------------------- internals
+
     def _execute_one(self, *, parent, task: SubagentTask, child_depth: int) -> SubagentResult:
         started_at = time.monotonic()
         child = self.builder.build_child(parent=parent, task=task, child_depth=child_depth)
         parent._register_child(child)
+
+        stop_event = threading.Event()
+        with self._stop_events_lock:
+            self._stop_events[task.task_id] = stop_event
+            self._active_children[task.task_id] = child
+        # Best-effort: child may inspect this attribute if it grows a
+        # cooperative cancel hook.  The interrupt path above covers the
+        # actual stop semantics today.
+        setattr(child, "_stop_event", stop_event)
 
         try:
             child_result = child.run_loop(task.request)
@@ -121,3 +173,6 @@ class SubagentManager:
             )
         finally:
             parent._unregister_child(child)
+            with self._stop_events_lock:
+                self._stop_events.pop(task.task_id, None)
+                self._active_children.pop(task.task_id, None)

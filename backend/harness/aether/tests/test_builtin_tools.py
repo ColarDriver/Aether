@@ -60,16 +60,21 @@ def _call(name: str, **args) -> ToolCall:
 
 class FactoryTests(unittest.TestCase):
     def test_factory_registers_canonical_tools(self) -> None:
-        # Sprint 3.5 / PR 3.5.1 expanded the kit from six to nine
-        # tools; ``file_edit`` / ``notebook_edit`` / ``todo_write``
-        # join the original six.  Asserting the full sorted list
-        # documents the contract and trips loudly if someone drops
-        # a tool by accident.
+        # Sprint 3.5 / PR-2 expanded the kit from nine to eighteen
+        # tools.  The new block adds web (web_fetch / web_search),
+        # subagent dispatch (task / task_output / task_stop),
+        # interaction (enter_plan_mode / exit_plan_mode /
+        # ask_user_question) and skill loading (skill).  Asserting the
+        # full sorted list documents the contract and trips loudly if
+        # someone drops a tool by accident.
         reg = build_default_tool_registry()
         names = sorted(d.name for d in reg.list_descriptors())
         self.assertEqual(
             names,
             [
+                "ask_user_question",
+                "enter_plan_mode",
+                "exit_plan_mode",
                 "file_edit",
                 "glob",
                 "grep",
@@ -77,7 +82,13 @@ class FactoryTests(unittest.TestCase):
                 "notebook_edit",
                 "read_file",
                 "shell",
+                "skill",
+                "task",
+                "task_output",
+                "task_stop",
                 "todo_write",
+                "web_fetch",
+                "web_search",
                 "write_file",
             ],
         )

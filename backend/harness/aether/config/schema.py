@@ -19,7 +19,15 @@ class ModelCallConfig:
 class EngineConfig:
     """Runtime configuration for the loop engine."""
 
-    max_iterations: int = 8
+    # Hard cap on LLM iterations per turn — the structured ceiling
+    # ``IterationBudget`` (Sprint 3 / PR 3.2) is built on top of.  Default
+    # ``32`` matches the ``aether chat --max-iterations`` CLI default so
+    # SDK callers, subagents, and unattended tests see the same headroom
+    # interactive users do.  Cheap-tool refund + max-iterations summary
+    # provide soft guardrails before this number becomes painful, so the
+    # tradeoff favours "long task completes" over "cost is bounded";
+    # benchmarks / cost-sensitive deployments should override explicitly.
+    max_iterations: int = 32
     fail_on_tool_error: bool = False
     raise_on_middleware_error: bool = False
     fail_on_unknown_tool: bool = True

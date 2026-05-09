@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from threading import RLock
@@ -62,7 +63,7 @@ from aether.services.compact.autocompact import AutoCompactor
 from aether.services.compact.compactor import CompactionPipeline, CompactionResult
 from aether.services.compact.collapse import NoOpCollapseTier
 from aether.services.compact.llm_fork import LLMForkSummarizer
-from aether.services.compact.microcompact import NoOpMicrocompactor
+from aether.services.compact.microcompact import TimeBasedMicrocompactor
 from aether.services.compact.snip import NoOpSnipper
 from aether.tools.base import UnknownToolError
 from aether.tools.registry import ToolRegistry
@@ -968,7 +969,14 @@ class AgentEngine:
             self._compaction_pipeline = CompactionPipeline(
                 tiers=[
                     NoOpSnipper(),
-                    NoOpMicrocompactor(),
+                    # Sprint 3 / PR 3.5 — Tier 3 lives between snip
+                    # (Tier 2) and collapse (Tier 4).  Cheap and local;
+                    # consults ``_aether_meta.timestamp`` stamped on
+                    # every assistant message we emit.
+                    TimeBasedMicrocompactor(
+                        config=self.config,
+                        logger=self.services.logger,
+                    ),
                     NoOpCollapseTier(),
                     AutoCompactor(
                         config=self.config,
@@ -2020,6 +2028,7 @@ class AgentEngine:
                     "content": friendly,
                     "finish_reason": response.finish_reason,
                     "metadata": {"partial": True, "length_reason": "thinking_budget"},
+                    "_aether_meta": self._assistant_aether_meta(),
                 }
             )
             context.metadata["partial"] = True
@@ -2043,6 +2052,7 @@ class AgentEngine:
                         "partial": True,
                         "length_continue_attempt": attempts + 1,
                     },
+                    "_aether_meta": self._assistant_aether_meta(),
                 }
             )
             continuation_messages.append(
@@ -2082,6 +2092,7 @@ class AgentEngine:
                     "content": prefix,
                     "finish_reason": response.finish_reason,
                     "metadata": {"partial": True, "length_exhausted": True},
+                    "_aether_meta": self._assistant_aether_meta(),
                 }
             )
         return AgentEngine._LengthHandlingOutcome(
@@ -2340,6 +2351,7 @@ class AgentEngine:
                 ],
                 "finish_reason": response.finish_reason,
                 "metadata": {"_invalid_json_recovery": True},
+                "_aether_meta": self._assistant_aether_meta(),
             }
         )
         invalid_lookup = {name: err for name, err in invalid_json_args}
@@ -2468,6 +2480,26 @@ class AgentEngine:
             return candidate
         return None
 
+    @staticmethod
+    def _assistant_aether_meta() -> Dict[str, Any]:
+        """Per-message metadata stamped on every assistant message we emit.
+
+        Sprint 3 / PR 3.5 — populates ``_aether_meta.timestamp`` so
+        :class:`TimeBasedMicrocompactor` can compute the gap since the
+        last assistant message and decide whether the prompt cache is
+        cold enough to clear stale ``tool_result`` payloads.
+
+        The key sits under a private (``_``-prefixed) namespace so
+        provider serialisation layers (``OpenAICompatible._convert_messages``
+        and friends) don't mistake it for a wire-level field — they
+        whitelist ``role`` / ``content`` / ``tool_calls`` and silently
+        drop everything else.
+
+        Always returns a fresh dict so callers can mutate without
+        accidentally aliasing across messages.
+        """
+        return {"timestamp": time.time()}
+
     def _append_assistant_tool_message(
         self,
         messages: List[Dict[str, Any]],
@@ -2487,6 +2519,7 @@ class AgentEngine:
                 "content": response.content or "",
                 "tool_calls": tool_calls,
                 "finish_reason": response.finish_reason,
+                "_aether_meta": self._assistant_aether_meta(),
             }
         )
 
@@ -2500,6 +2533,7 @@ class AgentEngine:
                 "role": "assistant",
                 "content": response.content or "",
                 "finish_reason": response.finish_reason,
+                "_aether_meta": self._assistant_aether_meta(),
             }
         )
 

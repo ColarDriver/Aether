@@ -447,11 +447,17 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
             "COMPACT_PROMPT",
             "LLMForkSummarizer",
             "UsageSink",
-            # Tier 2/3/4 placeholders — exported so future PRs can drop
+            # Tier 3 (PR 3.5) — TimeBased is the live implementation,
+            # Cached is the Sprint 5+ stub, plus the two module-level
+            # constants (placeholder string + default tool whitelist).
+            "TimeBasedMicrocompactor",
+            "CachedMicrocompactor",
+            "TIME_BASED_MC_CLEARED_MESSAGE",
+            "DEFAULT_COMPACTABLE_TOOLS",
+            # Tier 2/4 placeholders — exported so future PRs can drop
             # in real implementations without changing how the agent
             # imports them.
             "NoOpCollapseTier",
-            "NoOpMicrocompactor",
             "NoOpSnipper",
             # Token estimator the pipeline binds to by default.
             "estimate_messages_tokens",
@@ -481,13 +487,17 @@ class CompactionPipelinePublicSurfaceTests(unittest.TestCase):
 
     def test_p3_compactortier_protocol_is_runtime_checkable_or_documented(self) -> None:
         """``CompactorTier`` must be importable as a *type* (Protocol)."""
-        from aether.services.compact import CompactorTier, NoOpSnipper
+        from aether.services.compact import (
+            CachedMicrocompactor,
+            CompactorTier,
+            NoOpSnipper,
+        )
 
-        # Structural conformance — every NoOp tier shipped in this
+        # Structural conformance — every NoOp/stub tier shipped in this
         # module satisfies the protocol shape.
-        snipper = NoOpSnipper()
-        self.assertTrue(hasattr(snipper, "name"))
-        self.assertTrue(callable(getattr(snipper, "maybe_run", None)))
+        for tier in (NoOpSnipper(), CachedMicrocompactor()):
+            self.assertTrue(hasattr(tier, "name"))
+            self.assertTrue(callable(getattr(tier, "maybe_run", None)))
         # CompactorTier is a class-like object usable in annotations.
         self.assertTrue(isinstance(CompactorTier, type) or hasattr(CompactorTier, "__class__"))
 

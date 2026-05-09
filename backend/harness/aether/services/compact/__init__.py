@@ -9,7 +9,12 @@ Tiers are numbered to match
 ``docs/sprint-3-compaction-pipeline/04_pr3_4_tier5_autocompact.md``:
 
 * Tier 2 — :class:`NoOpSnipper` (placeholder, future PR)
-* Tier 3 — :class:`NoOpMicrocompactor` (placeholder, future PR)
+* Tier 3 — :class:`TimeBasedMicrocompactor` (live; PR 3.5)
+  — :class:`CachedMicrocompactor` (stub, Sprint 5+ cache_edits path)
+  — :data:`TIME_BASED_MC_CLEARED_MESSAGE` (placeholder string the
+    Tier 3 implementation writes into cleared ``tool_result`` blocks)
+  — :data:`DEFAULT_COMPACTABLE_TOOLS` (default value for the
+    ``microcompact_compactable_tools`` config field)
 * Tier 4 — :class:`NoOpCollapseTier` (placeholder, future PR)
 * Tier 5 — :class:`AutoCompactor` (live; LLM-fork summariser)
 
@@ -33,21 +38,29 @@ from aether.services.compact.llm_fork import (
     LLMForkSummarizer,
     UsageSink,
 )
-from aether.services.compact.microcompact import NoOpMicrocompactor
+from aether.services.compact.microcompact import (
+    DEFAULT_COMPACTABLE_TOOLS,
+    TIME_BASED_MC_CLEARED_MESSAGE,
+    CachedMicrocompactor,
+    TimeBasedMicrocompactor,
+)
 from aether.services.compact.snip import NoOpSnipper
 from aether.services.compact.token_estimation import estimate_messages_tokens
 
 __all__ = [
     "AutoCompactor",
     "COMPACT_PROMPT",
+    "CachedMicrocompactor",
     "CompactionContext",
     "CompactionPipeline",
     "CompactionResult",
     "CompactorTier",
+    "DEFAULT_COMPACTABLE_TOOLS",
     "LLMForkSummarizer",
     "NoOpCollapseTier",
-    "NoOpMicrocompactor",
     "NoOpSnipper",
+    "TIME_BASED_MC_CLEARED_MESSAGE",
+    "TimeBasedMicrocompactor",
     "UsageSink",
     "estimate_messages_tokens",
 ]

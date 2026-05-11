@@ -91,6 +91,14 @@ TURN_KEY_PHANTOM_TOOL_RETRIES: Final[str] = "phantom_tool_retries"
 # warning.
 TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: Final[str] = "phantom_tool_synthesized"
 
+# Sprint 4 / PR 4.1: empty-response degradation counters and state keys.
+TURN_KEY_THINKING_PREFILL_RETRIES: Final[str] = "thinking_prefill_retries"
+TURN_KEY_POST_TOOL_EMPTY_RETRIED: Final[str] = "post_tool_empty_retried"
+TURN_KEY_CODEX_ACK_RETRIES: Final[str] = "codex_intermediate_ack_retries"
+TURN_KEY_STREAMED_ASSISTANT_TEXT: Final[str] = "streamed_assistant_text"
+TURN_KEY_TRUNCATED_RESPONSE_PREFIX: Final[str] = "truncated_response_prefix"
+TURN_KEY_EMPTY_RECOVERY_LAST_STEP: Final[str] = "empty_recovery_last_step"
+
 # Set of all turn-scoped retry-counter keys.  Helpers iterate over this set
 # when initialising/resetting per-turn state so adding a new counter only
 # requires touching this constant + the consumer site.
@@ -102,6 +110,8 @@ TURN_RETRY_COUNTER_KEYS: Final[frozenset[str]] = frozenset(
         TURN_KEY_INVALID_JSON_RETRIES,
         TURN_KEY_PHANTOM_TOOL_RETRIES,
         TURN_KEY_PHANTOM_TOOL_SYNTHESIZED,
+        TURN_KEY_THINKING_PREFILL_RETRIES,
+        TURN_KEY_CODEX_ACK_RETRIES,
     }
 )
 
@@ -129,6 +139,12 @@ class SessionRuntimeState:
     # it triggers.  The two counters use different cadence semantics:
     # memory = per-turn, skill = per-tool-call iteration.
     skill_nudge_counter: int = 0
+
+    # Sprint 4 / PR 4.1: cross-turn housekeeping fallback snapshot.
+    # Written at the end of a turn by the agent and read by the next
+    # turn's empty-response recovery path.
+    last_assistant_text_with_tools: str = ""
+    last_assistant_tools_all_housekeeping: bool = False
 
 
 @dataclass
@@ -189,5 +205,11 @@ __all__ = [
     "TURN_KEY_INVALID_JSON_RETRIES",
     "TURN_KEY_PHANTOM_TOOL_RETRIES",
     "TURN_KEY_PHANTOM_TOOL_SYNTHESIZED",
+    "TURN_KEY_THINKING_PREFILL_RETRIES",
+    "TURN_KEY_POST_TOOL_EMPTY_RETRIED",
+    "TURN_KEY_CODEX_ACK_RETRIES",
+    "TURN_KEY_STREAMED_ASSISTANT_TEXT",
+    "TURN_KEY_TRUNCATED_RESPONSE_PREFIX",
+    "TURN_KEY_EMPTY_RECOVERY_LAST_STEP",
     "TURN_RETRY_COUNTER_KEYS",
 ]

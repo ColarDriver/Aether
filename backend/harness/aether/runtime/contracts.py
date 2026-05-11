@@ -99,6 +99,10 @@ class ExitReason(str, Enum):
     # can tell "the model never figured out which tool to call" apart
     # from "the tool ran but failed".
     INVALID_TOOL_REPEATED = "INVALID_TOOL_REPEATED"
+    # Sprint 4 / PR 4.2: empty-response recovery terminals.
+    PARTIAL_STREAM_RECOVERY = "PARTIAL_STREAM_RECOVERY"
+    FALLBACK_PRIOR_TURN_CONTENT = "FALLBACK_PRIOR_TURN_CONTENT"
+    POST_TOOL_NUDGE = "POST_TOOL_NUDGE"
 
 
 
@@ -148,6 +152,10 @@ class NormalizedResponse:
     content: str | None = None
     tool_calls: List[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
+    # Providers that expose reasoning should store it in metadata under
+    # ``reasoning_content`` or ``reasoning_details``.  Sprint 4's response
+    # classifier reads those keys; there is intentionally no top-level
+    # ``reasoning`` field in this contract.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

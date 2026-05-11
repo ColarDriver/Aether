@@ -8,6 +8,7 @@ import logging
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List
 
@@ -17,7 +18,7 @@ from aether.agents.core.phantom_tool import (
     detect_phantom_tool_intent,
     synthesize_tool_calls_from_phantom,
 )
-from aether.agents.core.tool_hardening import prepare_tool_calls
+from aether.agents.core.tool_hardening import ToolDispatchPlan, prepare_tool_calls
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
@@ -41,16 +42,29 @@ from aether.runtime.recovery import (
     AttemptState,
     ClassifiedRecoveryStrategy,
     GenericBackoffStrategy,
+    RecoveryDecision,
     RecoveryStrategy,
     wait_interruptible,
 )
+from aether.runtime.response_classification import (
+    EmptyKind,
+    ResponseClassification,
+    is_legitimate_empty,
+    strip_thinking_tags,
+)
 from aether.runtime.services import EngineServices
 from aether.runtime.session_runtime import (
+    TURN_KEY_CODEX_ACK_RETRIES,
     TURN_KEY_EMPTY_RESPONSE_RETRIES,
+    TURN_KEY_EMPTY_RECOVERY_LAST_STEP,
     TURN_KEY_INVALID_JSON_RETRIES,
     TURN_KEY_PHANTOM_TOOL_RETRIES,
     TURN_KEY_PHANTOM_TOOL_SYNTHESIZED,
+    TURN_KEY_POST_TOOL_EMPTY_RETRIED,
     TURN_KEY_PROVIDER_ERROR_RETRIES,
+    TURN_KEY_STREAMED_ASSISTANT_TEXT,
+    TURN_KEY_THINKING_PREFILL_RETRIES,
+    TURN_KEY_TRUNCATED_RESPONSE_PREFIX,
     TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES,
     SessionRuntimeRegistry,
     SessionRuntimeState,
@@ -58,6 +72,12 @@ from aether.runtime.session_runtime import (
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.usage import CanonicalUsage, normalize_usage
+from aether.runtime.tool_error_format import (
+    FormattedToolError,
+    format_invalid_tool_args_error,
+    format_schema_error,
+    format_unknown_tool_error,
+)
 from aether.services.compact import estimate_messages_tokens
 from aether.services.compact.autocompact import AutoCompactor
 from aether.services.compact.compactor import CompactionPipeline, CompactionResult
@@ -121,6 +141,43 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_compaction_pipeline",
     "_compaction_in_progress",
 })
+
+
+_CONTINUE_LOOP_SENTINEL = object()
+
+
+class _EmptyRecoveryStep(str, Enum):
+    TRUNCATED_PREFIX_CONCAT = "truncated_prefix_concat"
+    PARTIAL_STREAM_RECOVERY = "partial_stream_recovery"
+    HOUSEKEEPING_FALLBACK = "housekeeping_fallback"
+    POST_TOOL_EMPTY_NUDGE = "post_tool_empty_nudge"
+    THINKING_PREFILL = "thinking_prefill"
+    RETRY_OR_FALLBACK = "retry_or_fallback"
+    TERMINAL_EMPTY = "terminal_empty"
+    CODEX_INTERMEDIATE_ACK = "codex_intermediate_ack"
+
+
+@dataclass(slots=True, frozen=True)
+class _EmptyRecoveryOutcome:
+    step: _EmptyRecoveryStep
+    final_response: str | None = None
+    exit_reason: ExitReason | None = None
+    continue_loop: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class _FinalizeResponseOutcome:
+    final_response: str | object | None
+    exit_reason: ExitReason | None
+    error_text: str | None = None
+
+
+@dataclass(slots=True)
+class _WithholdingState:
+    pending_errors: list[ProviderInvocationError] = field(default_factory=list)
+    cascade_log: list[str] = field(default_factory=list)
+    suppressed_callback_notifications: int = 0
+    compression_attempted_for: set[str] = field(default_factory=set)
 
 
 class AgentEngine:
@@ -500,7 +557,10 @@ class AgentEngine:
                         context_metadata=context.metadata,
                     )
 
-                    if response.finish_reason == "length":
+                    length_text = (response.content or "").strip()
+                    if response.finish_reason == "length" and (
+                        response.tool_calls or length_text
+                    ):
                         # Sprint 1 / PR 1.3: ``finish_reason="length"`` +
                         # tool_calls is a structurally different failure
                         # from prose-truncation.  The continuation prompt
@@ -638,6 +698,23 @@ class AgentEngine:
                                 + dispatch_plan.capped_count
                             )
 
+                        if dispatch_plan.exit_reason is None:
+                            schema_injection = self._maybe_inject_schema_errors(
+                                dispatch_plan=dispatch_plan,
+                                response=response,
+                                context=context,
+                            )
+                            if schema_injection is not None:
+                                state_machine.transition(LoopState.TOOL_EXECUTE)
+                                messages.extend(schema_injection)
+                                state_machine.transition(LoopState.CHECK_EXIT)
+                                if budget.exhausted:
+                                    state_machine.transition(LoopState.FINALIZE)
+                                    exit_reason = ExitReason.MAX_ITERATIONS
+                                    break
+                                state_machine.transition(LoopState.PRE_LLM)
+                                continue
+
                         state_machine.transition(LoopState.TOOL_EXECUTE)
                         tool_failed = False
                         for prepared in dispatch_plan.prepared:
@@ -664,6 +741,7 @@ class AgentEngine:
                                     state_machine.transition(LoopState.FAILED)
                                     tool_failed = True
                                     break
+                                self._record_tool_result_error(context, result)
                                 self._append_tool_result_message(messages, result)
                                 continue
 
@@ -706,8 +784,21 @@ class AgentEngine:
                                     result = ToolResult(
                                         tool_call_id=tool_call.id,
                                         name=tool_call.name,
-                                        content=f"Unknown tool: {tool_call.name}",
+                                        content=self._format_unknown_tool_content(
+                                            tool_call.name,
+                                            context=context,
+                                        ),
                                         is_error=True,
+                                        metadata={
+                                            "_unknown_tool_recovery": True,
+                                            "_tool_error_category": "unknown_tool",
+                                        }
+                                        if getattr(
+                                            self.config,
+                                            "tool_error_structured_format_enabled",
+                                            True,
+                                        )
+                                        else {},
                                     )
                                 except Exception as exc:
                                     if self.config.fail_on_tool_error:
@@ -743,6 +834,7 @@ class AgentEngine:
                                 tool_failed = True
                                 break
 
+                            self._record_tool_result_error(context, result)
                             self._append_tool_result_message(messages, result)
 
                         if state_machine.state in {LoopState.FAILED, LoopState.INTERRUPTED}:
@@ -887,36 +979,30 @@ class AgentEngine:
                         state_machine.transition(LoopState.PRE_LLM)
                         continue
 
-                    self._append_assistant_text_message(messages, response_to_store)
-                    final_response = response_to_store.content or ""
-                    if stream_callback_wrapped and final_response and not context.metadata.get("streamed_output"):
-                        stream_callback_wrapped(final_response)
-                        context.metadata["stream_fallback_emitted"] = True
-
-                    if final_response:
-                        # Reset the per-turn empty-response counter on success.
-                        # (Currently no consumer reads this counter — Sprint 4
-                        # will introduce the 9-step empty-response degradation
-                        # path that consumes it.)
-                        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
-                        if phantom_outcome == "exhausted":
-                            # Body looked like attempted tool use but
-                            # the recovery budget ran out — surface
-                            # this as a distinct exit reason so the
-                            # UI footer can flag it ("model described
-                            # commands but never invoked them") rather
-                            # than the misleading TEXT_RESPONSE green
-                            # checkmark.
-                            exit_reason = ExitReason.PHANTOM_TOOL_INTENT
-                        else:
-                            exit_reason = (
-                                ExitReason.LENGTH_RECOVERED if prefix else ExitReason.TEXT_RESPONSE
-                            )
-                    else:
-                        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = (
-                            int(context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)) + 1
-                        )
-                        exit_reason = ExitReason.EMPTY_RESPONSE
+                    finalized = self._finalize_empty_response(
+                        response=response,
+                        response_to_store=response_to_store,
+                        messages=messages,
+                        context=context,
+                        request=request,
+                        phantom_outcome=phantom_outcome,
+                        prefix=prefix,
+                    )
+                    if finalized.final_response is _CONTINUE_LOOP_SENTINEL:
+                        state_machine.transition(LoopState.CHECK_EXIT)
+                        if budget.exhausted:
+                            state_machine.transition(LoopState.FINALIZE)
+                            exit_reason = ExitReason.MAX_ITERATIONS
+                            break
+                        state_machine.transition(LoopState.PRE_LLM)
+                        continue
+                    final_response = (
+                        finalized.final_response
+                        if isinstance(finalized.final_response, str)
+                        else None
+                    )
+                    exit_reason = finalized.exit_reason or ExitReason.EMPTY_RESPONSE
+                    error_text = finalized.error_text
                     state_machine.transition(LoopState.FINALIZE)
                     break
 
@@ -1162,6 +1248,11 @@ class AgentEngine:
                 TURN_KEY_INVALID_JSON_RETRIES: 0,
                 TURN_KEY_PHANTOM_TOOL_RETRIES: 0,
                 TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: 0,
+                TURN_KEY_THINKING_PREFILL_RETRIES: 0,
+                TURN_KEY_CODEX_ACK_RETRIES: 0,
+                TURN_KEY_STREAMED_ASSISTANT_TEXT: "",
+                TURN_KEY_POST_TOOL_EMPTY_RETRIED: False,
+                TURN_KEY_EMPTY_RECOVERY_LAST_STEP: "",
             }
         )
 
@@ -1198,6 +1289,7 @@ class AgentEngine:
         # sharing one warm subprocess pool.
         context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
         context.metadata["_browser_manager"] = getattr(self, "_browser_manager", None)
+        context.metadata["empty_recovery"] = {}
         return state_machine, messages, context
 
     def _prepare_session_and_system_prompt(
@@ -1547,8 +1639,6 @@ class AgentEngine:
 
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
         callback = request.stream_callback
-        if callback is None:
-            return None
 
         # Sprint 1 / PR 1.1 emergency rollback: if the operator has flipped
         # ``EngineConfig.streaming_enabled`` off (e.g. because a gateway is
@@ -1563,8 +1653,16 @@ class AgentEngine:
             )
             return None
 
+        if callback is None and not getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
+            return None
+
         def _wrapped(delta: str) -> None:
             if not isinstance(delta, str) or not delta:
+                return
+            if getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
+                current = str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or "")
+                context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = current + delta
+            if callback is None:
                 return
             try:
                 callback(delta)
@@ -1818,12 +1916,14 @@ class AgentEngine:
             context.metadata["active_provider_name"] = (
                 self.services.fallback_chain.current_slot_name
             )
-        # Per-turn rotation counter — capped by
-        # ``EngineConfig.max_fallback_activations_per_turn`` to bound
-        # the worst case (every provider in the chain returns 429).
-        rotations_this_turn = 0
+        withholding_state = _WithholdingState()
+        max_provider_attempts = max(
+            1,
+            int(getattr(self.config, "max_provider_recovery_attempts", 8)),
+        )
 
-        while True:
+        while attempt_state.attempt < max_provider_attempts:
+            context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = ""
             try:
                 call_config = request.model_config
                 ephemeral_max_output_tokens = context.metadata.pop("_ephemeral_max_output_tokens", None)
@@ -1857,6 +1957,12 @@ class AgentEngine:
                         body_summary="invalid response: " + "; ".join(reasons[:5]),
                         metadata={"phase": "validate_response"},
                     )
+                if withholding_state.pending_errors or withholding_state.cascade_log:
+                    self._observe_recovery_cascade(
+                        context,
+                        withholding_state,
+                        terminal="success",
+                    )
                 return AgentEngine._ProviderInvocationOutcome(response=response)
             except ProviderInvocationError as exc:
                 # Bump the observability counter once per failed attempt.
@@ -1866,12 +1972,19 @@ class AgentEngine:
                 attempt_state.attempt += 1
                 attempt_state.errors.append(exc)
                 last_error = exc
+                withholding_state.pending_errors.append(exc)
 
                 decision = self.services.recovery_strategy.decide(
                     error=exc,
                     attempt_state=attempt_state,
                     context=context,
                 )
+                if getattr(self.config, "error_withholding_enabled", True):
+                    decision = self._maybe_upgrade_decision_for_repeat_withholding(
+                        decision,
+                        state=withholding_state,
+                        context=context,
+                    )
                 decisions_log.append(
                     {
                         "attempt": attempt_state.attempt,
@@ -1898,75 +2011,35 @@ class AgentEngine:
                 if decision.strip_thinking:
                     context.metadata["recovery_strip_thinking_requested"] = True
 
-                # ── Compression hint without compressor → terminate cleanly ───
-                # Sprint 3 will replace this branch with a real
-                # compress-then-retry loop.  Until then, surface a
-                # distinct exit reason so users see *why* the call
-                # failed instead of an opaque PROVIDER_ERROR.
-                if decision.compress_context:
-                    context.metadata["recovery_compress_required"] = True
-                    if getattr(self.config, "compression_enabled", False):
-                        trigger_reason = (
-                            "payload_too_large"
-                            if decision.classified_reason == FailoverReason.payload_too_large.value
-                            else "context_overflow"
-                        )
-                        compacted = self._maybe_compact_messages(
-                            prepared_messages,
-                            context=context,
-                            trigger_reason=trigger_reason,
-                        )
-                        if compacted is not None and compacted.tokens_after < compacted.tokens_before:
-                            prepared_messages[:] = compacted.compressed_messages
-                            continue
-                        context.metadata["recovery_terminal_exit_reason"] = (
-                            ExitReason.PAYLOAD_TOO_LARGE.value
-                            if trigger_reason == "payload_too_large"
-                            else ExitReason.COMPRESSION_EXHAUSTED.value
-                        )
-                        return AgentEngine._ProviderInvocationOutcome(error=exc)
-                    if decision.classified_reason == FailoverReason.payload_too_large.value:
-                        context.metadata["recovery_terminal_exit_reason"] = (
-                            ExitReason.PAYLOAD_TOO_LARGE.value
-                        )
-                    else:
-                        context.metadata["recovery_terminal_exit_reason"] = (
-                            ExitReason.CONTEXT_EXHAUSTED.value
-                        )
-                    return AgentEngine._ProviderInvocationOutcome(error=exc)
-
-                # ── Fallback rotation ─────────────────────────────
-                if (
-                    decision.activate_fallback
-                    and self.services.fallback_chain is not None
-                    and getattr(self.config, "fallback_chain_enabled", False)
-                ):
-                    max_rotations = max(
-                        0,
-                        int(getattr(self.config, "max_fallback_activations_per_turn", 4)),
+                if getattr(self.config, "error_withholding_enabled", True):
+                    applied = self._apply_recovery_decision_cascade(
+                        decision=decision,
+                        messages=prepared_messages,
+                        context=context,
+                        state=withholding_state,
                     )
-                    if rotations_this_turn < max_rotations and self.services.fallback_chain.activate_next():
-                        rotations_this_turn += 1
-                        context.metadata["fallback_activations_this_turn"] = rotations_this_turn
-                        context.metadata["active_provider_name"] = (
-                            self.services.fallback_chain.current_slot_name
-                        )
-                        # Reset the attempt budget so the new
-                        # provider gets a fresh retry window.  The
-                        # strategy's ``max_attempts`` is per-provider
-                        # in spirit; without this reset a 5-provider
-                        # chain would exhaust its budget on slot 1.
+                else:
+                    applied = self._apply_recovery_decision_singleshot(
+                        decision=decision,
+                        messages=prepared_messages,
+                        context=context,
+                        state=withholding_state,
+                    )
+                if applied:
+                    if context.metadata.pop("_recovery_reset_attempt_state", False):
                         attempt_state = AttemptState()
-                        # Skip any wait — rotating IS the recovery.
-                        # If the strategy requested both wait and
-                        # rotation we treat the wait as redundant
-                        # because we're switching upstream anyway.
-                        continue
-                    # Either the chain is exhausted, fallback is
-                    # disabled, or we hit the per-turn cap.  Surface
-                    # FALLBACK_EXHAUSTED so observability is precise.
-                    context.metadata["recovery_terminal_exit_reason"] = (
-                        ExitReason.FALLBACK_EXHAUSTED.value
+                    continue
+
+                terminal_after_recovery = context.metadata.get(
+                    "recovery_terminal_exit_reason"
+                )
+                if terminal_after_recovery and (
+                    decision.compress_context or decision.activate_fallback
+                ):
+                    self._observe_recovery_cascade(
+                        context,
+                        withholding_state,
+                        terminal="surface",
                     )
                     return AgentEngine._ProviderInvocationOutcome(error=exc)
 
@@ -1974,10 +2047,18 @@ class AgentEngine:
                     # Pin RATE_LIMITED as the terminal when the strategy
                     # gave up specifically on a rate-limit failure — the
                     # generic PROVIDER_ERROR mask would lose that signal.
-                    if decision.classified_reason == FailoverReason.rate_limit.value:
+                    if (
+                        decision.classified_reason == FailoverReason.rate_limit.value
+                        and not context.metadata.get("recovery_terminal_exit_reason")
+                    ):
                         context.metadata["recovery_terminal_exit_reason"] = (
                             ExitReason.RATE_LIMITED.value
                         )
+                    self._observe_recovery_cascade(
+                        context,
+                        withholding_state,
+                        terminal="surface",
+                    )
                     return AgentEngine._ProviderInvocationOutcome(error=exc)
 
                 # Interruptible wait — if the user cancels mid-retry we abort
@@ -2003,6 +2084,221 @@ class AgentEngine:
                 )
                 last_error = exc
                 return AgentEngine._ProviderInvocationOutcome(error=last_error)
+
+        self._observe_recovery_cascade(
+            context,
+            withholding_state,
+            terminal="exhausted",
+        )
+        return AgentEngine._ProviderInvocationOutcome(error=last_error)
+
+    def _apply_recovery_decision_cascade(
+        self,
+        *,
+        decision: RecoveryDecision,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        state: _WithholdingState,
+    ) -> bool:
+        applied = False
+        if decision.compress_context:
+            applied = self._apply_compression_recovery(
+                decision=decision,
+                messages=messages,
+                context=context,
+                state=state,
+            ) or applied
+        if decision.strip_thinking:
+            if self._strip_thinking_metadata(messages):
+                state.cascade_log.append(
+                    f"strip_thinking({decision.classified_reason or decision.reason})"
+                )
+                applied = True
+        if decision.activate_fallback:
+            applied = self._apply_fallback_recovery(
+                decision=decision,
+                context=context,
+                state=state,
+            ) or applied
+        return applied
+
+    def _apply_recovery_decision_singleshot(
+        self,
+        *,
+        decision: RecoveryDecision,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        state: _WithholdingState,
+    ) -> bool:
+        if decision.activate_fallback and self._apply_fallback_recovery(
+            decision=decision,
+            context=context,
+            state=state,
+            prefix="singleshot:",
+        ):
+            return True
+        if decision.compress_context and self._apply_compression_recovery(
+            decision=decision,
+            messages=messages,
+            context=context,
+            state=state,
+            prefix="singleshot:",
+        ):
+            return True
+        if decision.strip_thinking and self._strip_thinking_metadata(messages):
+            state.cascade_log.append(
+                f"singleshot:strip_thinking({decision.classified_reason or decision.reason})"
+            )
+            return True
+        return False
+
+    def _apply_compression_recovery(
+        self,
+        *,
+        decision: RecoveryDecision,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        state: _WithholdingState,
+        prefix: str = "",
+    ) -> bool:
+        context.metadata["recovery_compress_required"] = True
+        reason = decision.classified_reason or "withholding"
+        state.compression_attempted_for.add(reason)
+        if not getattr(self.config, "compression_enabled", False):
+            self._pin_compression_terminal(reason, compressed_but_exhausted=False, context=context)
+            return False
+        trigger_reason = (
+            "payload_too_large"
+            if reason == FailoverReason.payload_too_large.value
+            else "context_overflow"
+        )
+        try:
+            compacted = self._maybe_compact_messages(
+                messages,
+                context=context,
+                trigger_reason=trigger_reason,
+            )
+        except Exception:
+            self.services.logger.exception("recovery compression failed")
+            state.cascade_log.append(f"{prefix}compress_context(failed,reason={reason})")
+            return False
+        if compacted is not None and compacted.tokens_after < compacted.tokens_before:
+            messages[:] = compacted.compressed_messages
+            freed = compacted.tokens_before - compacted.tokens_after
+            state.cascade_log.append(
+                f"{prefix}compress_context(freed={freed},reason={reason})"
+            )
+            return True
+        state.cascade_log.append(f"{prefix}compress_context(freed=0,reason={reason})")
+        self._pin_compression_terminal(reason, compressed_but_exhausted=True, context=context)
+        return False
+
+    def _pin_compression_terminal(
+        self,
+        reason: str,
+        *,
+        compressed_but_exhausted: bool,
+        context: TurnContext,
+    ) -> None:
+        if reason == FailoverReason.payload_too_large.value:
+            context.metadata["recovery_terminal_exit_reason"] = ExitReason.PAYLOAD_TOO_LARGE.value
+        elif compressed_but_exhausted:
+            context.metadata["recovery_terminal_exit_reason"] = ExitReason.COMPRESSION_EXHAUSTED.value
+        else:
+            context.metadata["recovery_terminal_exit_reason"] = ExitReason.CONTEXT_EXHAUSTED.value
+
+    def _apply_fallback_recovery(
+        self,
+        *,
+        decision: RecoveryDecision,
+        context: TurnContext,
+        state: _WithholdingState,
+        prefix: str = "",
+    ) -> bool:
+        chain = self.services.fallback_chain
+        if chain is None or not getattr(self.config, "fallback_chain_enabled", False):
+            return False
+        max_rotations = max(
+            0,
+            int(getattr(self.config, "max_fallback_activations_per_turn", 4)),
+        )
+        rotations = int(context.metadata.get("fallback_activations_this_turn", 0))
+        if rotations >= max_rotations or not chain.has_next():
+            context.metadata["recovery_terminal_exit_reason"] = ExitReason.FALLBACK_EXHAUSTED.value
+            return False
+        if not chain.activate_next():
+            context.metadata["recovery_terminal_exit_reason"] = ExitReason.FALLBACK_EXHAUSTED.value
+            return False
+        context.metadata["fallback_activations_this_turn"] = rotations + 1
+        context.metadata["active_provider_name"] = chain.current_slot_name
+        context.metadata["_recovery_reset_attempt_state"] = True
+        state.cascade_log.append(f"{prefix}fallback({chain.current_slot_name})")
+        return True
+
+    def _maybe_upgrade_decision_for_repeat_withholding(
+        self,
+        decision: RecoveryDecision,
+        *,
+        state: _WithholdingState,
+        context: TurnContext,
+    ) -> RecoveryDecision:
+        reason = decision.classified_reason or ""
+        withholdable = {
+            FailoverReason.context_overflow.value,
+            FailoverReason.payload_too_large.value,
+            FailoverReason.long_context_tier.value,
+        }
+        if (
+            decision.activate_fallback
+            or reason not in withholdable
+            or reason not in state.compression_attempted_for
+        ):
+            return decision
+        chain = self.services.fallback_chain
+        if (
+            chain is None
+            or not getattr(self.config, "fallback_chain_enabled", False)
+            or not chain.has_next()
+        ):
+            return decision
+        state.cascade_log.append(
+            f"force_fallback_upgrade(reason={reason},after_compression=true)"
+        )
+        return RecoveryDecision.retry_after(
+            0.0,
+            reason=f"{decision.reason}|forced-fallback-after-compress-no-progress",
+            activate_fallback=True,
+            compress_context=decision.compress_context,
+            strip_thinking=decision.strip_thinking,
+            classified_reason=decision.classified_reason,
+        )
+
+    @staticmethod
+    def _strip_thinking_metadata(messages: List[Dict[str, Any]]) -> bool:
+        changed = False
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            metadata = message.get("metadata")
+            if isinstance(metadata, dict):
+                for key in ("reasoning_details", "reasoning_content"):
+                    if key in metadata:
+                        metadata.pop(key, None)
+                        changed = True
+        return changed
+
+    def _observe_recovery_cascade(
+        self,
+        context: TurnContext,
+        state: _WithholdingState,
+        *,
+        terminal: str,
+    ) -> None:
+        md = context.metadata.setdefault("recovery", {})
+        md["cascade_log"] = list(state.cascade_log)
+        md["pending_errors_count"] = len(state.pending_errors)
+        md["terminal"] = terminal
+        md["suppressed_callback_notifications"] = state.suppressed_callback_notifications
 
     @dataclass(slots=True)
     class _LengthHandlingOutcome:
@@ -2303,6 +2599,7 @@ class AgentEngine:
         view stay accurate.
         """
         invalid_json_args: list[tuple[str, str]] = []
+        invalid_json_by_id: dict[str, tuple[str, json.JSONDecodeError]] = {}
 
         for call in response.tool_calls:
             raw = getattr(call, "arguments", None)
@@ -2334,6 +2631,7 @@ class AgentEngine:
                 parsed = json.loads(args_text)
             except json.JSONDecodeError as exc:
                 invalid_json_args.append((call.name, str(exc)))
+                invalid_json_by_id[call.id] = (args_text, exc)
                 # Keep the raw string on ``call.arguments`` so the
                 # truncation heuristic and the error-injection path can
                 # both see it.  Dispatch will not see this call —
@@ -2353,10 +2651,10 @@ class AgentEngine:
         # 5) Truncation guard.  If the failing args don't terminate with
         # ``}`` / ``]`` we treat this as a length-class failure regardless
         # of what ``finish_reason`` said — see the docstring for why.
-        invalid_names = {name for name, _ in invalid_json_args}
+        invalid_ids = set(invalid_json_by_id)
         truncated = any(
             (not (str(getattr(c, "arguments", "")) or "").rstrip().endswith(("}", "]")))
-            and c.name in invalid_names
+            and c.id in invalid_ids
             for c in response.tool_calls
         )
         if truncated and getattr(self.config, "truncated_tool_call_detection_enabled", True):
@@ -2422,25 +2720,42 @@ class AgentEngine:
                 "_aether_meta": self._assistant_aether_meta(),
             }
         )
-        invalid_lookup = {name: err for name, err in invalid_json_args}
         for c in response.tool_calls:
-            if c.name in invalid_lookup:
-                err_msg = invalid_lookup[c.name]
+            if c.id in invalid_json_by_id:
+                raw_args, exc = invalid_json_by_id[c.id]
+                if getattr(self.config, "tool_error_structured_format_enabled", True):
+                    formatted = format_invalid_tool_args_error(
+                        tool_name=c.name,
+                        exc=exc,
+                        raw_args=raw_args,
+                    )
+                    content_text = formatted.text
+                    error_category = formatted.category
+                else:
+                    err_msg = str(exc)
+                    content_text = (
+                        f"Error: Invalid JSON arguments. {err_msg}. "
+                        "For tools with no required parameters, use an empty object: {}. "
+                        "Please retry with valid JSON."
+                    )
+                    error_category = "json_syntax_legacy"
+                self._record_tool_error(context, c.name, error_category)
                 injection.append(
                     {
                         "role": "tool",
                         "name": c.name,
                         "tool_call_id": c.id,
-                        "content": (
-                            f"Error: Invalid JSON arguments. {err_msg}. "
-                            "For tools with no required parameters, use an empty object: {}. "
-                            "Please retry with valid JSON."
-                        ),
+                        "content": content_text,
                         "is_error": True,
-                        "metadata": {"_invalid_json_recovery": True},
+                        "metadata": {
+                            "_invalid_json_recovery": True,
+                            "_tool_error_category": error_category,
+                        },
                     }
                 )
             else:
+                error_category = "skipped_due_to_sibling"
+                self._record_tool_error(context, c.name, error_category)
                 injection.append(
                     {
                         "role": "tool",
@@ -2448,7 +2763,10 @@ class AgentEngine:
                         "tool_call_id": c.id,
                         "content": "Skipped: another tool call in this response had invalid JSON.",
                         "is_error": True,
-                        "metadata": {"_invalid_json_recovery": True},
+                        "metadata": {
+                            "_invalid_json_recovery": True,
+                            "_tool_error_category": error_category,
+                        },
                     }
                 )
 
@@ -2464,6 +2782,133 @@ class AgentEngine:
             invalid_json_args=invalid_json_args,
             injection_messages=injection,
         )
+
+    def _maybe_inject_schema_errors(
+        self,
+        *,
+        dispatch_plan: ToolDispatchPlan,
+        response: NormalizedResponse,
+        context: TurnContext,
+    ) -> List[Dict[str, Any]] | None:
+        """Inject structured tool errors for obvious descriptor/schema mismatches.
+
+        The assistant tool-call message has already been appended by the
+        caller.  This helper therefore returns only the matching
+        ``role="tool"`` messages needed to keep role alternation valid.
+        """
+        if not getattr(self.config, "tool_error_structured_format_enabled", True):
+            return None
+        if not getattr(self.config, "tool_schema_precheck_enabled", True):
+            return None
+
+        issues_by_call_id: dict[str, tuple[Any, FormattedToolError]] = {}
+        for prepared in dispatch_plan.prepared:
+            if prepared.synthetic_result is not None:
+                continue
+            call = prepared.call
+            descriptor = self.services.tool_registry.get_descriptor(call.name)
+            if descriptor is None:
+                continue
+            formatted = format_schema_error(
+                call.name,
+                descriptor.parameters,
+                call.arguments,
+            )
+            if formatted.category == "schema_unknown":
+                continue
+            issues_by_call_id[call.id] = (call, formatted)
+
+        if not issues_by_call_id:
+            return None
+
+        injection: list[Dict[str, Any]] = []
+        for original_call in response.tool_calls:
+            issue = issues_by_call_id.get(original_call.id)
+            if issue is not None:
+                call, formatted = issue
+                self._record_tool_error(context, call.name, formatted.category)
+                injection.append(
+                    {
+                        "role": "tool",
+                        "name": call.name,
+                        "tool_call_id": call.id,
+                        "content": formatted.text,
+                        "is_error": True,
+                        "metadata": {
+                            "_schema_error_recovery": True,
+                            "_tool_error_category": formatted.category,
+                        },
+                    }
+                )
+                continue
+
+            error_category = "skipped_due_to_sibling_schema"
+            self._record_tool_error(context, original_call.name, error_category)
+            injection.append(
+                {
+                    "role": "tool",
+                    "name": original_call.name,
+                    "tool_call_id": original_call.id,
+                    "content": (
+                        "Skipped: another tool call in this response had a schema error."
+                    ),
+                    "is_error": True,
+                    "metadata": {
+                        "_schema_error_recovery": True,
+                        "_tool_error_category": error_category,
+                    },
+                }
+            )
+        return injection
+
+    def _record_tool_error(
+        self,
+        context: TurnContext,
+        tool_name: str,
+        category: str,
+    ) -> None:
+        """Count structured tool errors for the current turn."""
+        if not category:
+            return
+        md = context.metadata.setdefault("tool_errors", {})
+        if not isinstance(md, dict):
+            md = {}
+            context.metadata["tool_errors"] = md
+        by_category = md.setdefault("by_category", {})
+        if not isinstance(by_category, dict):
+            by_category = {}
+            md["by_category"] = by_category
+        by_tool = md.setdefault("by_tool", {})
+        if not isinstance(by_tool, dict):
+            by_tool = {}
+            md["by_tool"] = by_tool
+        by_category[category] = int(by_category.get(category, 0)) + 1
+        by_tool[tool_name] = int(by_tool.get(tool_name, 0)) + 1
+        md["total"] = int(md.get("total", 0)) + 1
+
+    def _record_tool_result_error(
+        self,
+        context: TurnContext,
+        result: ToolResult,
+    ) -> None:
+        if not result.is_error:
+            return
+        category = result.metadata.get("_tool_error_category")
+        if isinstance(category, str) and category:
+            self._record_tool_error(context, result.name, category)
+
+    def _format_unknown_tool_content(
+        self,
+        tool_name: str,
+        *,
+        context: TurnContext,
+    ) -> str:
+        if not getattr(self.config, "tool_error_structured_format_enabled", True):
+            return f"Unknown tool: {tool_name}"
+        return format_unknown_tool_error(
+            tool_name,
+            self.services.tool_registry.list_names(),
+        ).text
 
     def _handle_length_with_tool_calls(
         self,
@@ -2617,6 +3062,422 @@ class AgentEngine:
             }
         )
 
+    def _finalize_empty_response(
+        self,
+        *,
+        response: NormalizedResponse,
+        response_to_store: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        request: EngineRequest,
+        phantom_outcome: str,
+        prefix: str,
+    ) -> _FinalizeResponseOutcome:
+        raw_content = response_to_store.content or ""
+        final_response = raw_content if strip_thinking_tags(raw_content).strip() else ""
+        stream_callback_wrapped = self._build_stream_callback(request, context)
+        if (
+            request.stream_callback is not None
+            and stream_callback_wrapped
+            and final_response
+            and not context.metadata.get("streamed_output")
+        ):
+            stream_callback_wrapped(final_response)
+            context.metadata["stream_fallback_emitted"] = True
+
+        classification = is_legitimate_empty(
+            response_to_store,
+            streamed_assistant_text=str(
+                context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or ""
+            ),
+        )
+        empty_md = context.metadata.setdefault("empty_recovery", {})
+        empty_md["classification"] = classification.kind.value
+
+        if final_response:
+            self._append_assistant_text_message(messages, response_to_store)
+            removed = self._pop_thinking_prefill_messages(messages)
+            if removed:
+                empty_md["thinking_prefill_cleaned"] = removed
+            context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
+            context.metadata[TURN_KEY_THINKING_PREFILL_RETRIES] = 0
+            codex_outcome = self._maybe_handle_codex_intermediate_ack(
+                response=response,
+                response_to_store=response_to_store,
+                messages=messages,
+                context=context,
+            )
+            if codex_outcome is not None and codex_outcome.continue_loop:
+                empty_md["last_step"] = codex_outcome.step.value
+                context.metadata[TURN_KEY_EMPTY_RECOVERY_LAST_STEP] = codex_outcome.step.value
+                return _FinalizeResponseOutcome(_CONTINUE_LOOP_SENTINEL, None, None)
+            if phantom_outcome == "exhausted":
+                exit_reason = ExitReason.PHANTOM_TOOL_INTENT
+            else:
+                exit_reason = ExitReason.LENGTH_RECOVERED if prefix else ExitReason.TEXT_RESPONSE
+            return _FinalizeResponseOutcome(final_response, exit_reason, None)
+
+        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = (
+            int(context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)) + 1
+        )
+
+        legitimate_enabled = getattr(self.config, "legitimate_empty_passthrough_enabled", True)
+        recovery_enabled = getattr(self.config, "empty_response_recovery_enabled", True)
+        if (
+            classification.kind == EmptyKind.LEGITIMATE_END_TURN
+            and legitimate_enabled
+        ) or (
+            classification.kind == EmptyKind.THINKING_ONLY
+            and legitimate_enabled
+            and not recovery_enabled
+        ):
+            empty_md["last_step"] = "legitimate_empty_passthrough"
+            context.metadata[TURN_KEY_EMPTY_RECOVERY_LAST_STEP] = "legitimate_empty_passthrough"
+            return _FinalizeResponseOutcome("", ExitReason.TEXT_RESPONSE, None)
+
+        if not legitimate_enabled and not recovery_enabled:
+            empty_md["last_step"] = "no_recovery_yet"
+            context.metadata[TURN_KEY_EMPTY_RECOVERY_LAST_STEP] = "no_recovery_yet"
+            return _FinalizeResponseOutcome("", ExitReason.EMPTY_RESPONSE, None)
+
+        outcome = self._handle_empty_response(
+            response=response,
+            response_to_store=response_to_store,
+            messages=messages,
+            context=context,
+            request=request,
+            classification=classification,
+        )
+        if outcome.continue_loop:
+            return _FinalizeResponseOutcome(_CONTINUE_LOOP_SENTINEL, None, None)
+        if outcome.final_response is not None:
+            return _FinalizeResponseOutcome(
+                outcome.final_response,
+                outcome.exit_reason or ExitReason.TEXT_RESPONSE,
+                None,
+            )
+        return _FinalizeResponseOutcome(
+            "",
+            outcome.exit_reason or ExitReason.EMPTY_RESPONSE,
+            None,
+        )
+
+    def _handle_empty_response(
+        self,
+        *,
+        response: NormalizedResponse,
+        response_to_store: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        request: EngineRequest,  # noqa: ARG002 - kept for future hooks
+        classification: ResponseClassification,
+    ) -> _EmptyRecoveryOutcome:
+        if not getattr(self.config, "empty_response_recovery_enabled", True):
+            return self._record_empty_recovery_outcome(
+                self._step7_terminal_empty(), context
+            )
+
+        pipeline = [
+            lambda: self._step1_truncated_prefix_concat(
+                response_to_store=response_to_store,
+                context=context,
+                classification=classification,
+            ),
+            lambda: self._step2_partial_stream_recovery(
+                context=context,
+                classification=classification,
+            ),
+            lambda: self._step3_housekeeping_fallback(context=context),
+            lambda: self._step4_post_tool_empty_nudge(
+                messages=messages,
+                context=context,
+            ),
+            lambda: self._step5_thinking_prefill(
+                response_to_store=response_to_store,
+                messages=messages,
+                context=context,
+                classification=classification,
+            ),
+            lambda: self._step6_retry_or_fallback(context=context),
+        ]
+        for step in pipeline:
+            outcome = step()
+            if outcome is not None:
+                return self._record_empty_recovery_outcome(outcome, context)
+        return self._record_empty_recovery_outcome(
+            self._step7_terminal_empty(), context
+        )
+
+    def _record_empty_recovery_outcome(
+        self,
+        outcome: _EmptyRecoveryOutcome,
+        context: TurnContext,
+    ) -> _EmptyRecoveryOutcome:
+        md = context.metadata.setdefault("empty_recovery", {})
+        md["last_step"] = outcome.step.value
+        context.metadata[TURN_KEY_EMPTY_RECOVERY_LAST_STEP] = outcome.step.value
+        self.services.logger.info(
+            "empty_response: step=%s continue=%s exit=%s",
+            outcome.step.value,
+            outcome.continue_loop,
+            outcome.exit_reason.value if outcome.exit_reason else None,
+        )
+        return outcome
+
+    def _step1_truncated_prefix_concat(
+        self,
+        *,
+        response_to_store: NormalizedResponse,
+        context: TurnContext,
+        classification: ResponseClassification,
+    ) -> _EmptyRecoveryOutcome | None:
+        prefix = str(context.metadata.get(TURN_KEY_TRUNCATED_RESPONSE_PREFIX, "") or "")
+        if not prefix:
+            return None
+        body = strip_thinking_tags(response_to_store.content or "").strip()
+        streamed = str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or "")
+        streamed_clean = strip_thinking_tags(streamed).strip()
+        if not body and not streamed_clean and not classification.has_streamed_partial:
+            return None
+        payload = body if len(body) >= len(streamed_clean) else streamed_clean
+        if not payload:
+            return None
+        context.metadata[TURN_KEY_TRUNCATED_RESPONSE_PREFIX] = ""
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.TRUNCATED_PREFIX_CONCAT,
+            final_response=f"{prefix}{payload}",
+            exit_reason=ExitReason.LENGTH_RECOVERED,
+        )
+
+    def _step2_partial_stream_recovery(
+        self,
+        *,
+        context: TurnContext,
+        classification: ResponseClassification,
+    ) -> _EmptyRecoveryOutcome | None:
+        if not getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
+            return None
+        if not classification.has_streamed_partial:
+            return None
+        raw = str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or "")
+        cleaned = strip_thinking_tags(raw).strip()
+        if not cleaned:
+            return None
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.PARTIAL_STREAM_RECOVERY,
+            final_response=cleaned,
+            exit_reason=ExitReason.PARTIAL_STREAM_RECOVERY,
+        )
+
+    def _step3_housekeeping_fallback(
+        self,
+        *,
+        context: TurnContext,
+    ) -> _EmptyRecoveryOutcome | None:
+        if not getattr(self.config, "housekeeping_fallback_enabled", True):
+            return None
+        state = self._session_runtime.get(context.session_id)
+        if not state.last_assistant_tools_all_housekeeping:
+            return None
+        last = state.last_assistant_text_with_tools.strip()
+        if not last:
+            return None
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.HOUSEKEEPING_FALLBACK,
+            final_response=last,
+            exit_reason=ExitReason.FALLBACK_PRIOR_TURN_CONTENT,
+        )
+
+    def _step4_post_tool_empty_nudge(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> _EmptyRecoveryOutcome | None:
+        if not getattr(self.config, "post_tool_empty_nudge_enabled", True):
+            return None
+        if context.metadata.get(TURN_KEY_POST_TOOL_EMPTY_RETRIED):
+            return None
+        if not any(
+            isinstance(message, dict) and message.get("role") == "tool"
+            for message in messages[-5:]
+        ):
+            return None
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "(empty)",
+                "_aether_meta": self._assistant_aether_meta(),
+                "metadata": {"_post_tool_empty_nudge": "placeholder"},
+            }
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "[System: You just executed tool calls but returned an empty response. "
+                    "Please continue with your task using the tool results above, or explain "
+                    "what you intend to do next.]"
+                ),
+                "metadata": {"_post_tool_empty_nudge": "user_nudge"},
+            }
+        )
+        context.metadata[TURN_KEY_POST_TOOL_EMPTY_RETRIED] = True
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.POST_TOOL_EMPTY_NUDGE,
+            continue_loop=True,
+        )
+
+    def _step5_thinking_prefill(
+        self,
+        *,
+        response_to_store: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        classification: ResponseClassification,
+    ) -> _EmptyRecoveryOutcome | None:
+        if not getattr(self.config, "thinking_prefill_enabled", True):
+            return None
+        if not classification.has_thinking:
+            return None
+        attempts = int(context.metadata.get(TURN_KEY_THINKING_PREFILL_RETRIES, 0))
+        max_attempts = max(0, int(getattr(self.config, "thinking_prefill_max_retries", 2)))
+        if attempts >= max_attempts:
+            return None
+        messages.append(self._build_prefill_assistant_message(response_to_store))
+        context.metadata[TURN_KEY_THINKING_PREFILL_RETRIES] = attempts + 1
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.THINKING_PREFILL,
+            continue_loop=True,
+        )
+
+    def _build_prefill_assistant_message(
+        self,
+        response_to_store: NormalizedResponse,
+    ) -> Dict[str, Any]:
+        md = response_to_store.metadata or {}
+        return {
+            "role": "assistant",
+            "content": response_to_store.content or "",
+            "_thinking_prefill": True,
+            "_aether_meta": self._assistant_aether_meta(),
+            "metadata": {
+                "reasoning_content": md.get("reasoning_content"),
+                "reasoning_details": md.get("reasoning_details"),
+            },
+        }
+
+    @staticmethod
+    def _pop_thinking_prefill_messages(messages: List[Dict[str, Any]]) -> int:
+        removed = 0
+        index = 0
+        while index < len(messages):
+            if isinstance(messages[index], dict) and messages[index].get("_thinking_prefill"):
+                del messages[index]
+                removed += 1
+            else:
+                index += 1
+        return removed
+
+    def _step6_retry_or_fallback(
+        self,
+        *,
+        context: TurnContext,
+    ) -> _EmptyRecoveryOutcome | None:
+        attempts = int(context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0))
+        max_attempts = max(0, int(getattr(self.config, "empty_response_max_retries", 3)))
+        if attempts <= max_attempts and max_attempts > 0:
+            return _EmptyRecoveryOutcome(
+                step=_EmptyRecoveryStep.RETRY_OR_FALLBACK,
+                continue_loop=True,
+            )
+        chain = self.services.fallback_chain
+        if (
+            chain is None
+            or not getattr(self.config, "fallback_chain_enabled", False)
+            or not chain.has_next()
+        ):
+            return None
+        max_rotations = max(
+            0,
+            int(getattr(self.config, "max_fallback_activations_per_turn", 4)),
+        )
+        rotations = int(context.metadata.get("fallback_activations_this_turn", 0))
+        if rotations >= max_rotations:
+            return None
+        if not chain.activate_next():
+            return None
+        context.metadata["fallback_activations_this_turn"] = rotations + 1
+        context.metadata["active_provider_name"] = chain.current_slot_name
+        context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
+        context.metadata.setdefault("empty_recovery", {})["activated_fallback"] = (
+            chain.current_slot_name
+        )
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.RETRY_OR_FALLBACK,
+            continue_loop=True,
+        )
+
+    @staticmethod
+    def _step7_terminal_empty() -> _EmptyRecoveryOutcome:
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.TERMINAL_EMPTY,
+            final_response=None,
+            exit_reason=ExitReason.EMPTY_RESPONSE,
+        )
+
+    def _maybe_handle_codex_intermediate_ack(
+        self,
+        *,
+        response: NormalizedResponse,  # noqa: ARG002 - kept for future provider-specific checks
+        response_to_store: NormalizedResponse,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> _EmptyRecoveryOutcome | None:
+        if not getattr(self.config, "codex_intermediate_ack_enabled", True):
+            return None
+        if not self._is_codex_responses_provider(self.services.provider):
+            return None
+        if response_to_store.tool_calls:
+            return None
+        if not self._looks_like_codex_intermediate_ack(response_to_store.content or ""):
+            return None
+        attempts = int(context.metadata.get(TURN_KEY_CODEX_ACK_RETRIES, 0))
+        max_attempts = max(0, int(getattr(self.config, "codex_intermediate_ack_max_retries", 2)))
+        if attempts >= max_attempts:
+            return None
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "[System: You said you would perform an action but did not emit any "
+                    "tool_calls. Please proceed by issuing the actual tool call now.]"
+                ),
+                "metadata": {"_codex_intermediate_ack": True},
+            }
+        )
+        context.metadata[TURN_KEY_CODEX_ACK_RETRIES] = attempts + 1
+        return _EmptyRecoveryOutcome(
+            step=_EmptyRecoveryStep.CODEX_INTERMEDIATE_ACK,
+            continue_loop=True,
+        )
+
+    @staticmethod
+    def _is_codex_responses_provider(provider: ModelProvider) -> bool:
+        return (
+            getattr(provider, "provider_name", None) == "codex"
+            and getattr(provider, "api_mode", None) == "responses"
+        )
+
+    @staticmethod
+    def _looks_like_codex_intermediate_ack(content: str) -> bool:
+        if not content:
+            return False
+        head = content.strip().lower()[:64]
+        en = ("okay", "ok,", "sure,", "alright", "i'll", "let me", "one moment")
+        zh = ("好的", "好的，", "好的我", "好，", "我来", "我会", "马上", "稍等")
+        return any(item in head for item in en) or any(item in head for item in zh)
+
     def _accumulate_usage(self, response: NormalizedResponse, context: TurnContext) -> None:
         """Add this LLM call's usage to the per-turn accumulator.
 
@@ -2670,6 +3531,64 @@ class AgentEngine:
         if not target:
             return False
         return any(target == _normalize_name(n) for n in cheap_names)
+
+    def _is_housekeeping_tool(self, tool_name: str) -> bool:
+        names = getattr(self.config, "housekeeping_tool_names", ())
+        if not names:
+            return False
+        from aether.agents.core.phantom_tool import _normalize_name
+
+        target = _normalize_name(tool_name or "")
+        return bool(target) and any(target == _normalize_name(name) for name in names)
+
+    @staticmethod
+    def _extract_assistant_visible_text(message: Dict[str, Any]) -> str:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return strip_thinking_tags(content).strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                elif isinstance(block, str):
+                    parts.append(block)
+            return strip_thinking_tags("".join(parts)).strip()
+        return ""
+
+    def _record_last_content_for_housekeeping_fallback(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> None:
+        state = self._session_runtime.get(context.session_id)
+        last_assistant = next(
+            (
+                message
+                for message in reversed(messages)
+                if isinstance(message, dict) and message.get("role") == "assistant"
+            ),
+            None,
+        )
+        if last_assistant is None:
+            state.last_assistant_text_with_tools = ""
+            state.last_assistant_tools_all_housekeeping = False
+            return
+        tool_calls = last_assistant.get("tool_calls") or []
+        tool_names: list[str] = []
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                name = call.get("name") or function.get("name")
+                if name:
+                    tool_names.append(str(name))
+        state.last_assistant_text_with_tools = self._extract_assistant_visible_text(last_assistant)
+        state.last_assistant_tools_all_housekeeping = bool(tool_names) and all(
+            self._is_housekeeping_tool(name) for name in tool_names
+        )
 
     def _handle_max_iterations(
         self,
@@ -2765,6 +3684,11 @@ class AgentEngine:
         context: TurnContext,
         active_system_prompt: str | None,
     ) -> EngineResult:
+        self._record_last_content_for_housekeeping_fallback(
+            messages=messages,
+            context=context,
+        )
+
         if exit_reason == ExitReason.INTERRUPTED:
             status = EngineStatus.INTERRUPTED
         elif exit_reason == ExitReason.MAX_ITERATIONS:
@@ -2802,6 +3726,7 @@ class AgentEngine:
             # to render a precise "throttled" / "context exhausted"
             # / "fallback chain exhausted" footer; we don't need
             # bespoke EngineStatus values for them.
+            ExitReason.EMPTY_RESPONSE,
             ExitReason.RATE_LIMITED,
             ExitReason.CONTEXT_EXHAUSTED,
             ExitReason.PAYLOAD_TOO_LARGE,
@@ -2851,6 +3776,25 @@ class AgentEngine:
             for k, v in context.metadata.items()
             if k not in _METADATA_INTERNAL_KEYS
         }
+        empty_recovery_metadata = dict(context.metadata.get("empty_recovery") or {})
+        if not empty_recovery_metadata.get("classification"):
+            empty_recovery_metadata["classification"] = (
+                EmptyKind.NOT_EMPTY.value
+                if strip_thinking_tags(final_response or "").strip()
+                else EmptyKind.BUG_EMPTY.value
+                if exit_reason == ExitReason.EMPTY_RESPONSE
+                else "n/a"
+            )
+        if not empty_recovery_metadata.get("last_step"):
+            empty_recovery_metadata["last_step"] = (
+                context.metadata.get(TURN_KEY_EMPTY_RECOVERY_LAST_STEP) or "n/a"
+            )
+        recovery_metadata = context.metadata.get("recovery")
+        if not isinstance(recovery_metadata, dict):
+            recovery_metadata = {}
+        tool_errors_metadata = context.metadata.get("tool_errors")
+        if not isinstance(tool_errors_metadata, dict):
+            tool_errors_metadata = {}
 
         metadata = {
             "request": {
@@ -2875,6 +3819,15 @@ class AgentEngine:
                 ),
                 "invalid_json_retries": int(
                     context.metadata.get(TURN_KEY_INVALID_JSON_RETRIES, 0)
+                ),
+                "thinking_prefill_retries": int(
+                    context.metadata.get(TURN_KEY_THINKING_PREFILL_RETRIES, 0)
+                ),
+                "codex_ack_retries": int(
+                    context.metadata.get(TURN_KEY_CODEX_ACK_RETRIES, 0)
+                ),
+                "post_tool_empty_retried": bool(
+                    context.metadata.get(TURN_KEY_POST_TOOL_EMPTY_RETRIED, False)
                 ),
                 # Sprint 1.5 / P0-9 — count of synthesized phantom
                 # ``ToolCall``s dispatched this turn (prose intents
@@ -2934,6 +3887,36 @@ class AgentEngine:
                 "last_msg_role": last_msg_role,
                 "stuck_after_tool": bool(stuck_after_tool),
             },
+            "empty_recovery": {
+                **empty_recovery_metadata,
+                "classification": empty_recovery_metadata.get("classification"),
+                "last_step": empty_recovery_metadata.get("last_step"),
+                "retries": {
+                    "empty": int(
+                        context.metadata.get(TURN_KEY_EMPTY_RESPONSE_RETRIES, 0)
+                    ),
+                    "thinking_prefill": int(
+                        context.metadata.get(TURN_KEY_THINKING_PREFILL_RETRIES, 0)
+                    ),
+                    "codex_ack": int(
+                        context.metadata.get(TURN_KEY_CODEX_ACK_RETRIES, 0)
+                    ),
+                },
+                "post_tool_empty_retried": bool(
+                    context.metadata.get(TURN_KEY_POST_TOOL_EMPTY_RETRIED, False)
+                ),
+            },
+            "recovery": {
+                "cascade_log": list(recovery_metadata.get("cascade_log") or []),
+                "pending_errors_count": int(
+                    recovery_metadata.get("pending_errors_count", 0)
+                ),
+                "terminal": recovery_metadata.get("terminal", "n/a"),
+                "withheld": int(
+                    recovery_metadata.get("suppressed_callback_notifications", 0)
+                ),
+            },
+            "tool_errors": dict(tool_errors_metadata),
             # Reasoning block (Sprint 5 will populate ``last_reasoning``
             # from provider-emitted thinking blocks; Sprint 3 just reserves
             # the shape so consumers can rely on its presence).

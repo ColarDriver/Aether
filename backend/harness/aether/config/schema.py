@@ -393,6 +393,29 @@ class EngineConfig:
     lsp_tool_enabled: bool = True
     lsp_server_overrides: Dict[str, Any] = field(default_factory=dict)
     lsp_request_timeout_seconds: int = 8
+    # Sprint 4 / PR 4.1-4.4: empty-response recovery and structured
+    # tool-error rollback knobs.
+    legitimate_empty_passthrough_enabled: bool = True
+    empty_response_recovery_enabled: bool = True
+    empty_response_max_retries: int = 3
+    empty_response_partial_stream_recovery_enabled: bool = True
+    housekeeping_fallback_enabled: bool = True
+    housekeeping_tool_names: tuple[str, ...] = (
+        "memory",
+        "update_todo",
+        "todo_write",
+        "skill_manage",
+        "session_search",
+    )
+    post_tool_empty_nudge_enabled: bool = True
+    thinking_prefill_enabled: bool = True
+    thinking_prefill_max_retries: int = 2
+    codex_intermediate_ack_enabled: bool = True
+    codex_intermediate_ack_max_retries: int = 2
+    error_withholding_enabled: bool = True
+    max_provider_recovery_attempts: int = 8
+    tool_error_structured_format_enabled: bool = True
+    tool_schema_precheck_enabled: bool = True
     # Sprint 3.5 / PR 3.5.10 — Headless Chromium browser tool.
     # **Disabled by default** because Playwright is a heavyweight
     # optional dependency (~150 MB Chromium download) and most

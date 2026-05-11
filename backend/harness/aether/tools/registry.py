@@ -69,6 +69,12 @@ class ToolRegistry:
             raise UnknownToolError(name)
         return self._tools[name]
 
+    def get_descriptor(self, name: str) -> ToolDescriptor:
+        return self.get(name).descriptor
+
+    def list_names(self) -> List[str]:
+        return list(self._tools.keys())
+
     def list_descriptors(self) -> List[ToolDescriptor]:
         return [tool.descriptor for tool in self._tools.values()]
 

@@ -88,6 +88,7 @@ from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Sequence
 
 from aether.agents.core.phantom_tool import _normalize_name
 from aether.runtime.contracts import ToolCall, ToolResult
+from aether.runtime.tool_error_format import format_unknown_tool_error
 
 if TYPE_CHECKING:        # pragma: no cover
     from aether.config.schema import EngineConfig
@@ -399,11 +400,26 @@ def prepare_tool_calls(
         repaired = repair_tool_name(call.name, registry)
         if repaired is None:
             invalid_names.append(call.name)
+            structured_unknown = getattr(
+                config,
+                "tool_error_structured_format_enabled",
+                True,
+            )
             stub = ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                content=_unknown_tool_message(call.name, registry),
+                content=_unknown_tool_message(
+                    call.name,
+                    registry,
+                    structured=structured_unknown,
+                ),
                 is_error=True,
+                metadata={
+                    "_unknown_tool_recovery": True,
+                    "_tool_error_category": "unknown_tool",
+                }
+                if structured_unknown
+                else {"_unknown_tool_recovery": True},
             )
             repaired_calls.append(
                 PreparedToolCall(call=call, synthetic_result=stub)
@@ -516,7 +532,12 @@ def prepare_tool_calls(
     return plan
 
 
-def _unknown_tool_message(name: str, registry: "ToolRegistry") -> str:
+def _unknown_tool_message(
+    name: str,
+    registry: "ToolRegistry",
+    *,
+    structured: bool = True,
+) -> str:
     """Build the role=tool error body for an unknown / unrepairable name.
 
     Includes the registry's available tool names so the model has the
@@ -525,6 +546,9 @@ def _unknown_tool_message(name: str, registry: "ToolRegistry") -> str:
     tokens — registries with hundreds of MCP-imported tools would
     otherwise crowd out the rest of the prompt.
     """
+    if structured:
+        return format_unknown_tool_error(name, registry.list_names()).text
+
     descriptors = registry.list_descriptors()
     names = sorted(d.name for d in descriptors)
     if len(names) > 25:

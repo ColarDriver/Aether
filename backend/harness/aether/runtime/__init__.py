@@ -15,6 +15,7 @@ from .hooks import EngineHooks, HookOutcome
 from .session_store import InMemorySessionStore, SessionStore
 from .state_machine import EngineStateMachine, StateTransitionError
 from .steer import SteerInbox
+from .unicode_sanitizer import strip_non_ascii, strip_surrogates
 
 __all__ = [
     "EngineRequest",
@@ -31,6 +32,8 @@ __all__ = [
     "EngineHooks",
     "HookOutcome",
     "SteerInbox",
+    "strip_non_ascii",
+    "strip_surrogates",
     "SessionStore",
     "InMemorySessionStore",
 ]

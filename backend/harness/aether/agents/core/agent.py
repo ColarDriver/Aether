@@ -72,6 +72,12 @@ from aether.runtime.session_runtime import (
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.steer import SteerInbox
+from aether.runtime.unicode_sanitizer import (
+    sanitize_provider_credentials_non_ascii,
+    sanitize_structure_non_ascii,
+    sanitize_structure_surrogates,
+    strip_surrogates,
+)
 from aether.runtime.usage import CanonicalUsage, normalize_usage
 from aether.runtime.tool_error_format import (
     FormattedToolError,
@@ -505,6 +511,7 @@ class AgentEngine:
                         # bugs / programming errors / scripted-test providers).
                         invoke_outcome = self._invoke_provider_with_recovery(
                             request=request,
+                            canonical_messages=messages,
                             prepared_messages=prepared_messages,
                             stream_callback=stream_callback_wrapped,
                             stream_silent_callback=stream_silent_callback_wrapped,
@@ -1971,7 +1978,85 @@ class AgentEngine:
     def _sanitize_text(text: str | None) -> str:
         if not text:
             return ""
-        return "".join(ch for ch in text if not (0xD800 <= ord(ch) <= 0xDFFF))
+        return strip_surrogates(text)
+
+    def _prepare_unicode_safe_payload(
+        self,
+        *,
+        canonical_messages: List[Dict[str, Any]],
+        prepared_messages: List[Dict[str, Any]],
+        tools: list[Any],
+        provider: ModelProvider,
+        context: TurnContext,
+    ) -> None:
+        changed = False
+        if context.metadata.get("_unicode_strip_surrogates_payload"):
+            changed = sanitize_structure_surrogates(canonical_messages) or changed
+            changed = sanitize_structure_surrogates(prepared_messages) or changed
+            changed = sanitize_structure_surrogates(tools) or changed
+        if context.metadata.get("force_ascii_payload"):
+            changed = sanitize_structure_non_ascii(canonical_messages) or changed
+            changed = sanitize_structure_non_ascii(prepared_messages) or changed
+            changed = sanitize_structure_non_ascii(tools) or changed
+            changed = sanitize_provider_credentials_non_ascii(provider) or changed
+        if changed:
+            context.metadata["unicode_payload_sanitized"] = True
+
+    def _maybe_recover_unicode_error(
+        self,
+        error: Exception,
+        *,
+        canonical_messages: List[Dict[str, Any]],
+        prepared_messages: List[Dict[str, Any]],
+        tools: list[Any],
+        provider: ModelProvider,
+        context: TurnContext,
+    ) -> bool:
+        if not isinstance(error, UnicodeEncodeError):
+            return False
+
+        passes = int(context.metadata.get("unicode_recovery_passes", 0))
+        if passes >= 2:
+            return False
+
+        error_text = str(error).lower()
+        is_ascii_codec = "ascii" in error_text
+        is_surrogate_error = (
+            "surrogate" in error_text
+            or ("utf-8" in error_text and not is_ascii_codec)
+        )
+        if not is_ascii_codec and not is_surrogate_error:
+            return False
+
+        changed = False
+        if is_ascii_codec:
+            context.metadata["force_ascii_payload"] = True
+            context.metadata["unicode_recovery_reason"] = "ascii_codec"
+            changed = sanitize_structure_non_ascii(canonical_messages) or changed
+            changed = sanitize_structure_non_ascii(prepared_messages) or changed
+            changed = sanitize_structure_non_ascii(tools) or changed
+            credentials_changed = sanitize_provider_credentials_non_ascii(provider)
+            changed = credentials_changed or changed
+            if credentials_changed:
+                self.services.logger.warning(
+                    "Provider credential/header contained non-ASCII characters; stripped them before retry."
+                )
+        else:
+            context.metadata["_unicode_strip_surrogates_payload"] = True
+            context.metadata["unicode_recovery_reason"] = "surrogate"
+            changed = sanitize_structure_surrogates(canonical_messages) or changed
+            changed = sanitize_structure_surrogates(prepared_messages) or changed
+            changed = sanitize_structure_surrogates(tools) or changed
+
+        context.metadata["unicode_recovery_passes"] = passes + 1
+        context.metadata["unicode_payload_sanitized"] = bool(
+            context.metadata.get("unicode_payload_sanitized") or changed
+        )
+        self.services.logger.warning(
+            "Recovered from %s UnicodeEncodeError by sanitizing provider payload; retrying.",
+            context.metadata["unicode_recovery_reason"],
+        )
+        return True
 
     def _inject_system_prompt(
         self,
@@ -2063,6 +2148,7 @@ class AgentEngine:
         self,
         *,
         request: EngineRequest,
+        canonical_messages: List[Dict[str, Any]],
         prepared_messages: List[Dict[str, Any]],
         stream_callback,
         stream_silent_callback,
@@ -2128,6 +2214,9 @@ class AgentEngine:
             int(getattr(self.config, "max_provider_recovery_attempts", 8)),
         )
 
+        provider: ModelProvider = self.services.provider
+        tools: list[Any] = []
+
         while attempt_state.attempt < max_provider_attempts:
             context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = ""
             try:
@@ -2144,6 +2233,13 @@ class AgentEngine:
 
                 tools = self.services.tool_registry.list_descriptors()
                 provider = self.services.provider
+                self._prepare_unicode_safe_payload(
+                    canonical_messages=canonical_messages,
+                    prepared_messages=prepared_messages,
+                    tools=tools,
+                    provider=provider,
+                    context=context,
+                )
                 api_call_count = self._next_api_request_attempt_count(context)
                 api_hook_payload = self._build_api_hook_payload(
                     request=request,
@@ -2215,6 +2311,17 @@ class AgentEngine:
                 attempt_state.errors.append(exc)
                 last_error = exc
                 withholding_state.pending_errors.append(exc)
+
+                raw_error = exc.raw if isinstance(exc.raw, UnicodeEncodeError) else exc
+                if self._maybe_recover_unicode_error(
+                    raw_error,
+                    canonical_messages=canonical_messages,
+                    prepared_messages=prepared_messages,
+                    tools=tools,
+                    provider=provider,
+                    context=context,
+                ):
+                    continue
 
                 decision = self.services.recovery_strategy.decide(
                     error=exc,
@@ -2324,6 +2431,15 @@ class AgentEngine:
                 context.metadata[TURN_KEY_PROVIDER_ERROR_RETRIES] = (
                     int(context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)) + 1
                 )
+                if self._maybe_recover_unicode_error(
+                    exc,
+                    canonical_messages=canonical_messages,
+                    prepared_messages=prepared_messages,
+                    tools=tools,
+                    provider=provider,
+                    context=context,
+                ):
+                    continue
                 last_error = exc
                 return AgentEngine._ProviderInvocationOutcome(error=last_error)
 

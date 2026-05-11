@@ -16,6 +16,7 @@ from .runtime.contracts import (
     NormalizedResponse,
 )
 from .runtime.hooks import HookOutcome
+from .runtime.steer import SteerInbox
 from .config.schema import EngineConfig, ModelCallConfig
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "ToolResult",
     "NormalizedResponse",
     "HookOutcome",
+    "SteerInbox",
     "EngineConfig",
     "ModelCallConfig",
 ]

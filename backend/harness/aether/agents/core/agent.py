@@ -71,6 +71,7 @@ from aether.runtime.session_runtime import (
 )
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
+from aether.runtime.steer import SteerInbox
 from aether.runtime.usage import CanonicalUsage, normalize_usage
 from aether.runtime.tool_error_format import (
     FormattedToolError,
@@ -204,6 +205,7 @@ class AgentEngine:
         skill_catalog: "object | None" = None,
         lsp_manager: "object | None" = None,
         browser_manager: "object | None" = None,
+        steer_inbox: SteerInbox | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -249,6 +251,7 @@ class AgentEngine:
             logger=logger or logging.getLogger(__name__),
             recovery_strategy=recovery_strategy,
             fallback_chain=fallback_chain,
+            steer_inbox=steer_inbox,
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger
@@ -330,12 +333,16 @@ class AgentEngine:
         effective_session = session_id or self._current_session_id
         if effective_session:
             self.services.interrupt_controller.request(effective_session, reason)
+            self.services.steer_inbox.clear(effective_session)
         self._interrupt_active_children(reason=reason)
 
     def clear_interrupt(self, session_id: str | None = None) -> None:
         effective_session = session_id or self._current_session_id
         if effective_session:
             self.services.interrupt_controller.clear(effective_session)
+
+    def send_steer(self, session_id: str, text: str) -> bool:
+        return self.services.steer_inbox.append(session_id, text)
 
     def run_subagents(
         self,
@@ -656,7 +663,14 @@ class AgentEngine:
                                 # tool error stubs.  The model sees the
                                 # JSON it produced and the parse error,
                                 # then has the next iteration to retry.
+                                tool_result_start_idx = len(messages)
                                 messages.extend(validation.injection_messages)
+                                self._apply_pending_steer_to_tool_results(
+                                    messages,
+                                    session_id=request.session_id,
+                                    start_idx=tool_result_start_idx,
+                                    context=context,
+                                )
                                 state_machine.transition(LoopState.CHECK_EXIT)
                                 if budget.exhausted:
                                     state_machine.transition(LoopState.FINALIZE)
@@ -670,6 +684,7 @@ class AgentEngine:
                         # Tool path: append assistant tool-call message first, then execute each call.
                         state_machine.transition(LoopState.TOOL_DISPATCH)
                         self._append_assistant_tool_message(messages, response)
+                        tool_result_start_idx = len(messages)
 
                         # Sprint 2 / PR 2.3 — sanitise the call batch
                         # before dispatch:
@@ -715,7 +730,14 @@ class AgentEngine:
                             )
                             if schema_injection is not None:
                                 state_machine.transition(LoopState.TOOL_EXECUTE)
+                                tool_result_start_idx = len(messages)
                                 messages.extend(schema_injection)
+                                self._apply_pending_steer_to_tool_results(
+                                    messages,
+                                    session_id=request.session_id,
+                                    start_idx=tool_result_start_idx,
+                                    context=context,
+                                )
                                 state_machine.transition(LoopState.CHECK_EXIT)
                                 if budget.exhausted:
                                     state_machine.transition(LoopState.FINALIZE)
@@ -850,6 +872,12 @@ class AgentEngine:
                             break
                         if tool_failed:
                             break
+                        self._apply_pending_steer_to_tool_results(
+                            messages,
+                            session_id=request.session_id,
+                            start_idx=tool_result_start_idx,
+                            context=context,
+                        )
 
                         # Sprint 2 / PR 2.3 — when the per-turn
                         # invalid-tool retry budget is exhausted the
@@ -1047,6 +1075,10 @@ class AgentEngine:
             # FINALIZE -> DONE transition for successful/terminal completion paths.
             if state_machine.state == LoopState.FINALIZE:
                 state_machine.transition(LoopState.DONE)
+
+            pending_steer = self.services.steer_inbox.drain(request.session_id)
+            if pending_steer:
+                context.metadata["pending_steer"] = pending_steer
 
             result = self._build_result(
                 request,
@@ -1581,6 +1613,7 @@ class AgentEngine:
         """
         state_machine.transition(LoopState.TOOL_DISPATCH)
         self._append_assistant_tool_message(messages, response)
+        tool_result_start_idx = len(messages)
 
         state_machine.transition(LoopState.TOOL_EXECUTE)
         for call in response.tool_calls:
@@ -1644,6 +1677,12 @@ class AgentEngine:
 
             self._append_tool_result_message(messages, result)
 
+        self._apply_pending_steer_to_tool_results(
+            messages,
+            session_id=request.session_id,
+            start_idx=tool_result_start_idx,
+            context=context,
+        )
         return "continue", None, None
 
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
@@ -3265,6 +3304,44 @@ class AgentEngine:
             }
         )
 
+    def _apply_pending_steer_to_tool_results(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        session_id: str,
+        start_idx: int,
+        context: TurnContext,
+    ) -> None:
+        steer_text = self.services.steer_inbox.drain(session_id)
+        if not steer_text:
+            return
+
+        target_idx: int | None = None
+        lower_bound = max(0, start_idx)
+        for idx in range(len(messages) - 1, lower_bound - 1, -1):
+            message = messages[idx]
+            if isinstance(message, dict) and message.get("role") == "tool":
+                target_idx = idx
+                break
+
+        if target_idx is None:
+            self.services.steer_inbox.put_back(session_id, steer_text)
+            return
+
+        marker = f"\n\nUser guidance: {steer_text}"
+        target = messages[target_idx]
+        content = target.get("content", "")
+        if isinstance(content, str):
+            target["content"] = content + marker
+        elif isinstance(content, list):
+            content.append({"type": "text", "text": marker.lstrip()})
+        else:
+            target["content"] = f"{content}{marker}"
+
+        context.metadata["steer_injected_count"] = (
+            int(context.metadata.get("steer_injected_count", 0)) + 1
+        )
+
     def _finalize_empty_response(
         self,
         *,
@@ -4055,6 +4132,7 @@ class AgentEngine:
             # Always present (zero-valued on turns with no LLM call).
             "usage": usage_acc.to_dict(),
             "api_calls": int(context.metadata.get("api_calls", 0)),
+            "pending_steer": context.metadata.get("pending_steer"),
             # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
             # Filled by the live ``IterationBudget`` instance the loop
             # carries on ``context.metadata['_iteration_budget_obj']``.

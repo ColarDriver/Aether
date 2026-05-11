@@ -10,6 +10,7 @@ from aether.models.provider.base import ModelProvider
 from aether.runtime.fallback_chain import FallbackChain
 from aether.runtime.interrupts import InterruptController
 from aether.runtime.recovery import RecoveryStrategy
+from aether.runtime.steer import SteerInbox
 from aether.tools.registry import ToolRegistry
 
 
@@ -54,6 +55,7 @@ class EngineServices:
         "logger",
         "recovery_strategy",
         "fallback_chain",
+        "steer_inbox",
     )
 
     def __init__(
@@ -65,6 +67,7 @@ class EngineServices:
         logger: logging.Logger,
         recovery_strategy: RecoveryStrategy,
         fallback_chain: Optional[FallbackChain] = None,
+        steer_inbox: Optional[SteerInbox] = None,
     ) -> None:
         self._initial_provider = provider
         self.tool_registry = tool_registry
@@ -73,6 +76,7 @@ class EngineServices:
         self.logger = logger
         self.recovery_strategy = recovery_strategy
         self.fallback_chain = fallback_chain
+        self.steer_inbox = steer_inbox or SteerInbox()
 
     @property
     def provider(self) -> ModelProvider:

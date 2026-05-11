@@ -213,6 +213,9 @@ class EngineResult:
       Always present (zero-valued when no LLM call ran).
     * ``api_calls`` — int, number of provider ``generate()`` calls in
       this turn.
+    * ``pending_steer`` — unconsumed async user guidance text, or ``None``.
+      Sprint 5.2 populates this when `/steer` arrived but no tool result
+      boundary existed to inject it safely.
     * ``iteration_budget`` — ``{used, max, remaining, grace_consumed}``.
       Filled with structured data by PR 3.2 (IterationBudget); PR 3.1
       surfaces ``max == EngineConfig.max_iterations`` so downstream

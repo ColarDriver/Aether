@@ -14,6 +14,7 @@ from .interrupts import InterruptController
 from .hooks import EngineHooks, HookOutcome
 from .session_store import InMemorySessionStore, SessionStore
 from .state_machine import EngineStateMachine, StateTransitionError
+from .steer import SteerInbox
 
 __all__ = [
     "EngineRequest",
@@ -29,6 +30,7 @@ __all__ = [
     "StateTransitionError",
     "EngineHooks",
     "HookOutcome",
+    "SteerInbox",
     "SessionStore",
     "InMemorySessionStore",
 ]

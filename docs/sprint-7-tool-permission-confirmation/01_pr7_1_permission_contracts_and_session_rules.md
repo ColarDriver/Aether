@@ -135,7 +135,7 @@ DANGEROUS_TOOLS = {
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `tool_permissions_enabled` | `True` | 总开关 |
+| `tool_permissions_enabled` | `False` | engine 默认保持 SDK/测试兼容；交互 REPL 显式开启 |
 | `tool_permission_default` | `"ask"` | 危险工具默认策略 |
 | `tool_permission_auto_allow_readonly` | `True` | read/list/search 默认放行 |
 | `tool_permission_non_interactive_default` | `"deny"` | 无 prompter 时危险工具默认拒绝 |
@@ -161,4 +161,3 @@ def test_disabled_permission_system_allows_backwards_compat(): ...
 - 现有 `ApprovalPrompter` 测试不需要改语义。
 - 非交互默认拒绝危险工具的行为被 pin 住。
 - `WRITE_TOOLS_BLOCKED_IN_PLAN` 不被删除，后续 PR 统一接入。
-

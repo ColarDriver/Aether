@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Dict, Final
+from typing import Any, Dict, Final
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +145,12 @@ class SessionRuntimeState:
     # turn's empty-response recovery path.
     last_assistant_text_with_tools: str = ""
     last_assistant_tools_all_housekeeping: bool = False
+
+    # Sprint 7: in-memory, session-scoped tool permission rules.
+    # Stored here rather than on ``TurnContext.metadata`` because
+    # "allow this path/command for this session" must survive across
+    # turns but must not leak into other sessions or persist to disk.
+    tool_permission_rules: list[Any] = field(default_factory=list)
 
 
 @dataclass

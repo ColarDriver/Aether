@@ -194,6 +194,10 @@ class EngineRequest:
     # of ``aether.cli.approval_prompter`` from the runtime layer; it
     # is duck-typed against the ``Prompter`` protocol.
     approval_prompter: Any = None
+    # Sprint 7 — engine-level permission prompter for dangerous tools.
+    # Separate from ``approval_prompter`` because this is a dispatch
+    # gate owned by the engine, not a tool-internal interaction helper.
+    tool_permission_prompter: Any = None
     interrupt_signal: "InterruptSignal | None" = None
 
 

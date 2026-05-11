@@ -31,6 +31,7 @@ from aether.runtime.contracts import (
     ExitReason,
     LoopState,
     NormalizedResponse,
+    ToolCall,
     ToolResult,
     TurnContext,
 )
@@ -97,6 +98,21 @@ from aether.runtime.tool_error_format import (
     format_schema_error,
     format_unknown_tool_error,
 )
+from aether.runtime.tool_permissions import (
+    ToolPermissionDecision,
+    ToolPermissionDecisionType,
+    ToolPermissionMode,
+    ToolPermissionPreview,
+    ToolPermissionRequest,
+    build_fallback_preview,
+    build_permission_denied_result,
+    build_session_rule_for_request,
+    default_permission_stats,
+    find_matching_rule,
+    is_dangerous_tool,
+    make_permission_request,
+    normalize_permission_mode,
+)
 from aether.services.compact import estimate_messages_tokens
 from aether.services.compact.autocompact import AutoCompactor
 from aether.services.compact.compactor import CompactionPipeline, CompactionResult
@@ -108,7 +124,7 @@ from aether.services.compact.llm_fork import LLMForkSummarizer
 from aether.services.compact.microcompact import TimeBasedMicrocompactor
 from aether.services.compact.snip import Snipper
 from aether.tools.base import UnknownToolError
-from aether.tools.registry import ToolRegistry
+from aether.tools.registry import ToolRegistry, check_plan_mode_block
 
 if TYPE_CHECKING:
     from aether.subagents.contracts import SubagentResult, SubagentTask
@@ -157,6 +173,8 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # Sprint 3.5 / PR 3.5.10 — live BrowserManager reference for
     # :class:`WebBrowserTool`.
     "_browser_manager",
+    "_tool_permission_prompter",
+    "_tool_permission_preview_plans",
     "_compaction_pipeline",
     "_compaction_in_progress",
     "_api_request_attempt_count",
@@ -779,6 +797,10 @@ class AgentEngine:
                         for prepared in dispatch_plan.prepared:
                             call = prepared.call
                             if self._is_interrupted(request.session_id, context):
+                                self._record_interrupt_metadata(
+                                    context,
+                                    was_in_tool_call=True,
+                                )
                                 state_machine.transition(LoopState.INTERRUPTED)
                                 exit_reason = ExitReason.INTERRUPTED
                                 break
@@ -804,22 +826,37 @@ class AgentEngine:
                                 self._append_tool_result_message(messages, result)
                                 continue
 
-                            try:
-                                # before_tool can rewrite a ToolCall or short-circuit with ToolResult
-                                # (for guardrails/policy blocks).
-                                pre_tool = self.services.middleware_pipeline.run_before_tool(call, context)
-                            except Exception as exc:
-                                self._handle_pipeline_error(exc, state_machine.state, context)
-                                error_text = str(exc)
-                                exit_reason = ExitReason.MIDDLEWARE_ERROR
-                                state_machine.transition(LoopState.FAILED)
-                                tool_failed = True
-                                break
+                            permission_checked = self._apply_tool_permission_gate(
+                                call,
+                                request=request,
+                                context=context,
+                            )
 
-                            if isinstance(pre_tool, ToolResult):
-                                result = pre_tool
+                            if isinstance(permission_checked, ToolResult):
+                                result = permission_checked
                             else:
-                                tool_call = pre_tool
+                                try:
+                                    # before_tool can rewrite a ToolCall or short-circuit with ToolResult
+                                    # (for guardrails/policy blocks).
+                                    pre_tool = self.services.middleware_pipeline.run_before_tool(
+                                        permission_checked,
+                                        context,
+                                    )
+                                except Exception as exc:
+                                    self._handle_pipeline_error(exc, state_machine.state, context)
+                                    error_text = str(exc)
+                                    exit_reason = ExitReason.MIDDLEWARE_ERROR
+                                    state_machine.transition(LoopState.FAILED)
+                                    tool_failed = True
+                                    break
+
+                                if isinstance(pre_tool, ToolResult):
+                                    result = pre_tool
+                                    tool_call = None
+                                else:
+                                    tool_call = pre_tool
+
+                            if not isinstance(permission_checked, ToolResult) and tool_call is not None:
                                 # Track active call so middleware on_error handlers can build
                                 # a deterministic fallback ToolResult for this exact invocation.
                                 context.metadata.pop("tool_error_result", None)
@@ -901,6 +938,19 @@ class AgentEngine:
 
                             self._record_tool_result_error(context, result)
                             self._append_tool_result_message(messages, result)
+                            if bool(result.metadata.get("interrupted")):
+                                self._record_interrupt_metadata(
+                                    context,
+                                    was_in_tool_call=True,
+                                )
+                            if self._is_permission_abort_result(result):
+                                self._record_interrupt_metadata(
+                                    context,
+                                    was_in_tool_call=True,
+                                )
+                                exit_reason = ExitReason.INTERRUPTED
+                                state_machine.transition(LoopState.INTERRUPTED)
+                                break
 
                         if state_machine.state in {LoopState.FAILED, LoopState.INTERRUPTED}:
                             break
@@ -1379,6 +1429,12 @@ class AgentEngine:
         context.metadata["_approval_prompter"] = getattr(
             request, "approval_prompter", None
         )
+        context.metadata["_tool_permission_prompter"] = getattr(
+            request, "tool_permission_prompter", None
+        )
+        context.metadata["tool_permissions"] = default_permission_stats(
+            enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
+        )
         context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
         # Sprint 3.5 / PR 3.5.9 / 3.5.10 — LSP + browser manager
         # references.  Tools fetch them lazily; passing the live
@@ -1674,20 +1730,39 @@ class AgentEngine:
         state_machine.transition(LoopState.TOOL_EXECUTE)
         for call in response.tool_calls:
             if self._is_interrupted(request.session_id, context):
+                self._record_interrupt_metadata(
+                    context,
+                    was_in_tool_call=True,
+                )
                 state_machine.transition(LoopState.INTERRUPTED)
                 return "interrupted", ExitReason.INTERRUPTED, None
 
-            try:
-                pre_tool = self.services.middleware_pipeline.run_before_tool(call, context)
-            except Exception as exc:
-                self._handle_pipeline_error(exc, state_machine.state, context)
-                state_machine.transition(LoopState.FAILED)
-                return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
+            permission_checked = self._apply_tool_permission_gate(
+                call,
+                request=request,
+                context=context,
+            )
 
-            if isinstance(pre_tool, ToolResult):
-                result = pre_tool
+            if isinstance(permission_checked, ToolResult):
+                result = permission_checked
             else:
-                tool_call = pre_tool
+                try:
+                    pre_tool = self.services.middleware_pipeline.run_before_tool(
+                        permission_checked,
+                        context,
+                    )
+                except Exception as exc:
+                    self._handle_pipeline_error(exc, state_machine.state, context)
+                    state_machine.transition(LoopState.FAILED)
+                    return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
+
+                if isinstance(pre_tool, ToolResult):
+                    result = pre_tool
+                    tool_call = None
+                else:
+                    tool_call = pre_tool
+
+            if not isinstance(permission_checked, ToolResult) and tool_call is not None:
                 context.metadata.pop("tool_error_result", None)
                 context.metadata["_active_tool_call"] = tool_call
                 context.metadata["_tool_interrupt_behavior"] = getattr(
@@ -1738,6 +1813,18 @@ class AgentEngine:
                 return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
 
             self._append_tool_result_message(messages, result)
+            if bool(result.metadata.get("interrupted")):
+                self._record_interrupt_metadata(
+                    context,
+                    was_in_tool_call=True,
+                )
+            if self._is_permission_abort_result(result):
+                self._record_interrupt_metadata(
+                    context,
+                    was_in_tool_call=True,
+                )
+                state_machine.transition(LoopState.INTERRUPTED)
+                return "interrupted", ExitReason.INTERRUPTED, None
 
         self._apply_pending_steer_to_tool_results(
             messages,
@@ -2665,12 +2752,12 @@ class AgentEngine:
                 # need a separate handler, and stash the partial text +
                 # tool-call flag on context.metadata for ``_build_result``
                 # to surface under ``EngineResult.metadata["interrupt"]``.
-                context.metadata["interrupt"] = {
-                    "reason": exc.reason,
-                    "partial_text": exc.partial_text,
-                    "was_in_tool_call": exc.was_in_tool_call,
-                    "triggered_at": time.time(),
-                }
+                self._record_interrupt_metadata(
+                    context,
+                    reason=exc.reason,
+                    partial_text=exc.partial_text,
+                    was_in_tool_call=exc.was_in_tool_call,
+                )
                 return AgentEngine._ProviderInvocationOutcome(interrupted=True)
             except ProviderInvocationError as exc:
                 # Bump the observability counter once per failed attempt.
@@ -4071,15 +4158,337 @@ class AgentEngine:
             }
         )
 
+    @staticmethod
+    def _is_permission_abort_result(result: ToolResult) -> bool:
+        return (
+            bool(result.metadata.get("permission_denied"))
+            and result.metadata.get("permission_decision")
+            == ToolPermissionDecisionType.ABORT.value
+        )
+
+    def _apply_tool_permission_gate(
+        self,
+        call: ToolCall,
+        *,
+        request: EngineRequest,
+        context: TurnContext,
+    ) -> ToolCall | ToolResult:
+        if not bool(getattr(self.config, "tool_permissions_enabled", True)):
+            return call
+        if not is_dangerous_tool(call.name):
+            return call
+
+        plan_refusal = check_plan_mode_block(call.name, context)
+        if plan_refusal is not None:
+            return ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=plan_refusal,
+                is_error=True,
+                metadata={"plan_mode_blocked": True, "tool_executed": False},
+            )
+
+        executor = self.services.tool_registry.get(call.name)
+        executor.validate(call)
+
+        preview_or_result = self._build_tool_permission_preview(
+            executor=executor,
+            call=call,
+            context=context,
+        )
+        if isinstance(preview_or_result, ToolResult):
+            return preview_or_result
+
+        permission_request = make_permission_request(
+            call,
+            session_id=request.session_id,
+            preview=preview_or_result,
+            allow_session=bool(
+                getattr(self.config, "tool_permission_session_allow_enabled", True)
+            ),
+        )
+        decision = self._decide_tool_permission(
+            permission_request,
+            request=request,
+            context=context,
+        )
+
+        if decision.type in {
+            ToolPermissionDecisionType.ALLOW_ONCE,
+            ToolPermissionDecisionType.ALLOW_SESSION,
+        }:
+            args = (
+                dict(decision.updated_arguments)
+                if isinstance(decision.updated_arguments, dict)
+                else dict(call.arguments or {})
+            )
+            if decision.type == ToolPermissionDecisionType.ALLOW_SESSION:
+                self._add_tool_permission_session_rule(
+                    permission_request,
+                    decision=decision,
+                    context=context,
+                )
+            return ToolCall(id=call.id, name=call.name, arguments=args)
+
+        return build_permission_denied_result(permission_request, decision)
+
+    def _build_tool_permission_preview(
+        self,
+        *,
+        executor: object,
+        call: ToolCall,
+        context: TurnContext,
+    ) -> ToolPermissionPreview | ToolResult:
+        builder = getattr(executor, "build_permission_preview", None)
+        if callable(builder):
+            try:
+                preview = builder(call, context)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"Tool permission preview error: {exc}",
+                    is_error=True,
+                    metadata={"permission_preview_error": True},
+                )
+            if isinstance(preview, (ToolPermissionPreview, ToolResult)):
+                return preview
+        return build_fallback_preview(call)
+
+    def _decide_tool_permission(
+        self,
+        permission_request: ToolPermissionRequest,
+        *,
+        request: EngineRequest,
+        context: TurnContext,
+    ) -> ToolPermissionDecision:
+        state = self._session_runtime.get(context.session_id)
+        rules = [
+            rule
+            for rule in getattr(state, "tool_permission_rules", [])
+            if hasattr(rule, "tool_name")
+        ]
+        matched_rule = find_matching_rule(permission_request, rules)
+        if matched_rule is not None:
+            if matched_rule.behavior == ToolPermissionMode.DENY:
+                self._bump_tool_permission_stat(context, "denied")
+                return ToolPermissionDecision(
+                    type=ToolPermissionDecisionType.DENY,
+                    rule=matched_rule,
+                    source="session_rule",
+                )
+            self._bump_tool_permission_stat(context, "allowed_session")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.ALLOW_ONCE,
+                rule=matched_rule,
+                source="session_rule",
+            )
+
+        default_mode = normalize_permission_mode(
+            getattr(self.config, "tool_permission_default", "ask"),
+            default=ToolPermissionMode.ASK,
+        )
+        if default_mode == ToolPermissionMode.ALLOW:
+            self._bump_tool_permission_stat(context, "allowed_once")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.ALLOW_ONCE,
+                source="config",
+            )
+        if default_mode == ToolPermissionMode.DENY:
+            self._bump_tool_permission_stat(context, "denied")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.DENY,
+                source="config",
+            )
+
+        prompter = getattr(request, "tool_permission_prompter", None)
+        interactive = False
+        if prompter is not None:
+            try:
+                interactive = bool(prompter.is_interactive())
+            except Exception:  # noqa: BLE001
+                interactive = False
+
+        if not interactive:
+            non_interactive_mode = normalize_permission_mode(
+                getattr(self.config, "tool_permission_non_interactive_default", "deny"),
+                default=ToolPermissionMode.DENY,
+            )
+            if non_interactive_mode == ToolPermissionMode.ALLOW:
+                self._bump_tool_permission_stat(context, "allowed_once")
+                return ToolPermissionDecision(
+                    type=ToolPermissionDecisionType.ALLOW_ONCE,
+                    source="non_interactive",
+                )
+            self._bump_tool_permission_stat(context, "denied")
+            self._bump_tool_permission_stat(context, "non_interactive_denied")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.DENY,
+                source="non_interactive",
+            )
+
+        self._bump_tool_permission_stat(context, "asked")
+        try:
+            decision = prompter.request_tool_permission(permission_request)
+        except Exception as exc:  # noqa: BLE001
+            self._bump_tool_permission_stat(context, "denied")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.DENY,
+                feedback=f"permission prompter failed: {exc}",
+                source="prompter_error",
+            )
+        if not isinstance(decision, ToolPermissionDecision):
+            self._bump_tool_permission_stat(context, "denied")
+            return ToolPermissionDecision(
+                type=ToolPermissionDecisionType.DENY,
+                feedback="permission prompter returned an invalid decision",
+                source="prompter_error",
+            )
+        if decision.type == ToolPermissionDecisionType.ALLOW_ONCE:
+            self._bump_tool_permission_stat(context, "allowed_once")
+        elif decision.type == ToolPermissionDecisionType.ALLOW_SESSION:
+            self._bump_tool_permission_stat(context, "allowed_session")
+        elif decision.type == ToolPermissionDecisionType.ABORT:
+            self._bump_tool_permission_stat(context, "aborted")
+        else:
+            self._bump_tool_permission_stat(context, "denied")
+        return decision
+
+    def _add_tool_permission_session_rule(
+        self,
+        permission_request: ToolPermissionRequest,
+        *,
+        decision: ToolPermissionDecision,
+        context: TurnContext,
+    ) -> None:
+        if not bool(getattr(self.config, "tool_permission_session_allow_enabled", True)):
+            return
+        state = self._session_runtime.get(context.session_id)
+        rule = decision.rule or build_session_rule_for_request(permission_request)
+        rules = getattr(state, "tool_permission_rules", None)
+        if not isinstance(rules, list):
+            state.tool_permission_rules = []
+            rules = state.tool_permission_rules
+        if rule not in rules:
+            rules.append(rule)
+            self._bump_tool_permission_stat(context, "session_rules_added")
+
+    @staticmethod
+    def _bump_tool_permission_stat(
+        context: TurnContext,
+        key: str,
+        *,
+        amount: int = 1,
+    ) -> None:
+        stats = context.metadata.setdefault(
+            "tool_permissions",
+            default_permission_stats(enabled=True),
+        )
+        if not isinstance(stats, dict):
+            stats = default_permission_stats(enabled=True)
+            context.metadata["tool_permissions"] = stats
+        stats[key] = int(stats.get(key, 0) or 0) + int(amount)
+
+    def _record_interrupt_metadata(
+        self,
+        context: TurnContext,
+        *,
+        reason: str = "user-interrupt",
+        partial_text: str = "",
+        was_in_tool_call: bool = False,
+    ) -> None:
+        interrupt_meta = context.metadata.get("interrupt")
+        if not isinstance(interrupt_meta, dict):
+            interrupt_meta = {}
+        existing_partial = str(interrupt_meta.get("partial_text") or "")
+        if partial_text and not existing_partial:
+            interrupt_meta["partial_text"] = partial_text
+        else:
+            interrupt_meta["partial_text"] = existing_partial
+        interrupt_meta["reason"] = str(interrupt_meta.get("reason") or reason)
+        interrupt_meta["was_in_tool_call"] = bool(
+            interrupt_meta.get("was_in_tool_call", False) or was_in_tool_call
+        )
+        interrupt_meta.setdefault("triggered_at", time.time())
+        context.metadata["interrupt"] = interrupt_meta
+
+    def _append_interrupted_tool_results(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> int:
+        assistant_idx: int | None = None
+        assistant_message: Dict[str, Any] | None = None
+        for idx in range(len(messages) - 1, -1, -1):
+            candidate = messages[idx]
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("role") == "assistant"
+                and isinstance(candidate.get("tool_calls"), list)
+                and candidate.get("tool_calls")
+            ):
+                assistant_idx = idx
+                assistant_message = candidate
+                break
+        if assistant_idx is None or assistant_message is None:
+            return 0
+
+        tool_calls = assistant_message.get("tool_calls") or []
+        expected_ids = {
+            str(call.get("id") or ""): str(
+                ((call.get("function") or {}).get("name")) or call.get("name") or ""
+            )
+            for call in tool_calls
+            if isinstance(call, dict) and str(call.get("id") or "")
+        }
+        if not expected_ids:
+            return 0
+
+        responded_ids: set[str] = set()
+        for message in messages[assistant_idx + 1 :]:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "tool":
+                continue
+            tool_call_id = str(message.get("tool_call_id") or "")
+            if tool_call_id:
+                responded_ids.add(tool_call_id)
+
+        appended = 0
+        for tool_call_id, tool_name in expected_ids.items():
+            if tool_call_id in responded_ids:
+                continue
+            self._append_tool_result_message(
+                messages,
+                ToolResult(
+                    tool_call_id=tool_call_id,
+                    name=tool_name or "tool",
+                    content=(
+                        "Tool execution interrupted by user before completion. "
+                        "Treat any partial side effects as incomplete."
+                    ),
+                    is_error=True,
+                    metadata={
+                        "interrupted": True,
+                        "synthetic_interrupt_result": True,
+                    },
+                ),
+            )
+            appended += 1
+        return appended
+
     def _append_interrupt_marker_message(self, messages: List[Dict[str, Any]], marker: str) -> None:
         messages.append({"role": "user", "content": marker})
 
     def _preserve_interrupt_context(self, messages: List[Dict[str, Any]], context: TurnContext) -> None:
+        self._record_interrupt_metadata(context)
         interrupt_meta = context.metadata.get("interrupt")
-        if not isinstance(interrupt_meta, dict):
-            return
+        assert isinstance(interrupt_meta, dict)
         partial_text = str(interrupt_meta.get("partial_text") or "").strip()
-        was_in_tool_call = bool(interrupt_meta.get("was_in_tool_call", False))
+        appended_tool_results = self._append_interrupted_tool_results(messages)
+        was_in_tool_call = bool(
+            interrupt_meta.get("was_in_tool_call", False) or appended_tool_results > 0
+        )
+        interrupt_meta["was_in_tool_call"] = was_in_tool_call
         marker = str(interrupt_meta.get("marker") or select_interrupt_marker(was_in_tool_call=was_in_tool_call))
         interrupt_meta["marker"] = marker
         interrupt_meta["partial_assistant_chars"] = len(partial_text)
@@ -4942,6 +5351,12 @@ class AgentEngine:
             "usage": usage_acc.to_dict(),
             "api_calls": int(context.metadata.get("api_calls", 0)),
             "pending_steer": context.metadata.get("pending_steer"),
+            "tool_permissions": dict(
+                context.metadata.get("tool_permissions")
+                or default_permission_stats(
+                    enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
+                )
+            ),
             "request_dump": context.metadata.get(
                 "request_dump",
                 {"path": None, "reason": None},

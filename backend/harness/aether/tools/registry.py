@@ -54,6 +54,17 @@ def _check_plan_mode_block(name: str, context: TurnContext) -> str | None:
     )
 
 
+def check_plan_mode_block(name: str, context: TurnContext) -> str | None:
+    """Public wrapper for the engine permission gate.
+
+    ``ToolRegistry.dispatch`` keeps its own call as a final safety net,
+    but the engine checks this before prompting so plan mode does not
+    show a misleading "approve write" dialog for an action that will be
+    blocked regardless.
+    """
+    return _check_plan_mode_block(name, context)
+
+
 @dataclass(slots=True)
 class ToolRegistry:
     _tools: Dict[str, ToolExecutor] = field(default_factory=dict)

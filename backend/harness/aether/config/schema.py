@@ -380,6 +380,15 @@ class EngineConfig:
     plan_mode_enabled: bool = True
     ask_user_question_enabled: bool = True
     ask_user_question_timeout_seconds: int = 600
+    # Sprint 7: tool permission confirmation.  Dangerous tools are gated
+    # before dispatch so confirmations render in the CLI control plane
+    # instead of scrollback/transcript.  Non-interactive callers deny
+    # dangerous tools by default unless they explicitly opt into allow.
+    tool_permissions_enabled: bool = False
+    tool_permission_default: str = "ask"
+    tool_permission_auto_allow_readonly: bool = True
+    tool_permission_non_interactive_default: str = "deny"
+    tool_permission_session_allow_enabled: bool = True
     # Sprint 3.5 / PR 3.5.8 — skill catalog configuration.  Empty
     # ``skill_search_paths`` means "use sensible defaults" inside
     # ``SkillCatalog`` callers (project-root ``skills/`` then

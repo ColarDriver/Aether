@@ -35,10 +35,12 @@ Safety constraints
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tool_permissions import ToolPermissionPreview
 from aether.runtime.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
@@ -51,6 +53,15 @@ _MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024  # 1 GiB
 # single-site edit fits, but tight enough that ``replace_all`` over a
 # huge file doesn't dump 5000 diff lines into context.
 _DIFF_PREVIEW_LINES = 80
+
+
+@dataclass(slots=True, frozen=True)
+class FileEditPlan:
+    path: Path
+    original: str
+    modified: str
+    change_count: int
+    replace_all: bool
 
 
 class FileEditTool(ToolExecutor):
@@ -110,7 +121,83 @@ class FileEditTool(ToolExecutor):
     def descriptor(self) -> ToolDescriptor:
         return self._descriptor
 
+    def build_permission_preview(
+        self,
+        call: ToolCall,
+        context: TurnContext,
+    ) -> ToolPermissionPreview | ToolResult:
+        plan = self.plan_edit(call)
+        if isinstance(plan, ToolResult):
+            return plan
+        context.metadata.setdefault("_tool_permission_preview_plans", {})[call.id] = plan
+        return ToolPermissionPreview(
+            title="Edit file",
+            subtitle=str(plan.path),
+            path=str(plan.path),
+            diff=self._build_diff(
+                path=plan.path,
+                original=plan.original,
+                modified=plan.modified,
+            ),
+            metadata={
+                "change_count": plan.change_count,
+                "replace_all": plan.replace_all,
+                "bytes_before": len(plan.original.encode("utf-8")),
+                "bytes_after": len(plan.modified.encode("utf-8")),
+            },
+        )
+
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
+        plan = self._plan_from_context(call, context)
+        if plan is None:
+            planned = self.plan_edit(call)
+            if isinstance(planned, ToolResult):
+                return planned
+            plan = planned
+        else:
+            try:
+                current = plan.path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return _error(call, f"could not re-read {plan.path}: {exc}")
+            except UnicodeDecodeError as exc:
+                return _error(
+                    call,
+                    f"file is no longer valid UTF-8 (cannot edit safely): {exc}",
+                    metadata={"path": str(plan.path)},
+                )
+            if current != plan.original:
+                return _error(
+                    call,
+                    "file changed after permission preview; retry the edit",
+                    metadata={"path": str(plan.path), "stale_preview": True},
+                )
+
+        try:
+            plan.path.write_text(plan.modified, encoding="utf-8")
+        except OSError as exc:
+            return _error(call, f"could not write {plan.path}: {exc}")
+
+        summary = self._build_diff_summary(
+            path=plan.path,
+            original=plan.original,
+            modified=plan.modified,
+            change_count=plan.change_count,
+        )
+        return ToolResult(
+            tool_call_id=call.id,
+            name=call.name,
+            content=summary,
+            is_error=False,
+            metadata={
+                "path": str(plan.path),
+                "change_count": plan.change_count,
+                "replace_all": plan.replace_all,
+                "bytes_before": len(plan.original.encode("utf-8")),
+                "bytes_after": len(plan.modified.encode("utf-8")),
+            },
+        )
+
+    def plan_edit(self, call: ToolCall) -> FileEditPlan | ToolResult:
         args = call.arguments or {}
         raw_path = args.get("path")
         if not raw_path:
@@ -211,29 +298,12 @@ class FileEditTool(ToolExecutor):
             modified = original.replace(old_string, new_string, 1)
             change_count = 1
 
-        try:
-            path.write_text(modified, encoding="utf-8")
-        except OSError as exc:
-            return _error(call, f"could not write {path}: {exc}")
-
-        summary = self._build_diff_summary(
+        return FileEditPlan(
             path=path,
             original=original,
             modified=modified,
             change_count=change_count,
-        )
-        return ToolResult(
-            tool_call_id=call.id,
-            name=call.name,
-            content=summary,
-            is_error=False,
-            metadata={
-                "path": str(path),
-                "change_count": change_count,
-                "replace_all": replace_all,
-                "bytes_before": len(original.encode("utf-8")),
-                "bytes_after": len(modified.encode("utf-8")),
-            },
+            replace_all=replace_all,
         )
 
     # ------------------------------------------------------------------
@@ -259,12 +329,11 @@ class FileEditTool(ToolExecutor):
             return False
 
     @staticmethod
-    def _build_diff_summary(
+    def _build_diff(
         *,
         path: Path,
         original: str,
         modified: str,
-        change_count: int,
     ) -> str:
         diff_lines = list(
             difflib.unified_diff(
@@ -280,9 +349,32 @@ class FileEditTool(ToolExecutor):
             diff_lines = diff_lines[:_DIFF_PREVIEW_LINES] + [
                 f"\n... ({elided} more diff lines elided) ...\n"
             ]
+        return "".join(diff_lines)
+
+    @classmethod
+    def _build_diff_summary(
+        cls,
+        *,
+        path: Path,
+        original: str,
+        modified: str,
+        change_count: int,
+    ) -> str:
         plural = "s" if change_count != 1 else ""
         header = f"edited {path} ({change_count} change{plural})\n"
-        return header + "".join(diff_lines)
+        return header + cls._build_diff(
+            path=path,
+            original=original,
+            modified=modified,
+        )
+
+    @staticmethod
+    def _plan_from_context(call: ToolCall, context: TurnContext) -> FileEditPlan | None:
+        plans = context.metadata.get("_tool_permission_preview_plans")
+        if not isinstance(plans, dict):
+            return None
+        plan = plans.pop(call.id, None)
+        return plan if isinstance(plan, FileEditPlan) else None
 
 
 def _error(
@@ -297,4 +389,4 @@ def _error(
     )
 
 
-__all__ = ["FileEditTool"]
+__all__ = ["FileEditPlan", "FileEditTool"]

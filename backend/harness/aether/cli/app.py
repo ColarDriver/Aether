@@ -45,7 +45,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import Future
+from dataclasses import dataclass
 from io import StringIO
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from prompt_toolkit.application import Application
@@ -87,11 +90,23 @@ from aether.cli.ui import (
     strip_all_command_fences,
     strip_tool_blocks,
 )
+from aether.runtime.tool_permissions import (
+    ToolPermissionDecision,
+    ToolPermissionDecisionType,
+    ToolPermissionRequest,
+)
 
 
 SubmitCallback = Callable[[str], Awaitable[None]]
 InterruptCallback = Callable[[], None]
 ClearHistoryCallback = Callable[[], None]
+
+
+@dataclass(slots=True)
+class PendingPermissionPrompt:
+    request: ToolPermissionRequest
+    future: Future[ToolPermissionDecision]
+    selected_index: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +159,14 @@ _BOX_STYLE = Style.from_dict(
         "footer.sep": AETHER_BORDER,
         "footer.queued": f"bold {AETHER_ACCENT}",
         "footer.busy": f"italic {AETHER_DIM}",
+        "permission.border": AETHER_BORDER,
+        "permission.title": f"bold {AETHER_PRIMARY}",
+        "permission.subtitle": AETHER_DIM,
+        "permission.question": "",
+        "permission.option": "",
+        "permission.option.selected": f"bold {AETHER_ACCENT}",
+        "permission.diff": AETHER_DIM,
+        "permission.command": f"bold {AETHER_ACCENT}",
         # Completion popup palette — copied verbatim from input_box.py so
         # the type-ahead experience stays identical to the per-turn
         # picker.
@@ -281,11 +304,20 @@ class AetherApp:
 
         # State shared between key bindings and the consumer task.
         self._busy = False
+        # UI-only latch: once the user requests interrupt we hide the
+        # bottom-region "live" affordances (activity bar, active tool
+        # group, preview/reasoning excerpt) immediately instead of
+        # waiting for the worker thread to unwind all the way out of
+        # ``on_submit``.  This keeps the screen visually stopped as
+        # soon as ESC lands, even if provider/tool cleanup takes a few
+        # more seconds in the background.
+        self._interrupt_visual_pending = False
         # We use a list rather than ``asyncio.Queue`` so the footer can
         # render the queue length without consuming it.  An ``Event``
         # gates the consumer's wait when the queue is empty.
         self._pending: list[str] = []
         self._pending_event = asyncio.Event()
+        self._permission_queue: list[PendingPermissionPrompt] = []
         self._exit_requested = False
         self._consumer_task: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[None] | None = None
@@ -342,6 +374,10 @@ class AetherApp:
             dont_extend_height=True,
         )
         input_frame = Frame(input_window)
+        input_frame_container = ConditionalContainer(
+            content=input_frame,
+            filter=Condition(self._has_input_frame),
+        )
 
         # 1-row top spacer — keeps the bottom-region content visually
         # detached from the user echo / previous turn output that
@@ -383,6 +419,21 @@ class AetherApp:
         streaming_preview_container = ConditionalContainer(
             content=streaming_preview_window,
             filter=Condition(self._has_streaming_preview),
+        )
+
+        permission_window = Window(
+            content=FormattedTextControl(
+                text=self._get_permission_text,
+                focusable=False,
+                show_cursor=False,
+            ),
+            height=self._permission_height,
+            dont_extend_height=True,
+            wrap_lines=False,
+        )
+        permission_container = ConditionalContainer(
+            content=permission_window,
+            filter=Condition(self._has_permission_prompt),
         )
 
         # Active tool group: 0-2 rows — headline + optional ⎿ hint.  The
@@ -461,18 +512,19 @@ class AetherApp:
         # overlapping the input frame border.
         completions_menu = ConditionalContainer(
             content=CompletionsMenu(max_height=12, scroll_offset=1),
-            filter=has_completions,
+            filter=has_completions & Condition(self._has_input_frame),
         )
 
         root = HSplit(
             [
                 spacer_container,
                 streaming_preview_container,
+                permission_container,
                 active_group_container,
                 activity_container,
                 reasoning_container,
                 completions_menu,
-                input_frame,
+                input_frame_container,
                 footer_window,
             ],
         )
@@ -520,6 +572,26 @@ class AetherApp:
         def _ctrl_c(event):  # noqa: ANN001
             self._handle_ctrl_c(event)
 
+        @bindings.add("up", filter=Condition(self._has_permission_prompt))
+        def _permission_up(event):  # noqa: ANN001
+            self._move_permission_selection(-1)
+            event.app.invalidate()
+
+        @bindings.add("down", filter=Condition(self._has_permission_prompt))
+        def _permission_down(event):  # noqa: ANN001
+            self._move_permission_selection(1)
+            event.app.invalidate()
+
+        for option_number in range(1, 10):
+            @bindings.add(
+                str(option_number),
+                filter=Condition(self._has_permission_prompt),
+                eager=True,
+            )
+            def _permission_number(event, option_number=option_number):  # noqa: ANN001
+                self._resolve_permission_number(option_number)
+                event.app.invalidate()
+
         # ESC single-press → priority chain (PR 6.1).  ``eager=True``
         # bypasses prompt_toolkit's 25 ms ESC-sequence timeout so the
         # press feels instantaneous; this also displaces the legacy
@@ -542,6 +614,11 @@ class AetherApp:
 
         @bindings.add("enter")
         def _enter(event):  # noqa: ANN001
+            if self._has_permission_prompt():
+                self._resolve_active_permission()
+                event.app.invalidate()
+                return
+
             buf = event.current_buffer
             # Completion popup: Enter with a highlighted candidate
             # accepts the completion, doesn't submit.
@@ -585,11 +662,20 @@ class AetherApp:
         then returns; the bottom branch is a no-op that arms the
         double-press window so a *second* quick ESC clears history.
         """
+        if self._has_permission_prompt():
+            self._reject_active_permission(source="user_abort")
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
         buf = event.current_buffer
         now = time.monotonic()
 
         # 1. Engine in flight → interrupt and drop the queue.
         if self._busy:
+            self._interrupt_visual_pending = True
             if self._on_interrupt is not None:
                 try:
                     self._on_interrupt()
@@ -663,11 +749,20 @@ class AetherApp:
         place behaviour diverges: a single Ctrl-C arms a 2 s exit
         window instead of killing the REPL outright.
         """
+        if self._has_permission_prompt():
+            self._reject_active_permission(source="user_abort")
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
         buf = event.current_buffer
         now = time.monotonic()
 
         # 1. Engine in flight → interrupt.
         if self._busy:
+            self._interrupt_visual_pending = True
             if self._on_interrupt is not None:
                 try:
                     self._on_interrupt()
@@ -744,11 +839,25 @@ class AetherApp:
     # Filters / text providers — all called on the prompt_toolkit thread
     # ------------------------------------------------------------------
 
+    def _has_permission_prompt(self) -> bool:
+        return bool(self._permission_queue)
+
+    def _has_input_frame(self) -> bool:
+        return not self._has_permission_prompt()
+
     def _has_active_group(self) -> bool:
+        if self._has_permission_prompt():
+            return False
+        if self._interrupt_visual_pending:
+            return False
         group = self.ui.tool_groups.active
         return group is not None and group.is_active
 
     def _has_activity(self) -> bool:
+        if self._has_permission_prompt():
+            return False
+        if self._interrupt_visual_pending:
+            return False
         # The streaming preview *is* the progress indicator — once the
         # model has emitted visible body the "Pondering / Thinking …"
         # verb line becomes redundant noise (the body is plainly being
@@ -761,9 +870,15 @@ class AetherApp:
         return bool(self.ui._turn_state.verb) or self._busy
 
     def _has_reasoning(self) -> bool:
+        if self._has_permission_prompt():
+            return False
+        if self._interrupt_visual_pending:
+            return False
         return bool(getattr(self.ui._stream, "reasoning_excerpt", ""))
 
     def _has_streaming_preview(self) -> bool:
+        if self._interrupt_visual_pending:
+            return False
         return self._cached_preview_lines > 0
 
     def _has_bottom_content(self) -> bool:
@@ -771,10 +886,147 @@ class AetherApp:
         # visible content above the input frame qualifies.
         return (
             self._has_streaming_preview()
+            or self._has_permission_prompt()
             or self._has_active_group()
             or self._has_activity()
             or self._has_reasoning()
         )
+
+    def _permission_options(
+        self,
+        request: ToolPermissionRequest,
+    ) -> list[tuple[ToolPermissionDecisionType, str]]:
+        if request.allow_session:
+            if request.tool_name == "shell":
+                session_label = "Yes, allow this command prefix in this session"
+            elif request.preview and request.preview.path:
+                session_label = "Yes, allow edits in this path during this session"
+            else:
+                session_label = "Yes, allow similar calls during this session"
+            return [
+                (ToolPermissionDecisionType.ALLOW_ONCE, "Yes"),
+                (ToolPermissionDecisionType.ALLOW_SESSION, session_label),
+                (ToolPermissionDecisionType.DENY, "No"),
+            ]
+        return [
+            (ToolPermissionDecisionType.ALLOW_ONCE, "Yes"),
+            (ToolPermissionDecisionType.DENY, "No"),
+        ]
+
+    def _permission_divider(self) -> str:
+        # Mirrors open-claude-code's Pane: a full-width top rule followed by
+        # horizontally padded content rather than a dense boxed card.
+        width = max(20, self._terminal_cols() - 2)
+        return "\u2500" * width
+
+    def _permission_max_rows(self) -> int:
+        # Root rows consumed while a permission modal is visible:
+        # leading spacer (1) + footer shortcuts (1).  The input frame,
+        # completions, activity, active group, and reasoning rows are hidden.
+        return max(1, min(20, self._terminal_rows() - 2))
+
+    def _get_permission_text(self) -> FormattedText:
+        if not self._permission_queue:
+            return FormattedText([])
+        prompt = self._permission_queue[0]
+        request = prompt.request
+        preview = request.preview
+        title = preview.title if preview else f"Use {request.tool_name}"
+        subtitle = preview.subtitle or preview.path if preview else None
+        options = self._permission_options(request)
+        selected = max(0, min(prompt.selected_index, len(options) - 1))
+
+        max_rows = self._permission_max_rows()
+        critical_rows = 1 + len(options)
+        optional_budget = max(0, max_rows - critical_rows)
+        optional_rows = 0
+
+        fragments: list[tuple[str, str]] = []
+
+        def add_optional(style: str, text: str) -> bool:
+            nonlocal optional_rows
+            if optional_rows >= optional_budget:
+                return False
+            fragments.append((style, text))
+            optional_rows += 1
+            return True
+
+        if optional_budget >= 4:
+            add_optional("class:permission.border", f"{self._permission_divider()}\n")
+            add_optional("class:permission.subtitle", "\n")
+            add_optional("class:permission.title", f"  {title}\n")
+            if subtitle:
+                add_optional("class:permission.subtitle", f"  {subtitle}\n")
+        elif optional_budget >= 1:
+            add_optional("class:permission.border", f"{self._permission_divider()}\n")
+
+        if preview and preview.command:
+            command_lines = preview.command.splitlines() or [preview.command]
+            if optional_rows < optional_budget and command_lines:
+                add_optional("class:permission.subtitle", "\n")
+            for line in command_lines:
+                if not add_optional("class:permission.command", f"  $ {line}\n"):
+                    break
+        if preview and preview.body:
+            body_lines = preview.body.splitlines()[:4]
+            if optional_rows < optional_budget and body_lines:
+                add_optional("class:permission.subtitle", "\n")
+            for line in body_lines:
+                if not add_optional("class:permission.subtitle", f"  {line}\n"):
+                    break
+        if preview and preview.diff:
+            diff_lines = preview.diff.splitlines()
+            max_lines = 8
+            shown = 0
+            if optional_rows < optional_budget and diff_lines:
+                add_optional("class:permission.subtitle", "\n")
+            for line in diff_lines[:max_lines]:
+                if not add_optional("class:permission.diff", f"  {line}\n"):
+                    break
+                shown += 1
+            if shown < len(diff_lines) and optional_rows < optional_budget:
+                remaining = len(diff_lines) - shown
+                add_optional(
+                    "class:permission.diff",
+                    f"  ... {remaining} more diff lines ...\n",
+                )
+
+        question = self._permission_question(request)
+        if optional_rows < optional_budget and fragments:
+            add_optional("class:permission.subtitle", "\n")
+        fragments.append(("class:permission.question", f"  {question}\n"))
+
+        for idx, (_decision, label) in enumerate(options):
+            marker = "\u203a" if idx == selected else " "
+            style = (
+                "class:permission.option.selected"
+                if idx == selected
+                else "class:permission.option"
+            )
+            fragments.append((style, f"  {marker} {idx + 1}. {label}\n"))
+        return FormattedText(fragments)
+
+    def _permission_height(self) -> D:
+        if not self._permission_queue:
+            return D.exact(0)
+        text = self._get_permission_text()
+        rows = 0
+        for _style, fragment in text:
+            rows += max(1, fragment.count("\n") + (0 if fragment.endswith("\n") else 1))
+        return D.exact(max(1, min(rows, self._permission_max_rows())))
+
+    @staticmethod
+    def _permission_question(request: ToolPermissionRequest) -> str:
+        preview = request.preview
+        if request.tool_name == "file_edit":
+            target = Path(preview.path).name if preview and preview.path else "this file"
+            return f"Do you want to make this edit to {target}?"
+        if request.tool_name == "write_file":
+            target = Path(preview.path).name if preview and preview.path else "this file"
+            return f"Do you want to write {target}?"
+        if request.tool_name == "shell":
+            return "Do you want to run this command?"
+        return f"Do you want to allow {request.tool_name}?"
 
     def _get_active_group_text(self) -> ANSI:
         group = self.ui.tool_groups.active
@@ -918,14 +1170,39 @@ class AetherApp:
         # (not gated on ``_busy``) so the user always knows the key
         # exists — claude-code does the same with its "press ESC to
         # cancel" / "ESC clear" rotation.
-        if self._busy:
-            esc_label = " interrupt"
+        if self._has_permission_prompt():
+            esc_label = " reject"
+        elif self._busy:
+            esc_label = (
+                " interrupted"
+                if self._interrupt_visual_pending
+                else " interrupt"
+            )
         elif self._pending:
             esc_label = " pop queued"
         else:
             esc_label = " clear"
 
-        fragments: list[tuple[str, str]] = [
+        if self._has_permission_prompt():
+            option_count = len(self._permission_options(self._permission_queue[0].request))
+            option_keys = "1" if option_count <= 1 else f"1-{option_count}"
+            fragments: list[tuple[str, str]] = [
+                ("class:footer", "  "),
+                ("class:footer.kbd", "Enter"),
+                ("class:footer", " approve"),
+                sep,
+                ("class:footer.kbd", option_keys),
+                ("class:footer", " choose"),
+                sep,
+                ("class:footer.kbd", "Up/Down"),
+                ("class:footer", " move"),
+                sep,
+                ("class:footer.kbd", "Esc"),
+                ("class:footer", esc_label),
+            ]
+            return FormattedText(fragments)
+
+        fragments = [
             ("class:footer", "  "),
             ("class:footer.kbd", "Enter"),
             ("class:footer", " send"),
@@ -942,7 +1219,10 @@ class AetherApp:
             ("class:footer.kbd", "Ctrl-D"),
             ("class:footer", " exit"),
         ]
-        if self._busy and self._pending:
+        if self._interrupt_visual_pending:
+            fragments.append(sep)
+            fragments.append(("class:footer.busy", "interrupting…"))
+        elif self._busy and self._pending:
             fragments.append(sep)
             fragments.append(
                 ("class:footer.queued", f"▸ queued ({len(self._pending)})"),
@@ -970,6 +1250,15 @@ class AetherApp:
             pass
         return 100
 
+    def _terminal_rows(self) -> int:
+        try:
+            rows = self._app.output.get_size().rows
+            if rows and rows > 0:
+                return min(rows, 80)
+        except Exception:  # noqa: BLE001
+            pass
+        return 24
+
     @property
     def is_busy(self) -> bool:
         """True while an ``on_submit`` invocation is in flight."""
@@ -991,6 +1280,107 @@ class AetherApp:
         except Exception:  # noqa: BLE001
             pass
 
+    def make_tool_permission_prompter(self, loop: asyncio.AbstractEventLoop):
+        from aether.cli.tool_permission_prompter import AetherToolPermissionPrompter
+
+        return AetherToolPermissionPrompter(self, loop)
+
+    def enqueue_permission_request(
+        self,
+        request: ToolPermissionRequest,
+        future: Future[ToolPermissionDecision],
+    ) -> None:
+        if future.done():
+            return
+        self._permission_queue.append(PendingPermissionPrompt(request=request, future=future))
+        try:
+            self._app.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def cancel_permission_request(
+        self,
+        future: Future[ToolPermissionDecision],
+    ) -> None:
+        for idx, prompt in enumerate(list(self._permission_queue)):
+            if prompt.future is future:
+                self._permission_queue.pop(idx)
+                if not future.done():
+                    future.set_result(
+                        ToolPermissionDecision(
+                            type=ToolPermissionDecisionType.DENY,
+                            feedback="permission prompt cancelled",
+                            source="cancelled",
+                        )
+                    )
+                break
+        try:
+            self._app.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _move_permission_selection(self, delta: int) -> None:
+        if not self._permission_queue:
+            return
+        prompt = self._permission_queue[0]
+        option_count = len(self._permission_options(prompt.request))
+        if option_count <= 0:
+            prompt.selected_index = 0
+            return
+        prompt.selected_index = (prompt.selected_index + delta) % option_count
+
+    def _resolve_permission_number(self, number: int) -> bool:
+        return self._resolve_permission_index(number - 1)
+
+    def _resolve_permission_index(self, index: int) -> bool:
+        if not self._permission_queue:
+            return False
+        prompt = self._permission_queue[0]
+        options = self._permission_options(prompt.request)
+        if index < 0 or index >= len(options):
+            return False
+        self._permission_queue.pop(0)
+        decision_type, _label = options[index]
+        if not prompt.future.done():
+            prompt.future.set_result(
+                ToolPermissionDecision(
+                    type=decision_type,
+                    source="user",
+                )
+            )
+        return True
+
+    def _resolve_active_permission(self) -> None:
+        if not self._permission_queue:
+            return
+        prompt = self._permission_queue[0]
+        options = self._permission_options(prompt.request)
+        idx = max(0, min(prompt.selected_index, len(options) - 1))
+        self._resolve_permission_index(idx)
+
+    def _reject_active_permission(self, *, source: str = "user") -> None:
+        if not self._permission_queue:
+            return
+        prompt = self._permission_queue.pop(0)
+        if not prompt.future.done():
+            prompt.future.set_result(
+                ToolPermissionDecision(
+                    type=ToolPermissionDecisionType.ABORT,
+                    source=source,
+                )
+            )
+
+    def _abort_all_permission_requests(self) -> None:
+        while self._permission_queue:
+            prompt = self._permission_queue.pop(0)
+            if not prompt.future.done():
+                prompt.future.set_result(
+                    ToolPermissionDecision(
+                        type=ToolPermissionDecisionType.ABORT,
+                        source="shutdown",
+                    )
+                )
+
     # ------------------------------------------------------------------
     # Async loops
     # ------------------------------------------------------------------
@@ -1008,6 +1398,7 @@ class AetherApp:
                     return
                 continue
             line = self._pending.pop(0)
+            self._interrupt_visual_pending = False
             self._busy = True
             try:
                 self._app.invalidate()
@@ -1022,6 +1413,7 @@ class AetherApp:
                     pass
             finally:
                 self._busy = False
+                self._interrupt_visual_pending = False
                 # Clear any leftover verb so the bar collapses while we
                 # wait for the next user message.
                 try:
@@ -1063,6 +1455,7 @@ class AetherApp:
             pass
         finally:
             self._exit_requested = True
+            self._abort_all_permission_requests()
             self._pending_event.set()
             for t in (self._consumer_task, self._refresh_task):
                 if t is None:

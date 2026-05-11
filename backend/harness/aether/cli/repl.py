@@ -56,6 +56,7 @@ class ReplState:
     model_config: ModelCallConfig
     messages: list[dict] = field(default_factory=list)
     verbose: bool = False
+    tool_permission_prompter: object | None = None
     # Live, in-memory mirror of the on-disk session record.  ``None``
     # until the first turn (or until a successful ``/resume``).  We keep
     # the dataclass instance around so ``created_at`` survives across
@@ -109,6 +110,11 @@ def run_repl(
     """
     console = Console(theme=THEME, force_terminal=True if color_enabled() else None)
     ui = CLIUI(console, verbose=verbose)
+    # Interactive REPL owns the bottom-region permission overlay, so it
+    # opts into Sprint 7's engine-level dangerous-tool gate explicitly.
+    # SDK / test callers keep backwards-compatible EngineConfig defaults
+    # unless they opt in themselves.
+    engine.config.tool_permissions_enabled = True
 
     if resume_record is not None:
         effective_session_id = resume_record.session_id
@@ -180,6 +186,9 @@ def run_repl(
         # Engine is synchronous — run it in a worker thread so the
         # asyncio event loop (and therefore the activity bar / queued
         # badge / Ctrl-C interrupt) stays responsive.
+        state.tool_permission_prompter = app.make_tool_permission_prompter(
+            asyncio.get_running_loop()
+        )
         await asyncio.to_thread(_run_turn_blocking, state, line)
 
     def _on_interrupt() -> None:
@@ -247,6 +256,7 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
         # generation phases without polluting the visible body.
         stream_silent_callback=ui.make_stream_silent_callback(),
         approval_prompter=ApprovalPrompter(),
+        tool_permission_prompter=state.tool_permission_prompter,
     )
 
     ui.begin_turn()

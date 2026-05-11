@@ -11,17 +11,30 @@ operation matches the JSON schema sent to the model and avoids subtle
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tool_permissions import ToolPermissionPreview
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
 
 _MAX_BYTES = 1024 * 1024
+_DIFF_PREVIEW_LINES = 120
+
+
+@dataclass(slots=True, frozen=True)
+class WriteFilePlan:
+    path: Path
+    existed: bool
+    old_content: str
+    new_content: str
+    size_bytes: int
 
 
 class WriteFileTool(ToolExecutor):
@@ -66,7 +79,45 @@ class WriteFileTool(ToolExecutor):
     def descriptor(self) -> ToolDescriptor:
         return self._descriptor
 
+    def build_permission_preview(
+        self,
+        call: ToolCall,
+        context: TurnContext,
+    ) -> ToolPermissionPreview | ToolResult:
+        plan = self.plan_write(call)
+        if isinstance(plan, ToolResult):
+            return plan
+        context.metadata.setdefault("_tool_permission_preview_plans", {})[call.id] = plan
+        return ToolPermissionPreview(
+            title="Overwrite file" if plan.existed else "Create file",
+            subtitle=str(plan.path),
+            path=str(plan.path),
+            diff=self._build_diff(plan),
+            metadata={
+                "existed": plan.existed,
+                "size_bytes": plan.size_bytes,
+                "parent_exists": plan.path.parent.exists(),
+            },
+        )
+
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
+        plan = self._plan_from_context(call, context)
+        if plan is None:
+            planned = self.plan_write(call)
+            if isinstance(planned, ToolResult):
+                return planned
+            plan = planned
+        else:
+            stale = self._check_stale_preview(plan)
+            if stale is not None:
+                return _error(
+                    call,
+                    stale,
+                    metadata={"path": str(plan.path), "stale_preview": True},
+                )
+        return self._apply_plan(call, plan)
+
+    def plan_write(self, call: ToolCall) -> WriteFilePlan | ToolResult:
         args = call.arguments or {}
         raw_path = args.get("path")
         content = args.get("content")
@@ -89,8 +140,41 @@ class WriteFileTool(ToolExecutor):
             )
 
         path = self._resolve_path(raw_path)
+        if path.exists() and path.is_dir():
+            return _error(
+                call,
+                f"path is a directory (cannot overwrite): {path}",
+                metadata={"path": str(path)},
+            )
         existed = path.exists()
+        old_content = ""
+        if existed:
+            try:
+                old_content = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return _error(
+                    call,
+                    f"could not read existing {path}: {exc}",
+                    metadata={"path": str(path)},
+                )
+            except UnicodeDecodeError as exc:
+                return _error(
+                    call,
+                    f"existing file is not valid UTF-8 (cannot preview safely): {exc}",
+                    metadata={"path": str(path)},
+                )
+        return WriteFilePlan(
+            path=path,
+            existed=existed,
+            old_content=old_content,
+            new_content=content,
+            size_bytes=len(encoded),
+        )
 
+    def _apply_plan(self, call: ToolCall, plan: WriteFilePlan) -> ToolResult:
+        path = plan.path
+        content = plan.new_content
+        encoded = content.encode("utf-8")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -112,7 +196,7 @@ class WriteFileTool(ToolExecutor):
 
         digest = hashlib.sha256(encoded).hexdigest()
 
-        verb = "overwrote" if existed else "created"
+        verb = "overwrote" if plan.existed else "created"
         body = (
             f"{verb} {path}\n"
             f"size: {len(encoded)} bytes ({content.count(chr(10)) + (0 if not content else 1)} lines)\n"
@@ -128,7 +212,7 @@ class WriteFileTool(ToolExecutor):
                 "path": str(path),
                 "size_bytes": len(encoded),
                 "sha256": digest,
-                "existed": existed,
+                "existed": plan.existed,
             },
         )
 
@@ -137,6 +221,49 @@ class WriteFileTool(ToolExecutor):
         if not candidate.is_absolute() and self.default_cwd is not None:
             return (self.default_cwd / candidate).resolve()
         return candidate.resolve()
+
+    @staticmethod
+    def _build_diff(plan: WriteFilePlan) -> str:
+        diff_lines = list(
+            difflib.unified_diff(
+                plan.old_content.splitlines(keepends=True),
+                plan.new_content.splitlines(keepends=True),
+                fromfile=str(plan.path) if plan.existed else "/dev/null",
+                tofile=str(plan.path),
+                n=2,
+            )
+        )
+        if len(diff_lines) > _DIFF_PREVIEW_LINES:
+            elided = len(diff_lines) - _DIFF_PREVIEW_LINES
+            diff_lines = diff_lines[:_DIFF_PREVIEW_LINES] + [
+                f"\n... ({elided} more diff lines elided) ...\n"
+            ]
+        return "".join(diff_lines)
+
+    @staticmethod
+    def _plan_from_context(call: ToolCall, context: TurnContext) -> WriteFilePlan | None:
+        plans = context.metadata.get("_tool_permission_preview_plans")
+        if not isinstance(plans, dict):
+            return None
+        plan = plans.pop(call.id, None)
+        return plan if isinstance(plan, WriteFilePlan) else None
+
+    @staticmethod
+    def _check_stale_preview(plan: WriteFilePlan) -> str | None:
+        if plan.existed:
+            if not plan.path.exists():
+                return "file changed after permission preview; retry the write"
+            try:
+                current = plan.path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return f"could not re-read {plan.path}: {exc}"
+            except UnicodeDecodeError as exc:
+                return f"file is no longer valid UTF-8 (cannot write safely): {exc}"
+            if current != plan.old_content:
+                return "file changed after permission preview; retry the write"
+        elif plan.path.exists():
+            return "file appeared after permission preview; retry the write"
+        return None
 
 
 def _error(call: ToolCall, message: str, *, metadata: dict[str, Any] | None = None) -> ToolResult:
@@ -149,4 +276,4 @@ def _error(call: ToolCall, message: str, *, metadata: dict[str, Any] | None = No
     )
 
 
-__all__ = ["WriteFileTool"]
+__all__ = ["WriteFilePlan", "WriteFileTool"]

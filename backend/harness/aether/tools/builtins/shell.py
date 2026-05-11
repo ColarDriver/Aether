@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tool_permissions import ToolPermissionPreview
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 _DEFAULT_TIMEOUT_SEC = 60
@@ -79,6 +80,34 @@ class ShellTool(ToolExecutor):
     @property
     def descriptor(self) -> ToolDescriptor:
         return self._descriptor
+
+    def build_permission_preview(
+        self,
+        call: ToolCall,
+        context: TurnContext,
+    ) -> ToolPermissionPreview | ToolResult:
+        args = call.arguments or {}
+        command = str(args.get("command") or "").strip()
+        if not command:
+            return ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content="error: 'command' must be a non-empty string",
+                is_error=True,
+                metadata={"exit_code": -1},
+            )
+        cwd = self._resolve_cwd(args.get("cwd"))
+        timeout = self._resolve_timeout(args.get("timeout_sec"))
+        return ToolPermissionPreview(
+            title="Run command",
+            subtitle=str(cwd) if cwd else None,
+            command=command,
+            body=f"timeout: {timeout}s",
+            metadata={
+                "cwd": str(cwd) if cwd else None,
+                "timeout_sec": timeout,
+            },
+        )
 
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
         args = call.arguments or {}

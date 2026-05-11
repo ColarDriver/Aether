@@ -13,6 +13,7 @@ import asyncio
 import re
 import time
 import unittest
+from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -22,6 +23,12 @@ from rich.console import Console
 
 from aether.cli.app import AetherApp
 from aether.cli.ui import CLIUI
+from aether.runtime.tool_permissions import (
+    ToolPermissionDecision,
+    ToolPermissionDecisionType,
+    ToolPermissionPreview,
+    ToolPermissionRequest,
+)
 
 
 def _make_event(buffer_text: str = "") -> SimpleNamespace:
@@ -366,6 +373,8 @@ class AetherAppEscPriorityChainTests(unittest.TestCase):
         interrupts: list[int] = []
         app = _make_app(on_interrupt=lambda: interrupts.append(1))
         app._busy = True
+        app.ui._turn_state.verb = "Conjuring"
+        app._cached_preview_lines = 0
         app._pending = ["queued-1", "queued-2"]
         event = _make_event()
 
@@ -376,6 +385,8 @@ class AetherAppEscPriorityChainTests(unittest.TestCase):
         self.assertEqual(app._pending, [])
         # Double-press window never armed — busy is a terminal branch.
         self.assertIsNone(app._last_esc_at)
+        self.assertFalse(app._has_activity())
+        self.assertTrue(app._interrupt_visual_pending)
 
     def test_esc_with_text_clears_buffer_and_arms_window(self) -> None:
         app = _make_app()
@@ -502,6 +513,8 @@ class AetherAppCtrlCDoublePressExitTests(unittest.TestCase):
         interrupts: list[int] = []
         app = _make_app(on_interrupt=lambda: interrupts.append(1))
         app._busy = True
+        app.ui._turn_state.verb = "Conjuring"
+        app._cached_preview_lines = 0
         app._pending = ["one", "two"]
         event = _make_event()
 
@@ -510,6 +523,8 @@ class AetherAppCtrlCDoublePressExitTests(unittest.TestCase):
         self.assertEqual(interrupts, [1])
         self.assertEqual(app._pending, [])
         self.assertFalse(app._exit_requested)
+        self.assertFalse(app._has_activity())
+        self.assertTrue(app._interrupt_visual_pending)
 
 
 class AetherAppFooterHintTests(unittest.TestCase):
@@ -531,6 +546,14 @@ class AetherAppFooterHintTests(unittest.TestCase):
         text = _plain(app._get_footer_text())
         self.assertIn("Esc", text)
         self.assertIn("interrupt", text)
+
+    def test_interrupt_pending_footer_shows_interrupting_not_running(self) -> None:
+        app = self._build_app()
+        app._busy = True
+        app._interrupt_visual_pending = True
+        text = _plain(app._get_footer_text())
+        self.assertIn("interrupting", text)
+        self.assertNotIn("running", text)
 
     def test_idle_with_queue_shows_esc_pop_queued_label(self) -> None:
         app = self._build_app()
@@ -559,6 +582,136 @@ class AetherAppFooterHintTests(unittest.TestCase):
         app._transient_hint_until = time.monotonic() - 1.0
         text = _plain(app._get_footer_text())
         self.assertNotIn("stale", text)
+
+
+class AetherAppPermissionOverlayTests(unittest.TestCase):
+    def _request(self) -> ToolPermissionRequest:
+        return ToolPermissionRequest(
+            session_id="s",
+            tool_call_id="c1",
+            tool_name="file_edit",
+            arguments={"path": "/tmp/app.py"},
+            category="write",
+            risk="write",
+            preview=ToolPermissionPreview(
+                title="Edit file",
+                path="/tmp/app.py",
+                diff="--- /tmp/app.py\n+++ /tmp/app.py\n-old\n+new\n",
+            ),
+        )
+
+    def test_permission_request_renders_above_input(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        self.assertTrue(app._has_permission_prompt())
+        text = _plain(app._get_permission_text())
+        self.assertIn("\u2500", text)
+        self.assertIn("Edit file", text)
+        self.assertIn("Do you want to make this edit to app.py?", text)
+        self.assertIn("-old", text)
+        self.assertIn("1. Yes", text)
+        self.assertIn("2. Yes, allow edits in this path during this session", text)
+        self.assertNotIn("Enter approve/select", text)
+        self.assertFalse(future.done())
+
+    def test_permission_prompt_trims_preview_in_short_terminal(self) -> None:
+        app = _make_app()
+
+        class _Out:
+            class _Size:
+                rows = 8
+                columns = 80
+
+            def get_size(self):
+                return self._Size()
+
+        app._app.output = _Out()  # type: ignore[assignment]
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        text = _plain(app._get_permission_text())
+
+        self.assertLessEqual(app._permission_height().preferred, 6)
+        self.assertIn("Do you want to make this edit to app.py?", text)
+        self.assertIn("1. Yes", text)
+        self.assertIn("3. No", text)
+        self.assertNotIn("-old", text)
+
+    def test_permission_prompt_hides_input_frame(self) -> None:
+        app = _make_app()
+        self.assertTrue(app._has_input_frame())
+
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        self.assertFalse(app._has_input_frame())
+
+    def test_permission_enter_accept_once_resolves_future(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        app._resolve_active_permission()
+
+        self.assertTrue(future.done())
+        self.assertEqual(future.result().type, ToolPermissionDecisionType.ALLOW_ONCE)
+        self.assertFalse(app._has_permission_prompt())
+
+    def test_permission_down_enter_accept_session_resolves_future(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        app._move_permission_selection(1)
+        app._resolve_active_permission()
+
+        self.assertEqual(future.result().type, ToolPermissionDecisionType.ALLOW_SESSION)
+
+    def test_permission_number_accept_session_resolves_future(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        handled = app._resolve_permission_number(2)
+
+        self.assertTrue(handled)
+        self.assertEqual(future.result().type, ToolPermissionDecisionType.ALLOW_SESSION)
+        self.assertFalse(app._has_permission_prompt())
+
+    def test_permission_invalid_number_is_ignored(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        handled = app._resolve_permission_number(9)
+
+        self.assertFalse(handled)
+        self.assertFalse(future.done())
+        self.assertTrue(app._has_permission_prompt())
+
+    def test_permission_esc_rejects_active_request(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        app._handle_esc(_make_event())
+
+        self.assertEqual(future.result().type, ToolPermissionDecisionType.ABORT)
+        self.assertFalse(app._has_permission_prompt())
+
+    def test_permission_footer_uses_approval_shortcuts(self) -> None:
+        app = _make_app()
+        future: Future[ToolPermissionDecision] = Future()
+        app.enqueue_permission_request(self._request(), future)
+
+        text = _plain(app._get_footer_text())
+
+        self.assertIn("approve", text)
+        self.assertIn("1-3", text)
+        self.assertIn("choose", text)
+        self.assertIn("reject", text)
 
 
 if __name__ == "__main__":

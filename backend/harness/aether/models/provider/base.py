@@ -71,6 +71,10 @@ class ModelProvider(ABC):
         """
         return True, []
 
+    def cleanup_dead_connections(self) -> bool:
+        """Best-effort cleanup hook for reusable provider clients."""
+        return False
+
     def list_models(self) -> List[str]:
         """Return the model identifiers this provider can serve.
 

@@ -16,6 +16,7 @@ import anthropic
 from aether.config.schema import ModelCallConfig
 from aether.models.credential_loader import (
     OAUTH_ANTHROPIC_BETAS,
+    OAUTH_CONTEXT_1M_BETA,
     is_oauth_token,
     load_claude_code_credential,
 )
@@ -71,6 +72,7 @@ class ClaudeChatModel(ModelProvider):
         self.default_headers = dict(default_headers or {})
 
         self._is_oauth = False
+        self._oauth_1m_beta_disabled = False
         self._oauth_access_token = ""
         self._api_key = self._resolve_api_key(anthropic_api_key)
         self._client = self._build_client()
@@ -93,7 +95,9 @@ class ClaudeChatModel(ModelProvider):
         payload = self._build_request_payload(messages, tools=tools, config=config, context=context)
 
         last_error: Exception | None = None
-        for attempt in range(1, self.retry_max_attempts + 1):
+        oauth_1m_beta_retry_used = False
+        attempt = 1
+        while attempt <= self.retry_max_attempts:
             try:
                 # Sprint 3 / PR 3.1: route through the streaming API
                 # whenever the caller supplied a ``stream_callback``.
@@ -136,6 +140,7 @@ class ClaudeChatModel(ModelProvider):
                     wait_ms,
                 )
                 time.sleep(wait_ms / 1000)
+                attempt += 1
             except anthropic.InternalServerError as exc:
                 last_error = exc
                 if attempt >= self.retry_max_attempts:
@@ -148,6 +153,17 @@ class ClaudeChatModel(ModelProvider):
                     wait_ms,
                 )
                 time.sleep(wait_ms / 1000)
+                attempt += 1
+            except anthropic.APIStatusError as exc:
+                last_error = exc
+                if (
+                    not oauth_1m_beta_retry_used
+                    and self._maybe_disable_oauth_1m_beta(exc)
+                ):
+                    oauth_1m_beta_retry_used = True
+                    context.metadata["oauth_1m_beta_disabled"] = True
+                    continue
+                raise
 
         if last_error is not None:
             raise last_error
@@ -172,7 +188,7 @@ class ClaudeChatModel(ModelProvider):
             self._oauth_access_token = current_key
             self.default_headers = {
                 **self.default_headers,
-                "anthropic-beta": OAUTH_ANTHROPIC_BETAS,
+                "anthropic-beta": self._oauth_anthropic_betas(),
             }
             # OAuth tokens have strict limits on cache_control blocks.
             self.enable_prompt_caching = False
@@ -193,6 +209,48 @@ class ClaudeChatModel(ModelProvider):
         if hasattr(client, "api_key") and hasattr(client, "auth_token"):
             client.api_key = None
             client.auth_token = self._oauth_access_token
+
+    def _oauth_anthropic_betas(self) -> str:
+        betas = [
+            beta.strip()
+            for beta in OAUTH_ANTHROPIC_BETAS.split(",")
+            if beta.strip()
+        ]
+        if self._oauth_1m_beta_disabled:
+            betas = [beta for beta in betas if beta != OAUTH_CONTEXT_1M_BETA]
+        return ",".join(betas)
+
+    def _maybe_disable_oauth_1m_beta(self, error: anthropic.APIStatusError) -> bool:
+        if not self._is_oauth or self._oauth_1m_beta_disabled:
+            return False
+        status_code = _anthropic_status_code(error)
+        if status_code not in {400, 401, 403}:
+            return False
+        body = _anthropic_error_text(error)
+        if "long context beta" not in body or "not yet available" not in body:
+            return False
+        current_beta_header = str(self.default_headers.get("anthropic-beta") or "")
+        if OAUTH_CONTEXT_1M_BETA not in current_beta_header:
+            return False
+
+        self._oauth_1m_beta_disabled = True
+        next_beta_header = self._oauth_anthropic_betas()
+        if next_beta_header:
+            self.default_headers["anthropic-beta"] = next_beta_header
+        else:
+            self.default_headers.pop("anthropic-beta", None)
+        self._close_client_best_effort()
+        self._client = self._build_client()
+        logger.info("Disabled Anthropic OAuth 1M context beta after provider rejection")
+        return True
+
+    def _close_client_best_effort(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Ignoring Anthropic client close failure during rebuild", exc_info=True)
 
     def _build_request_payload(
         self,
@@ -612,3 +670,37 @@ def _as_dict(value: Any) -> dict[str, Any]:
             return dumped
 
     return {}
+
+
+def _anthropic_status_code(error: anthropic.APIStatusError) -> int | None:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    return response_status if isinstance(response_status, int) else None
+
+
+def _anthropic_error_text(error: anthropic.APIStatusError) -> str:
+    parts: list[str] = []
+    body = getattr(error, "body", None)
+    if isinstance(body, str):
+        parts.append(body)
+    elif isinstance(body, dict):
+        try:
+            parts.append(json.dumps(body, ensure_ascii=False))
+        except TypeError:
+            parts.append(str(body))
+    elif body is not None:
+        parts.append(str(body))
+
+    response = getattr(error, "response", None)
+    try:
+        text = getattr(response, "text", None)
+    except Exception:
+        text = None
+    if isinstance(text, str):
+        parts.append(text)
+
+    parts.append(str(error))
+    return "\n".join(part for part in parts if part).casefold()

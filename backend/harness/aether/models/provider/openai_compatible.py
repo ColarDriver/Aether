@@ -93,13 +93,14 @@ class OpenAICompatibleModel(ModelProvider):
         # different OpenAICompatibleModel instances pointing at different
         # gateways must not poison each other.
         self._disable_streaming: bool = False
+        self._client: httpx.Client | None = None
 
     def generate(
         self,
         messages: list[dict],
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
-        context: TurnContext,  # noqa: ARG002
+        context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
         stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
@@ -129,14 +130,25 @@ class OpenAICompatibleModel(ModelProvider):
         }
         url = f"{self.base_url}/chat/completions"
 
+        dead_connections_cleaned = False
+        try:
+            dead_connections_cleaned = self.cleanup_dead_connections()
+        except Exception:
+            logger.exception("OpenAI-compatible dead-connection cleanup failed")
+        if dead_connections_cleaned:
+            context.metadata["dead_connections_cleaned"] = True
+
         if stream_callback is not None and not self._disable_streaming:
             try:
-                return self._streaming_generate(
-                    url=url,
-                    headers=headers,
-                    payload=payload,
-                    stream_callback=stream_callback,
-                    stream_silent_callback=stream_silent_callback,
+                return self._with_stale_connection_retry(
+                    lambda: self._streaming_generate(
+                        url=url,
+                        headers=headers,
+                        payload=payload,
+                        stream_callback=stream_callback,
+                        stream_silent_callback=stream_silent_callback,
+                    ),
+                    context=context,
                 )
             except StreamStallError as stall:
                 # Hot path for stuck SSE streams.  Disable streaming for the
@@ -152,15 +164,21 @@ class OpenAICompatibleModel(ModelProvider):
                 # stream_callback this time — there's no chunked output to
                 # forward, and the engine will handle the final-response
                 # one-shot fallback if needed.
-                return self._non_streaming_generate(
-                    url=url, headers=headers, payload=payload
+                return self._with_stale_connection_retry(
+                    lambda: self._non_streaming_generate(
+                        url=url, headers=headers, payload=payload
+                    ),
+                    context=context,
                 )
 
-        return self._non_streaming_generate(
-            url=url,
-            headers=headers,
-            payload=payload,
-            stream_callback=stream_callback,
+        return self._with_stale_connection_retry(
+            lambda: self._non_streaming_generate(
+                url=url,
+                headers=headers,
+                payload=payload,
+                stream_callback=stream_callback,
+            ),
+            context=context,
         )
 
     def _non_streaming_generate(
@@ -185,10 +203,10 @@ class OpenAICompatibleModel(ModelProvider):
         non_streaming_payload["stream"] = False
 
         try:
-            with httpx.Client(timeout=self.request_timeout_sec) as client:
-                resp = client.post(url, headers=headers, json=non_streaming_payload)
-                resp.raise_for_status()
-                return self._parse_response(resp.json(), stream_callback=stream_callback)
+            client = self._get_client()
+            resp = client.post(url, headers=headers, json=non_streaming_payload)
+            resp.raise_for_status()
+            return self._parse_response(resp.json(), stream_callback=stream_callback)
         except httpx.HTTPStatusError as exc:
             # Server returned a response (4xx/5xx).  Capture status + Retry-After
             # + truncated body so the recovery layer has enough signal to classify.
@@ -224,6 +242,57 @@ class OpenAICompatibleModel(ModelProvider):
                 is_network_error=True,
                 metadata={"url": url, "method": "POST"},
             ) from exc
+
+    def cleanup_dead_connections(self) -> bool:
+        """Drop a locally-known stale reusable client without network probing."""
+
+        try:
+            client = self._client
+            if client is None:
+                return False
+            if not _client_looks_dead(client):
+                return False
+            self._rebuild_client()
+            return True
+        except Exception:
+            logger.exception("OpenAI-compatible dead-connection cleanup failed")
+            return False
+
+    def _get_client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = self._build_http_client()
+        return self._client
+
+    def _build_http_client(self) -> httpx.Client:
+        return httpx.Client(timeout=self.request_timeout_sec)
+
+    def _rebuild_client(self) -> None:
+        old_client = self._client
+        self._client = None
+        close = getattr(old_client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Ignoring OpenAI-compatible client close failure during rebuild", exc_info=True)
+        self._client = self._build_http_client()
+
+    def _with_stale_connection_retry(
+        self,
+        call,
+        *,
+        context: TurnContext,
+    ) -> NormalizedResponse:
+        try:
+            return call()
+        except ProviderInvocationError as exc:
+            if not _is_stale_connection_error(exc):
+                raise
+            self._rebuild_client()
+            context.metadata["dead_connections_cleaned"] = True
+            context.metadata["dead_connection_retry"] = True
+            logger.info("Rebuilt OpenAI-compatible client after stale connection error")
+            return call()
 
     def _streaming_generate(
         self,
@@ -737,6 +806,54 @@ def _summarize_body(response: Any) -> str | None:
     if len(text) <= _MAX_BODY_SUMMARY_CHARS:
         return text
     return text[:_MAX_BODY_SUMMARY_CHARS] + "...(truncated)"
+
+
+def _client_looks_dead(client: Any) -> bool:
+    """Inspect local client/transport state without touching the network."""
+
+    for attr in ("_aether_stale", "stale", "is_stale", "is_closed", "closed"):
+        try:
+            value = getattr(client, attr, False)
+        except Exception:
+            raise
+        if callable(value):
+            try:
+                value = value()
+            except TypeError:
+                value = False
+        if bool(value):
+            return True
+
+    transport = getattr(client, "_transport", None)
+    if transport is not None:
+        for attr in ("is_closed", "closed"):
+            try:
+                if bool(getattr(transport, attr, False)):
+                    return True
+            except Exception:
+                raise
+    return False
+
+
+def _is_stale_connection_error(error: ProviderInvocationError) -> bool:
+    if not error.is_network_error:
+        return False
+    raw = error.raw
+    if not isinstance(raw, httpx.TransportError):
+        return False
+    text = f"{raw.__class__.__name__} {raw}".casefold()
+    stale_markers = (
+        "broken pipe",
+        "closed connection",
+        "connection aborted",
+        "connection reset",
+        "eof occurred",
+        "keepalive",
+        "keep-alive",
+        "server disconnected",
+        "stale",
+    )
+    return any(marker in text for marker in stale_markers)
 
 
 # ---------------------------------------------------------------------------

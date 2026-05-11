@@ -23,7 +23,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Required beta headers for Claude Code OAuth tokens
-OAUTH_ANTHROPIC_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14"
+OAUTH_CONTEXT_1M_BETA = "context-1m-2025-08-07"
+OAUTH_ANTHROPIC_BETAS = (
+    "oauth-2025-04-20,"
+    "claude-code-20250219,"
+    "interleaved-thinking-2025-05-14,"
+    f"{OAUTH_CONTEXT_1M_BETA}"
+)
 
 
 def is_oauth_token(token: str) -> bool:

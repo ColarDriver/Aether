@@ -15,6 +15,7 @@ from .runtime.contracts import (
     ToolResult,
     NormalizedResponse,
 )
+from .runtime.hooks import HookOutcome
 from .config.schema import EngineConfig, ModelCallConfig
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "NormalizedResponse",
+    "HookOutcome",
     "EngineConfig",
     "ModelCallConfig",
 ]

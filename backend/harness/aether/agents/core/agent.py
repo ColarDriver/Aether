@@ -34,7 +34,7 @@ from aether.runtime.contracts import (
 )
 from aether.runtime.error_classifier import FailoverReason
 from aether.runtime.fallback_chain import FallbackChain
-from aether.runtime.hooks import EngineHooks
+from aether.runtime.hooks import EngineHooks, HookOutcome
 from aether.runtime.interrupts import InterruptController
 from aether.runtime.iteration_budget import IterationBudget
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
@@ -140,6 +140,7 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_browser_manager",
     "_compaction_pipeline",
     "_compaction_in_progress",
+    "_api_request_attempt_count",
 })
 
 
@@ -438,7 +439,7 @@ class AgentEngine:
                         if preflight is not None:
                             messages = preflight.compressed_messages
 
-                    self._safe_call_hook(
+                    hook_outcome = self._collect_pre_llm_hook_outcome(
                         "pre_llm_call",
                         session_id=request.session_id,
                         iteration=context.iteration,
@@ -455,8 +456,14 @@ class AgentEngine:
                     if isinstance(loop_messages, list):
                         messages = loop_messages
 
+                    outbound_messages = self._apply_hook_outcome_to_messages(
+                        messages,
+                        hook_outcome,
+                        context=context,
+                    )
+
                     try:
-                        prepared_messages = self.services.middleware_pipeline.run_before_llm(messages, context)
+                        prepared_messages = self.services.middleware_pipeline.run_before_llm(outbound_messages, context)
                     except Exception as exc:
                         self._handle_pipeline_error(exc, state_machine.state, context)
                         error_text = str(exc)
@@ -480,7 +487,9 @@ class AgentEngine:
 
                     state_machine.transition(LoopState.LLM_CALL)
                     # Allow middleware to short-circuit the provider call (e.g. circuit breaker).
-                    response = self._pop_context_response(context, "llm_pre_response")
+                    response = hook_outcome.short_circuit_response
+                    if response is None:
+                        response = self._pop_context_response(context, "llm_pre_response")
                     if response is None:
                         # ProviderInvocationError → engine-side recovery strategy
                         # decides whether to retry; any other Exception bypasses
@@ -1709,14 +1718,172 @@ class AgentEngine:
 
         return _wrapped_silent
 
-    def _safe_call_hook(self, name: str, **kwargs: Any) -> None:
+    def _safe_call_hook(self, name: str, **kwargs: Any) -> Any:
         hook = getattr(self._hooks, name, None)
         if hook is None:
-            return
+            return None
         try:
-            hook(**kwargs)
+            return hook(**kwargs)
         except Exception:
             self.services.logger.exception("Engine hook failed: %s", name)
+            return None
+
+    def _collect_pre_llm_hook_outcome(self, name: str, **kwargs: Any) -> HookOutcome:
+        outcome = self._safe_call_hook(name, **kwargs)
+        if outcome is None:
+            return HookOutcome()
+        if isinstance(outcome, HookOutcome):
+            return outcome
+        self.services.logger.warning(
+            "Engine hook %s returned unsupported outcome type: %s",
+            name,
+            type(outcome).__name__,
+        )
+        return HookOutcome()
+
+    def _apply_hook_outcome_to_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        outcome: HookOutcome,
+        *,
+        context: TurnContext,
+    ) -> List[Dict[str, Any]]:
+        if not outcome.inject_user_context and not outcome.inject_system_addendum:
+            return messages
+
+        outbound = copy.deepcopy(messages)
+        if outcome.inject_user_context:
+            applied = self._append_hook_user_context(
+                outbound,
+                outcome.inject_user_context,
+            )
+            context.metadata["hook_injected_user_context"] = applied
+        if outcome.inject_system_addendum:
+            self._append_hook_system_addendum(
+                outbound,
+                outcome.inject_system_addendum,
+            )
+            context.metadata["hook_injected_system_addendum"] = True
+        return outbound
+
+    @staticmethod
+    def _append_hook_user_context(
+        messages: List[Dict[str, Any]],
+        context_text: str,
+    ) -> bool:
+        cleaned = context_text.strip()
+        if not cleaned:
+            return False
+        marker = f"\n\n<hook_context>\n{cleaned}\n</hook_context>"
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str):
+                message["content"] = content + marker
+            elif isinstance(content, list):
+                content.append({"type": "text", "text": marker.lstrip()})
+            else:
+                message["content"] = f"{content}{marker}"
+            return True
+        return False
+
+    @staticmethod
+    def _append_hook_system_addendum(
+        messages: List[Dict[str, Any]],
+        addendum: str,
+    ) -> None:
+        cleaned = addendum.strip()
+        if not cleaned:
+            return
+        marker = f"\n\n<hook_system_addendum>\n{cleaned}\n</hook_system_addendum>"
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str):
+                message["content"] = content + marker
+            elif isinstance(content, list):
+                content.append({"type": "text", "text": marker.lstrip()})
+            else:
+                message["content"] = f"{content}{marker}"
+            return
+        messages.insert(
+            0,
+            {
+                "role": "system",
+                "content": f"<hook_system_addendum>\n{cleaned}\n</hook_system_addendum>",
+            },
+        )
+
+    @staticmethod
+    def _next_api_request_attempt_count(context: TurnContext) -> int:
+        next_count = int(context.metadata.get("_api_request_attempt_count", 0)) + 1
+        context.metadata["_api_request_attempt_count"] = next_count
+        return next_count
+
+    def _build_api_hook_payload(
+        self,
+        *,
+        request: EngineRequest,
+        messages: List[Dict[str, Any]],
+        tools: list[Any],
+        call_config: ModelCallConfig,
+        context: TurnContext,
+        provider: ModelProvider,
+        api_call_count: int,
+    ) -> Dict[str, Any]:
+        model = call_config.extra.get("model") if isinstance(call_config.extra, dict) else None
+        if model is None:
+            model = getattr(provider, "model", None)
+        if model is None:
+            model = "unknown"
+
+        try:
+            approx_input_tokens = estimate_messages_tokens(messages)
+        except Exception:
+            approx_input_tokens = 0
+
+        try:
+            request_char_count = len(json.dumps(messages, ensure_ascii=False, default=str))
+        except Exception:
+            request_char_count = sum(len(str(message)) for message in messages)
+
+        return {
+            "session_id": request.session_id,
+            "iteration": context.iteration,
+            "model": str(model),
+            "provider": str(getattr(provider, "provider_name", type(provider).__name__)),
+            "api_mode": str(getattr(provider, "api_mode", "chat")),
+            "api_call_count": api_call_count,
+            "message_count": len(messages),
+            "tool_count": len(tools or []),
+            "approx_input_tokens": int(approx_input_tokens),
+            "request_char_count": int(request_char_count),
+            "max_tokens": call_config.max_tokens,
+            "context_metadata": context.metadata,
+        }
+
+    @staticmethod
+    def _build_post_api_hook_payload(
+        pre_payload: Dict[str, Any],
+        *,
+        elapsed_ms: float,
+        response: NormalizedResponse | None,
+        error: Exception | None,
+    ) -> Dict[str, Any]:
+        return {
+            "session_id": pre_payload["session_id"],
+            "iteration": pre_payload["iteration"],
+            "model": pre_payload["model"],
+            "provider": pre_payload["provider"],
+            "api_mode": pre_payload["api_mode"],
+            "api_call_count": pre_payload["api_call_count"],
+            "elapsed_ms": elapsed_ms,
+            "response_finish_reason": response.finish_reason if response else None,
+            "error": error,
+            "context_metadata": pre_payload["context_metadata"],
+        }
 
     def _hydrate_todo_snapshot(self, messages: List[Dict[str, Any]], context: TurnContext) -> None:
         snapshot = self._extract_todo_snapshot(messages)
@@ -1936,27 +2103,63 @@ class AgentEngine:
                         extra=dict(request.model_config.extra),
                     )
 
-                response = self.services.provider.generate(
-                    prepared_messages,
-                    self.services.tool_registry.list_descriptors(),
-                    call_config,
-                    context,
-                    stream_callback=stream_callback,
-                    stream_silent_callback=stream_silent_callback,
+                tools = self.services.tool_registry.list_descriptors()
+                provider = self.services.provider
+                api_call_count = self._next_api_request_attempt_count(context)
+                api_hook_payload = self._build_api_hook_payload(
+                    request=request,
+                    messages=prepared_messages,
+                    tools=tools,
+                    call_config=call_config,
+                    context=context,
+                    provider=provider,
+                    api_call_count=api_call_count,
                 )
-                # Sprint 1 / PR 1.1: post-LLM response-shape validation.
-                # ``validate_response`` is non-mutating; if it returns False
-                # we lift the structured failure into the recovery loop so
-                # the existing retry / give-up machinery handles it.  The
-                # default base-class implementation always returns valid,
-                # so providers that don't care pay zero cost here.
-                ok, reasons = self.services.provider.validate_response(response)
-                if not ok:
-                    raise ResponseInvalidError(
-                        validation_errors=list(reasons),
-                        body_summary="invalid response: " + "; ".join(reasons[:5]),
-                        metadata={"phase": "validate_response"},
+                self._safe_call_hook("pre_api_request", **api_hook_payload)
+                api_start = time.perf_counter()
+                response: NormalizedResponse | None = None
+                try:
+                    response = provider.generate(
+                        prepared_messages,
+                        tools,
+                        call_config,
+                        context,
+                        stream_callback=stream_callback,
+                        stream_silent_callback=stream_silent_callback,
                     )
+                    # Sprint 1 / PR 1.1: post-LLM response-shape validation.
+                    # ``validate_response`` is non-mutating; if it returns False
+                    # we lift the structured failure into the recovery loop so
+                    # the existing retry / give-up machinery handles it.  The
+                    # default base-class implementation always returns valid,
+                    # so providers that don't care pay zero cost here.
+                    ok, reasons = provider.validate_response(response)
+                    if not ok:
+                        raise ResponseInvalidError(
+                            validation_errors=list(reasons),
+                            body_summary="invalid response: " + "; ".join(reasons[:5]),
+                            metadata={"phase": "validate_response"},
+                        )
+                except Exception as exc:
+                    self._safe_call_hook(
+                        "post_api_request",
+                        **self._build_post_api_hook_payload(
+                            api_hook_payload,
+                            elapsed_ms=(time.perf_counter() - api_start) * 1000,
+                            response=response,
+                            error=exc,
+                        ),
+                    )
+                    raise
+                self._safe_call_hook(
+                    "post_api_request",
+                    **self._build_post_api_hook_payload(
+                        api_hook_payload,
+                        elapsed_ms=(time.perf_counter() - api_start) * 1000,
+                        response=response,
+                        error=None,
+                    ),
+                )
                 if withholding_state.pending_errors or withholding_state.cascade_log:
                     self._observe_recovery_cascade(
                         context,

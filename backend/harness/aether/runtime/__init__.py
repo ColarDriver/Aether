@@ -19,6 +19,7 @@ from .unicode_sanitizer import strip_non_ascii, strip_surrogates
 from .reasoning import extract_last_reasoning
 from .trajectory import convert_to_trajectory_format
 from .task_cleanup import acquire_task_resource_for_executor, release_task_resources
+from .schema_sanitizer import strip_pattern_and_format
 
 __all__ = [
     "EngineRequest",
@@ -41,6 +42,7 @@ __all__ = [
     "convert_to_trajectory_format",
     "acquire_task_resource_for_executor",
     "release_task_resources",
+    "strip_pattern_and_format",
     "SessionStore",
     "InMemorySessionStore",
 ]

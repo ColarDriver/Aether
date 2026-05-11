@@ -337,6 +337,7 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
     | timeout                |  yes   |   no     |    no    |    no    |
     | context_overflow       |  yes   |   no     |   yes    |    no    |
     | payload_too_large      |  yes   |   no     |   yes    |    no    |
+    | llama_cpp_grammar_pat. |  yes   |   no     |    no    |    no    |
     | thinking_signature     |  yes   |   no     |    no    |   yes    |
     | long_context_tier      |  yes   |   no     |   yes    |    no    |
     | response_invalid       |  yes   |   yes    |    no    |    no    |
@@ -495,6 +496,14 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
                 0.0,
                 reason="payload-too-large:compress-required",
                 compress_context=True,
+                classified_reason=reason.value,
+            )
+
+        # ── llama.cpp grammar: strip incompatible schema keywords, retry
+        if reason is FailoverReason.llama_cpp_grammar_pattern:
+            return RecoveryDecision.retry_after(
+                0.0,
+                reason="schema-sanitizer:strip-pattern-format",
                 classified_reason=reason.value,
             )
 

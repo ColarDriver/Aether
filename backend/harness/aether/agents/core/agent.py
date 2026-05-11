@@ -73,6 +73,7 @@ from aether.runtime.session_runtime import (
     SessionRuntimeState,
 )
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
+from aether.runtime.schema_sanitizer import sanitize_tool_descriptors
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.steer import SteerInbox
 from aether.runtime.task_cleanup import normalize_task_cleanup_metadata, release_task_resources
@@ -158,6 +159,8 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_task_resource_handles",
     "_task_resource_keys",
     "_task_cleanup_done",
+    "_schema_sanitized_tool_descriptors",
+    "_schema_sanitizer_retry_attempted",
 })
 
 
@@ -2007,6 +2010,41 @@ class AgentEngine:
             return ""
         return strip_surrogates(text)
 
+    def _tool_descriptors_for_provider_call(self, context: TurnContext) -> list[Any]:
+        sanitized = context.metadata.get("_schema_sanitized_tool_descriptors")
+        if isinstance(sanitized, list):
+            return sanitized
+        return self.services.tool_registry.list_descriptors()
+
+    def _maybe_apply_schema_sanitizer_retry(
+        self,
+        *,
+        decision: RecoveryDecision,
+        tools: list[Any],
+        context: TurnContext,
+        state: _WithholdingState,
+    ) -> bool:
+        if decision.classified_reason != FailoverReason.llama_cpp_grammar_pattern.value:
+            return False
+        if not decision.retry or context.metadata.get("_schema_sanitizer_retry_attempted"):
+            return False
+
+        sanitized_tools, removed = sanitize_tool_descriptors(tools)
+        if removed <= 0:
+            context.metadata.setdefault("schema_sanitizer_removed_count", 0)
+            return False
+
+        context.metadata["_schema_sanitized_tool_descriptors"] = sanitized_tools
+        context.metadata["_schema_sanitizer_retry_attempted"] = True
+        context.metadata["schema_sanitizer_applied"] = True
+        context.metadata["schema_sanitizer_removed_count"] = removed
+        state.cascade_log.append(f"schema_sanitizer(removed={removed})")
+        self.services.logger.warning(
+            "Recovered from local grammar schema error by stripping %d unsupported schema keys; retrying.",
+            removed,
+        )
+        return True
+
     def _prepare_unicode_safe_payload(
         self,
         *,
@@ -2431,7 +2469,7 @@ class AgentEngine:
                         extra=dict(request.model_config.extra),
                     )
 
-                tools = self.services.tool_registry.list_descriptors()
+                tools = self._tool_descriptors_for_provider_call(context)
                 provider = self.services.provider
                 self._prepare_unicode_safe_payload(
                     canonical_messages=canonical_messages,
@@ -2559,6 +2597,14 @@ class AgentEngine:
                 # lands in Sprint 5.
                 if decision.strip_thinking:
                     context.metadata["recovery_strip_thinking_requested"] = True
+
+                if self._maybe_apply_schema_sanitizer_retry(
+                    decision=decision,
+                    tools=tools,
+                    context=context,
+                    state=withholding_state,
+                ):
+                    continue
 
                 if getattr(self.config, "error_withholding_enabled", True):
                     applied = self._apply_recovery_decision_cascade(

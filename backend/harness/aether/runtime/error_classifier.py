@@ -36,8 +36,8 @@ Design notes
    logs, and operator runbooks read the same regardless of which
    engine is generating the failure.  We deliberately drop a couple of
    hermes-specific reasons that have no Aether-side recovery action
-   yet (`oauth_long_context_beta_forbidden`, `llama_cpp_grammar_pattern`,
-   `image_too_large`) — these will return at the same time as the
+   yet (`oauth_long_context_beta_forbidden`, `image_too_large`) —
+   these will return at the same time as the
    matching strategies in later PRs.  When they come back the only
    change required here is adding the enum entry and the pattern
    matcher; the recovery hints already model the right action shape.
@@ -167,6 +167,11 @@ class FailoverReason(str, enum.Enum):
     format_error = "format_error"
     """Generic non-recoverable 4xx (other than the well-known buckets
     above).  Recovery: fall back; if exhausted, abort."""
+
+    llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"
+    """llama.cpp/local backend rejected unsupported JSON schema keywords.
+    Recovery: strip ``pattern`` / ``format`` from copied tool schemas
+    and retry once."""
 
     # ── Provider-specific ────────────────────────────────────────────
     thinking_signature = "thinking_signature"
@@ -394,6 +399,24 @@ _SERVER_DISCONNECT_PATTERNS: tuple[str, ...] = (
     "incomplete chunked read",
 )
 
+_LLAMA_CPP_GRAMMAR_CORE_PATTERNS: tuple[str, ...] = (
+    "pattern",
+    "format",
+)
+
+_LLAMA_CPP_GRAMMAR_CONTEXT_PATTERNS: tuple[str, ...] = (
+    "json schema",
+    "schema",
+    "unsupported",
+    "not supported",
+    "compile",
+    "failed",
+    "invalid",
+    "llama.cpp",
+    "llama-server",
+    "gbnf",
+)
+
 # Transport error type names — matched against ``type(exc).__name__``
 # so the classifier still works when an SDK re-raises a transport
 # error wrapped in a generic Exception (and the chained __cause__ is
@@ -554,6 +577,13 @@ def classify_api_error(
             FailoverReason.long_context_tier,
             retryable=True,
             should_compress=True,
+        )
+
+    if _is_llama_cpp_grammar_pattern_error(error_msg):
+        return _result(
+            FailoverReason.llama_cpp_grammar_pattern,
+            retryable=True,
+            should_fallback=False,
         )
 
     # ── 2. Structured body error_code (highest signal) ───────────────
@@ -949,6 +979,16 @@ def _classify_by_message(
         )
 
     return None
+
+
+def _is_llama_cpp_grammar_pattern_error(error_msg: str) -> bool:
+    """Return True for local backend grammar errors caused by schema keywords."""
+
+    if "grammar" not in error_msg:
+        return False
+    if not any(p in error_msg for p in _LLAMA_CPP_GRAMMAR_CORE_PATTERNS):
+        return False
+    return any(p in error_msg for p in _LLAMA_CPP_GRAMMAR_CONTEXT_PATTERNS)
 
 
 # ---------------------------------------------------------------------------

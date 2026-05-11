@@ -7,8 +7,9 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List
 
@@ -52,6 +53,8 @@ from aether.runtime.response_classification import (
     is_legitimate_empty,
     strip_thinking_tags,
 )
+from aether.runtime.reasoning import extract_last_reasoning
+from aether.runtime.request_dump import dump_api_request_debug
 from aether.runtime.services import EngineServices
 from aether.runtime.session_runtime import (
     TURN_KEY_CODEX_ACK_RETRIES,
@@ -148,6 +151,8 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_compaction_pipeline",
     "_compaction_in_progress",
     "_api_request_attempt_count",
+    "_failed_request_dump_written",
+    "turn_start_idx",
 })
 
 
@@ -1271,6 +1276,7 @@ class AgentEngine:
         turn_id = str(uuid.uuid4())
 
         metadata = dict(request.metadata)
+        turn_start_idx = len(messages)
         # Sprint 3 / PR 3.1: stamp the active provider's identity onto the
         # turn so middleware (TokenUsageMiddleware) and downstream tools can
         # pick the right ``normalize_usage`` parser without dragging
@@ -1283,6 +1289,7 @@ class AgentEngine:
                 "entry_prepared": True,
                 "task_id": task_id,
                 "turn_id": turn_id,
+                "turn_start_idx": turn_start_idx,
                 "request_has_stream_callback": bool(request.stream_callback),
                 "active_provider_name": getattr(active_provider, "provider_name", "openai"),
                 "active_provider_api_mode": getattr(active_provider, "api_mode", "chat"),
@@ -2058,6 +2065,54 @@ class AgentEngine:
         )
         return True
 
+    def _maybe_dump_failed_request(
+        self,
+        *,
+        error: Exception,
+        reason: str,
+        request: EngineRequest,
+        prepared_messages: List[Dict[str, Any]],
+        tools: list[Any],
+        call_config: ModelCallConfig,
+        provider: ModelProvider,
+        context: TurnContext,
+    ) -> None:
+        if not getattr(self.config, "dump_failed_requests", False):
+            return
+        if context.metadata.get("_failed_request_dump_written"):
+            return
+        try:
+            api_kwargs = {
+                "messages": prepared_messages,
+                "tools": [asdict(tool) if is_dataclass(tool) else tool for tool in tools],
+                "model_config": asdict(call_config),
+            }
+            model = call_config.extra.get("model") if isinstance(call_config.extra, dict) else None
+            if model is None:
+                model = getattr(provider, "model", None)
+            path = dump_api_request_debug(
+                api_kwargs,
+                model=str(model or "unknown"),
+                provider=str(getattr(provider, "provider_name", type(provider).__name__)),
+                base_url=getattr(provider, "base_url", None),
+                reason=reason,
+                error=error,
+                dump_dir=Path(self.config.request_dump_dir),
+                session_id=request.session_id,
+            )
+            context.metadata["_failed_request_dump_written"] = True
+            context.metadata["request_dump"] = {
+                "path": str(path),
+                "reason": reason,
+            }
+        except Exception as dump_error:  # noqa: BLE001 - observability must not mask root cause
+            context.metadata["request_dump"] = {
+                "path": None,
+                "reason": reason,
+                "error": str(dump_error),
+            }
+            self.services.logger.exception("failed request dump failed")
+
     def _inject_system_prompt(
         self,
         messages: List[Dict[str, Any]],
@@ -2216,6 +2271,7 @@ class AgentEngine:
 
         provider: ModelProvider = self.services.provider
         tools: list[Any] = []
+        call_config = request.model_config
 
         while attempt_state.attempt < max_provider_attempts:
             context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = ""
@@ -2390,6 +2446,16 @@ class AgentEngine:
                         withholding_state,
                         terminal="surface",
                     )
+                    self._maybe_dump_failed_request(
+                        error=exc,
+                        reason="recovery_terminal",
+                        request=request,
+                        prepared_messages=prepared_messages,
+                        tools=tools,
+                        call_config=call_config,
+                        provider=provider,
+                        context=context,
+                    )
                     return AgentEngine._ProviderInvocationOutcome(error=exc)
 
                 if not decision.retry:
@@ -2407,6 +2473,16 @@ class AgentEngine:
                         context,
                         withholding_state,
                         terminal="surface",
+                    )
+                    self._maybe_dump_failed_request(
+                        error=exc,
+                        reason="non_retryable_provider_error",
+                        request=request,
+                        prepared_messages=prepared_messages,
+                        tools=tools,
+                        call_config=call_config,
+                        provider=provider,
+                        context=context,
                     )
                     return AgentEngine._ProviderInvocationOutcome(error=exc)
 
@@ -2441,6 +2517,16 @@ class AgentEngine:
                 ):
                     continue
                 last_error = exc
+                self._maybe_dump_failed_request(
+                    error=last_error,
+                    reason="non_retryable_client_error",
+                    request=request,
+                    prepared_messages=prepared_messages,
+                    tools=tools,
+                    call_config=call_config,
+                    provider=provider,
+                    context=context,
+                )
                 return AgentEngine._ProviderInvocationOutcome(error=last_error)
 
         self._observe_recovery_cascade(
@@ -2448,6 +2534,17 @@ class AgentEngine:
             withholding_state,
             terminal="exhausted",
         )
+        if last_error is not None:
+            self._maybe_dump_failed_request(
+                error=last_error,
+                reason="max_retries_exhausted",
+                request=request,
+                prepared_messages=prepared_messages,
+                tools=tools,
+                call_config=call_config,
+                provider=provider,
+                context=context,
+            )
         return AgentEngine._ProviderInvocationOutcome(error=last_error)
 
     def _apply_recovery_decision_cascade(
@@ -3384,29 +3481,43 @@ class AgentEngine:
             }
             for call in response.tool_calls
         ]
-        messages.append(
-            {
-                "role": "assistant",
-                "content": response.content or "",
-                "tool_calls": tool_calls,
-                "finish_reason": response.finish_reason,
-                "_aether_meta": self._assistant_aether_meta(),
-            }
-        )
+        message = {
+            "role": "assistant",
+            "content": response.content or "",
+            "tool_calls": tool_calls,
+            "finish_reason": response.finish_reason,
+            "_aether_meta": self._assistant_aether_meta(),
+        }
+        reasoning_metadata = self._response_reasoning_metadata(response)
+        if reasoning_metadata:
+            message["metadata"] = reasoning_metadata
+        messages.append(message)
 
     def _append_assistant_text_message(
         self,
         messages: List[Dict[str, Any]],
         response: NormalizedResponse,
     ) -> None:
-        messages.append(
-            {
-                "role": "assistant",
-                "content": response.content or "",
-                "finish_reason": response.finish_reason,
-                "_aether_meta": self._assistant_aether_meta(),
-            }
-        )
+        message = {
+            "role": "assistant",
+            "content": response.content or "",
+            "finish_reason": response.finish_reason,
+            "_aether_meta": self._assistant_aether_meta(),
+        }
+        reasoning_metadata = self._response_reasoning_metadata(response)
+        if reasoning_metadata:
+            message["metadata"] = reasoning_metadata
+        messages.append(message)
+
+    @staticmethod
+    def _response_reasoning_metadata(response: NormalizedResponse) -> Dict[str, Any]:
+        metadata = response.metadata or {}
+        reasoning_metadata: Dict[str, Any] = {}
+        for key in ("reasoning_content", "reasoning_details"):
+            value = metadata.get(key)
+            if value:
+                reasoning_metadata[key] = value
+        return reasoning_metadata
 
     def _append_tool_result_message(self, messages: List[Dict[str, Any]], result: ToolResult) -> None:
         messages.append(
@@ -4153,6 +4264,13 @@ class AgentEngine:
         if not isinstance(usage_acc, CanonicalUsage):
             usage_acc = CanonicalUsage()
 
+        last_reasoning = extract_last_reasoning(
+            messages,
+            int(context.metadata.get("turn_start_idx", 0) or 0),
+        )
+        if last_reasoning:
+            context.metadata["last_reasoning_text"] = last_reasoning
+
         last_msg = messages[-1] if messages else None
         last_msg_role = (
             last_msg.get("role", "unknown") if isinstance(last_msg, dict) else "unknown"
@@ -4249,6 +4367,10 @@ class AgentEngine:
             "usage": usage_acc.to_dict(),
             "api_calls": int(context.metadata.get("api_calls", 0)),
             "pending_steer": context.metadata.get("pending_steer"),
+            "request_dump": context.metadata.get(
+                "request_dump",
+                {"path": None, "reason": None},
+            ),
             # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
             # Filled by the live ``IterationBudget`` instance the loop
             # carries on ``context.metadata['_iteration_budget_obj']``.

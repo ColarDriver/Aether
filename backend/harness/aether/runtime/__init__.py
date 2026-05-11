@@ -16,6 +16,7 @@ from .session_store import InMemorySessionStore, SessionStore
 from .state_machine import EngineStateMachine, StateTransitionError
 from .steer import SteerInbox
 from .unicode_sanitizer import strip_non_ascii, strip_surrogates
+from .reasoning import extract_last_reasoning
 
 __all__ = [
     "EngineRequest",
@@ -34,6 +35,7 @@ __all__ = [
     "SteerInbox",
     "strip_non_ascii",
     "strip_surrogates",
+    "extract_last_reasoning",
     "SessionStore",
     "InMemorySessionStore",
 ]

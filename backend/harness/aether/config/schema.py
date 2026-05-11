@@ -416,6 +416,11 @@ class EngineConfig:
     max_provider_recovery_attempts: int = 8
     tool_error_structured_format_enabled: bool = True
     tool_schema_precheck_enabled: bool = True
+    # Sprint 5 / PR 5.4: failed provider request debug dumps.
+    # Disabled by default because request bodies can contain sensitive user
+    # data even after credential/header redaction.
+    dump_failed_requests: bool = False
+    request_dump_dir: Path = Path("./request_dumps")
     # Sprint 3.5 / PR 3.5.10 — Headless Chromium browser tool.
     # **Disabled by default** because Playwright is a heavyweight
     # optional dependency (~150 MB Chromium download) and most

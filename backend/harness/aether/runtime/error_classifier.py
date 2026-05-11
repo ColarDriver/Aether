@@ -36,8 +36,8 @@ Design notes
    logs, and operator runbooks read the same regardless of which
    engine is generating the failure.  We deliberately drop a couple of
    hermes-specific reasons that have no Aether-side recovery action
-   yet (`oauth_long_context_beta_forbidden`, `image_too_large`) —
-   these will return at the same time as the
+   yet (`oauth_long_context_beta_forbidden`) — these will return at
+   the same time as the
    matching strategies in later PRs.  When they come back the only
    change required here is adding the enum entry and the pattern
    matcher; the recovery hints already model the right action shape.
@@ -156,6 +156,10 @@ class FailoverReason(str, enum.Enum):
     payload_too_large = "payload_too_large"
     """413 — request body itself is too big (independent of context
     window).  Recovery: compress + retry."""
+
+    image_too_large = "image_too_large"
+    """Provider rejected an oversized inline image payload.
+    Recovery: shrink base64 image blocks on an API-call copy and retry once."""
 
     # ── Model ────────────────────────────────────────────────────────
     model_not_found = "model_not_found"
@@ -312,6 +316,16 @@ _PAYLOAD_TOO_LARGE_PATTERNS: tuple[str, ...] = (
     "request entity too large",
     "payload too large",
     "error code: 413",
+)
+
+_IMAGE_TOO_LARGE_PATTERNS: tuple[str, ...] = (
+    "image_too_large",
+    "image too large",
+    "image is too large",
+    "image exceeds",
+    "image size",
+    "base64 image",
+    "image payload",
 )
 
 _CONTEXT_OVERFLOW_PATTERNS: tuple[str, ...] = (
@@ -582,6 +596,13 @@ def classify_api_error(
     if _is_llama_cpp_grammar_pattern_error(error_msg):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
+            retryable=True,
+            should_fallback=False,
+        )
+
+    if _is_image_too_large_error(error_msg):
+        return _result(
+            FailoverReason.image_too_large,
             retryable=True,
             should_fallback=False,
         )
@@ -979,6 +1000,18 @@ def _classify_by_message(
         )
 
     return None
+
+
+def _is_image_too_large_error(error_msg: str) -> bool:
+    """Return True for provider errors that specifically reject image size."""
+
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return True
+    if ("image" in error_msg or "base64" in error_msg) and "5 mb" in error_msg:
+        return True
+    if "image" in error_msg and "too large" in error_msg:
+        return True
+    return False
 
 
 def _is_llama_cpp_grammar_pattern_error(error_msg: str) -> bool:

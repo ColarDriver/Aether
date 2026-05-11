@@ -36,6 +36,7 @@ from aether.runtime.contracts import (
 from aether.runtime.error_classifier import FailoverReason
 from aether.runtime.fallback_chain import FallbackChain
 from aether.runtime.hooks import EngineHooks, HookOutcome
+from aether.runtime.image_shrink import shrink_image_parts_in_messages
 from aether.runtime.interrupts import InterruptController
 from aether.runtime.iteration_budget import IterationBudget
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
@@ -161,6 +162,7 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_task_cleanup_done",
     "_schema_sanitized_tool_descriptors",
     "_schema_sanitizer_retry_attempted",
+    "_image_shrink_retry_attempted",
 })
 
 
@@ -2045,6 +2047,44 @@ class AgentEngine:
         )
         return True
 
+    def _maybe_apply_image_shrink_retry(
+        self,
+        *,
+        decision: RecoveryDecision,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+        state: _WithholdingState,
+    ) -> bool:
+        if decision.classified_reason != FailoverReason.image_too_large.value:
+            return False
+        if not decision.retry or context.metadata.get("_image_shrink_retry_attempted"):
+            return False
+
+        context.metadata["_image_shrink_retry_attempted"] = True
+        shrunk_messages, stats = shrink_image_parts_in_messages(
+            messages,
+            max_base64_bytes=int(
+                getattr(self.config, "image_shrink_max_base64_bytes", 5 * 1024 * 1024)
+            ),
+            target_base64_bytes=int(
+                getattr(self.config, "image_shrink_target_base64_bytes", 4 * 1024 * 1024)
+            ),
+        )
+        context.metadata["image_shrink"] = stats.to_metadata()
+        context.metadata["image_shrink_attempted"] = True
+        if not stats.changed:
+            return False
+
+        messages[:] = shrunk_messages
+        context.metadata["image_shrink_applied"] = True
+        context.metadata["image_shrink_count"] = stats.changed_count
+        state.cascade_log.append(f"image_shrink(count={stats.changed_count})")
+        self.services.logger.warning(
+            "Recovered from provider image_too_large error by shrinking %d image payload(s); retrying.",
+            stats.changed_count,
+        )
+        return True
+
     def _prepare_unicode_safe_payload(
         self,
         *,
@@ -2572,6 +2612,21 @@ class AgentEngine:
                         state=withholding_state,
                         context=context,
                     )
+
+                image_shrink_retry = False
+                if decision.classified_reason == FailoverReason.image_too_large.value:
+                    image_shrink_retry = self._maybe_apply_image_shrink_retry(
+                        decision=decision,
+                        messages=prepared_messages,
+                        context=context,
+                        state=withholding_state,
+                    )
+                    if not image_shrink_retry:
+                        decision = RecoveryDecision.give_up(
+                            "image-too-large:shrink-unavailable",
+                            classified_reason=FailoverReason.image_too_large.value,
+                        )
+
                 decisions_log.append(
                     {
                         "attempt": attempt_state.attempt,
@@ -2597,6 +2652,9 @@ class AgentEngine:
                 # lands in Sprint 5.
                 if decision.strip_thinking:
                     context.metadata["recovery_strip_thinking_requested"] = True
+
+                if image_shrink_retry:
+                    continue
 
                 if self._maybe_apply_schema_sanitizer_retry(
                     decision=decision,

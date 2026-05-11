@@ -337,6 +337,7 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
     | timeout                |  yes   |   no     |    no    |    no    |
     | context_overflow       |  yes   |   no     |   yes    |    no    |
     | payload_too_large      |  yes   |   no     |   yes    |    no    |
+    | image_too_large        |  yes   |   no     |    no    |    no    |
     | llama_cpp_grammar_pat. |  yes   |   no     |    no    |    no    |
     | thinking_signature     |  yes   |   no     |    no    |   yes    |
     | long_context_tier      |  yes   |   no     |   yes    |    no    |
@@ -496,6 +497,14 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
                 0.0,
                 reason="payload-too-large:compress-required",
                 compress_context=True,
+                classified_reason=reason.value,
+            )
+
+        # ── Image too large: shrink inline base64 image payloads, retry once
+        if reason is FailoverReason.image_too_large:
+            return RecoveryDecision.retry_after(
+                0.0,
+                reason="image-too-large:shrink-and-retry",
                 classified_reason=reason.value,
             )
 

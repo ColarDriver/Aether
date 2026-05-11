@@ -20,6 +20,7 @@ from .reasoning import extract_last_reasoning
 from .trajectory import convert_to_trajectory_format
 from .task_cleanup import acquire_task_resource_for_executor, release_task_resources
 from .schema_sanitizer import strip_pattern_and_format
+from .image_shrink import shrink_image_parts_in_messages
 
 __all__ = [
     "EngineRequest",
@@ -43,6 +44,7 @@ __all__ = [
     "acquire_task_resource_for_executor",
     "release_task_resources",
     "strip_pattern_and_format",
+    "shrink_image_parts_in_messages",
     "SessionStore",
     "InMemorySessionStore",
 ]

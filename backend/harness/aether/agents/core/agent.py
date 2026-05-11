@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -40,6 +41,7 @@ from aether.runtime.image_shrink import shrink_image_parts_in_messages
 from aether.runtime.interrupts import InterruptController
 from aether.runtime.iteration_budget import IterationBudget
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
+from aether.runtime.rate_guard import RateGuard, RateGuardCheck
 from aether.runtime.recovery import (
     AttemptState,
     ClassifiedRecoveryStrategy,
@@ -2509,8 +2511,25 @@ class AgentEngine:
                         extra=dict(request.model_config.extra),
                     )
 
-                tools = self._tool_descriptors_for_provider_call(context)
                 provider = self.services.provider
+                rate_guard_check = self._check_rate_guard_before_provider_call(
+                    provider=provider,
+                    context=context,
+                )
+                if rate_guard_check is not None and rate_guard_check.blocked:
+                    if self._activate_rate_guard_fallback(
+                        context=context,
+                        state=withholding_state,
+                    ):
+                        attempt_state = AttemptState()
+                        continue
+                    error = self._build_rate_guard_blocked_error(rate_guard_check)
+                    context.metadata["recovery_terminal_exit_reason"] = (
+                        ExitReason.RATE_LIMITED.value
+                    )
+                    return AgentEngine._ProviderInvocationOutcome(error=error)
+
+                tools = self._tool_descriptors_for_provider_call(context)
                 self._prepare_unicode_safe_payload(
                     canonical_messages=canonical_messages,
                     prepared_messages=prepared_messages,
@@ -2553,6 +2572,7 @@ class AgentEngine:
                             body_summary="invalid response: " + "; ".join(reasons[:5]),
                             metadata={"phase": "validate_response"},
                         )
+                    self._clear_rate_guard_after_success(provider=provider, context=context)
                 except Exception as exc:
                     self._safe_call_hook(
                         "post_api_request",
@@ -2612,6 +2632,13 @@ class AgentEngine:
                         state=withholding_state,
                         context=context,
                     )
+
+                self._maybe_write_rate_guard_lock(
+                    provider=provider,
+                    error=exc,
+                    decision=decision,
+                    context=context,
+                )
 
                 image_shrink_retry = False
                 if decision.classified_reason == FailoverReason.image_too_large.value:
@@ -2794,6 +2821,198 @@ class AgentEngine:
                 context=context,
             )
         return AgentEngine._ProviderInvocationOutcome(error=last_error)
+
+    def _check_rate_guard_before_provider_call(
+        self,
+        *,
+        provider: ModelProvider,
+        context: TurnContext,
+    ) -> RateGuardCheck | None:
+        if not getattr(self.config, "rate_guard_enabled", True):
+            return None
+        try:
+            check = RateGuard(getattr(self.config, "rate_guard_dir", None)).check(provider)
+        except Exception as exc:  # noqa: BLE001 - guard must never break a turn
+            check = RateGuardCheck(checked=True, blocked=False, error=str(exc))
+        self._record_rate_guard_check(check, context=context)
+        return check
+
+    def _record_rate_guard_check(
+        self,
+        check: RateGuardCheck,
+        *,
+        context: TurnContext,
+    ) -> None:
+        md = context.metadata.setdefault("rate_guard", {})
+        md["checked"] = bool(md.get("checked")) or bool(check.checked)
+        md["blocked"] = bool(md.get("blocked")) or bool(check.blocked)
+        md["fallback_activated"] = bool(md.get("fallback_activated", False))
+        md["last_blocked"] = bool(check.blocked)
+        if check.key is not None:
+            md["last_provider"] = check.key.provider
+            md["last_base_url_hash"] = check.key.namespace_hash
+        if check.blocked:
+            md["until_unix"] = check.until_unix
+            if check.lock is not None:
+                md["reason"] = check.lock.reason
+                md["source_session_id"] = check.lock.source_session_id
+        else:
+            md.setdefault("until_unix", None)
+        if check.error:
+            md["error"] = check.error
+
+    def _activate_rate_guard_fallback(
+        self,
+        *,
+        context: TurnContext,
+        state: _WithholdingState,
+    ) -> bool:
+        md = context.metadata.setdefault("rate_guard", {})
+        chain = self.services.fallback_chain
+        if chain is None or not getattr(self.config, "fallback_chain_enabled", False):
+            return False
+        max_rotations = max(
+            0,
+            int(getattr(self.config, "max_fallback_activations_per_turn", 4)),
+        )
+        rotations = int(context.metadata.get("fallback_activations_this_turn", 0))
+        if rotations >= max_rotations or not chain.has_next():
+            return False
+        if not chain.activate_next():
+            return False
+        context.metadata["fallback_activations_this_turn"] = rotations + 1
+        context.metadata["active_provider_name"] = chain.current_slot_name
+        md["fallback_activated"] = True
+        md["fallback_slot"] = chain.current_slot_name
+        state.cascade_log.append(f"rate_guard:fallback({chain.current_slot_name})")
+        return True
+
+    def _build_rate_guard_blocked_error(
+        self,
+        check: RateGuardCheck,
+    ) -> ProviderInvocationError:
+        until = check.until_unix
+        retry_after = max(0.0, until - time.time()) if until is not None else None
+        provider_name = check.key.provider if check.key is not None else "provider"
+        body = "rate guard blocked provider"
+        if until is not None:
+            body = f"{body} until {until:.3f}"
+        metadata: dict[str, Any] = {
+            "rate_guard_blocked": True,
+            "provider": provider_name,
+        }
+        if check.key is not None:
+            metadata["base_url_hash"] = check.key.namespace_hash
+        if until is not None:
+            metadata["until_unix"] = until
+        return ProviderInvocationError(
+            status_code=429,
+            retry_after_seconds=retry_after,
+            body_summary=body,
+            metadata=metadata,
+        )
+
+    def _clear_rate_guard_after_success(
+        self,
+        *,
+        provider: ModelProvider,
+        context: TurnContext,
+    ) -> None:
+        if not getattr(self.config, "rate_guard_enabled", True):
+            return
+        try:
+            cleared = RateGuard(getattr(self.config, "rate_guard_dir", None)).clear(provider)
+        except Exception as exc:  # noqa: BLE001 - guard must never break a turn
+            context.metadata.setdefault("rate_guard", {})["clear_error"] = str(exc)
+            return
+        if cleared:
+            context.metadata.setdefault("rate_guard", {})["cleared"] = True
+
+    def _maybe_write_rate_guard_lock(
+        self,
+        *,
+        provider: ModelProvider,
+        error: ProviderInvocationError,
+        decision: RecoveryDecision,
+        context: TurnContext,
+    ) -> None:
+        if not getattr(self.config, "rate_guard_enabled", True):
+            return
+        if not (
+            error.status_code == 429
+            or decision.classified_reason == FailoverReason.rate_limit.value
+        ):
+            return
+        until = self._rate_guard_until_from_error(error)
+        if until is None:
+            return
+
+        md = context.metadata.setdefault("rate_guard", {})
+        md["write_attempted"] = True
+        md["lock_until_unix"] = until
+        try:
+            lock = RateGuard(getattr(self.config, "rate_guard_dir", None)).block(
+                provider,
+                until_unix=until,
+                reason=FailoverReason.rate_limit.value,
+                source_session_id=context.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - guard must never break a turn
+            md["write_error"] = str(exc)
+            return
+        md["lock_written"] = lock is not None
+        if lock is not None:
+            md["until_unix"] = lock.until_unix
+            md["blocked"] = bool(md.get("blocked", False))
+
+    @staticmethod
+    def _rate_guard_until_from_error(error: ProviderInvocationError) -> float | None:
+        now = time.time()
+        candidates: list[float] = []
+
+        retry_after = AgentEngine._positive_float(error.retry_after_seconds)
+        if retry_after is not None:
+            candidates.append(now + retry_after)
+
+        metadata = error.metadata if isinstance(error.metadata, dict) else {}
+        retry_after_meta = AgentEngine._positive_float(metadata.get("retry_after_seconds"))
+        if retry_after_meta is not None:
+            candidates.append(now + retry_after_meta)
+
+        for key in (
+            "rate_limit_reset_unix",
+            "reset_unix",
+            "x_ratelimit_reset_unix",
+            "x-ratelimit-reset-unix",
+        ):
+            reset_unix = AgentEngine._positive_float(metadata.get(key))
+            if reset_unix is not None:
+                if reset_unix > 1_000_000_000_000:
+                    reset_unix = reset_unix / 1000.0
+                if reset_unix > now:
+                    candidates.append(reset_unix)
+
+        for key in (
+            "rate_limit_reset_after_seconds",
+            "reset_after_seconds",
+            "x_ratelimit_reset_after_seconds",
+            "x-ratelimit-reset-after-seconds",
+        ):
+            reset_after = AgentEngine._positive_float(metadata.get(key))
+            if reset_after is not None:
+                candidates.append(now + reset_after)
+
+        return max(candidates) if candidates else None
+
+    @staticmethod
+    def _positive_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed) or parsed <= 0:
+            return None
+        return parsed
 
     def _apply_recovery_decision_cascade(
         self,

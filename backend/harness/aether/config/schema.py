@@ -148,6 +148,12 @@ class EngineConfig:
     # exhausted) instead of blocking the turn for the full duration.
     # Mirrors hermes' "if rate-limit wait > 30s, rotate" heuristic.
     rate_limit_fallback_threshold_seconds: float = 30.0
+    # Sprint 5 / PR 5.9: cross-session provider/base_url lockout.  When a
+    # session observes a rate-limit response with a concrete reset hint, it
+    # writes a short-lived file lock so other sessions skip that same upstream
+    # and use fallback instead of repeatedly burning failed requests.
+    rate_guard_enabled: bool = True
+    rate_guard_dir: Path | None = None
     # Sprint 2 / PR 2.3: per-turn retry budget for unrepairable tool
     # names.  Each iteration that surfaces at least one unknown +
     # unrepairable name bumps a counter; once it reaches this cap the

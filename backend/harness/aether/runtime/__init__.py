@@ -21,6 +21,7 @@ from .trajectory import convert_to_trajectory_format
 from .task_cleanup import acquire_task_resource_for_executor, release_task_resources
 from .schema_sanitizer import strip_pattern_and_format
 from .image_shrink import shrink_image_parts_in_messages
+from .rate_guard import RateGuard, default_rate_guard_dir, provider_rate_guard_key
 
 __all__ = [
     "EngineRequest",
@@ -45,6 +46,9 @@ __all__ = [
     "release_task_resources",
     "strip_pattern_and_format",
     "shrink_image_parts_in_messages",
+    "RateGuard",
+    "default_rate_guard_dir",
+    "provider_rate_guard_key",
     "SessionStore",
     "InMemorySessionStore",
 ]

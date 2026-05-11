@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Protocol
+from typing import Any, Dict, List, Literal, Protocol
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
 
@@ -33,6 +33,8 @@ class ToolDescriptor:
 
 class ToolExecutor(ABC):
     """Tool execution interface."""
+
+    interrupt_behavior: Literal["cancel", "block"] = "block"
 
     @property
     @abstractmethod

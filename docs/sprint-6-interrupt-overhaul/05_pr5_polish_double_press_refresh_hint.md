@@ -1,4 +1,10 @@
-# PR 6.5 — 收尾：双击 Ctrl-C / `/refresh` / 调试日志
+# PR 6.5 — 收尾：双击 Ctrl-C / `/refresh` / interrupt_behavior 声明 / 调试日志
+
+> **架构补强（参考 open-claude-code）**：本 PR 增加 `interrupt_behavior` tool 类属性
+> （对应 `open-claude-code/src/Tool.ts:416` 的 `interruptBehavior()`），让每个 tool
+> 声明被打断时的行为（`'cancel'` kill / `'block'` 放过）。引擎在 signal abort
+> 触发时按声明派发。这样 ms 级的 `Read` / `Edit` 不会被 ESC 干扰，长跑的
+> `Shell` / `WebFetch` 会被立刻 kill。
 
 ## 目标
 
@@ -6,10 +12,11 @@
 
 - **双击 Ctrl-C 退出**完整化（PR 6.1 已起头）
 - **`/refresh` slash 命令**手动清屏 + 重画（顺带解决一些 prompt_toolkit resize 之后的偶发残影）
+- **`interrupt_behavior` tool 类属性**：tool 自己声明 cancel vs block
 - **打断 debug 日志**：把每次 interrupt 的来源、上下文记录到 logger，便于事后排查
 - **footer queued badge 在打断时正确清空**
 
-每一项独立小，全部加起来 < 200 行 diff。可以单独 cherry-pick。
+每一项独立小，全部加起来 < 250 行 diff。可以单独 cherry-pick。
 
 ## 当前问题（PR 6.1-6.4 完成后剩下的）
 
@@ -125,7 +132,120 @@ SLASH_COMMANDS["/refresh"] = SlashCommand(
 
 注意：`renderer.clear()` 调用 `output.erase_screen()` 即 `\x1b[2J`，wipe 可见区域**保留终端 scroll buffer**。用户能 mouse-scroll 找回之前的内容。
 
-### 4. 打断 debug 日志
+### 4. Tool `interrupt_behavior` 类属性
+
+参考 `open-claude-code/src/Tool.ts:416`：
+
+```typescript
+interruptBehavior?(): 'cancel' | 'block'
+```
+
+我们的 Python 等价：
+
+```python
+# tools/base.py
+from typing import Literal
+
+class ToolExecutor:
+    """Base class for all tools.
+
+    Subclasses can override ``interrupt_behavior`` to declare how the
+    engine should treat them on user-interrupt.  Default is "block"
+    — finish the call naturally, don't kill — because most tools are
+    sub-second pure-Python (Read / Edit / Grep) and killing them
+    leaves the codebase in a weird state.
+    """
+
+    interrupt_behavior: Literal["cancel", "block"] = "block"
+    ...
+
+
+# tools/builtins/shell.py
+class ShellTool(ToolExecutor):
+    interrupt_behavior = "cancel"  # subprocess that may run minutes
+
+
+# tools/builtins/web_fetch.py
+class WebFetchTool(ToolExecutor):
+    interrupt_behavior = "cancel"  # network IO
+
+
+# tools/builtins/read.py — 默认 "block" 即可（sub-second，不需要改）
+```
+
+#### 引擎层的派发
+
+PR 6.3 的 `InterruptSignal.add_listener` 由 tool 在 `run()` 入口注册；
+本 PR 在 listener 注册点统一加一层 `interrupt_behavior` 检查：
+
+```python
+# tools/base.py 提供 helper
+def install_interrupt_listener(
+    sig: InterruptSignal | None,
+    tool: ToolExecutor,
+    on_abort: Callable[[str | None], None],
+) -> Callable[[], None]:
+    """Tool 在 run() 入口调，按 interrupt_behavior 决定是否真挂 listener。"""
+    if sig is None or tool.interrupt_behavior == "block":
+        return lambda: None  # no-op unregister
+    return sig.add_listener(on_abort, once=True)
+```
+
+shell tool 改成：
+
+```python
+class ShellTool(ToolExecutor):
+    interrupt_behavior = "cancel"
+
+    def run(self, call, ctx):
+        proc = subprocess.Popen(...)
+
+        def _on_abort(reason):
+            _terminate_process_group(proc)
+            ...
+
+        unregister = install_interrupt_listener(
+            ctx.interrupt_signal, self, _on_abort,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        finally:
+            unregister()
+```
+
+#### 为什么这层抽象有用
+
+1. **"block" tool 中断时不被干扰**：用户按 ESC 时 ms 级 tool 可能已经快跑完，
+   强制 kill 反而让 partial 数据丢失（写到一半的文件、半个 git diff）。
+2. **新加 tool 时心智清晰**：作者只需要回答一个问题 —— "我这个 tool 长跑吗？
+   如果是 → `'cancel'`；否则保持默认 `'block'`"。
+3. **跟 claude-code 的 `'interrupt'` reason 语义对齐**：未来如果引入"用户输入新消息
+   触发的隐性 abort"（不是显式 ESC），可以让 `'block'` tool 跑完再继续。
+
+#### 不破坏 PR 6.3 现有 shell tool
+
+PR 6.3 的 shell tool 已经无条件挂 listener。本 PR 把无条件改成"按 interrupt_behavior"。
+对 shell tool 没行为变化（依旧是 `"cancel"`），但 review 时要 pin 测试：
+
+```python
+def test_block_behavior_tool_not_killed_on_interrupt(self):
+    class StubBlockTool(ToolExecutor):
+        interrupt_behavior = "block"
+        def run(self, call, ctx):
+            time.sleep(0.5)
+            return ToolResult(content="finished", ...)
+
+    sig = InterruptSignal()
+    threading.Timer(0.1, sig.abort).start()
+    start = time.monotonic()
+    result = StubBlockTool().run(call, _make_ctx(interrupt_signal=sig))
+    elapsed = time.monotonic() - start
+    # 没被 kill，完整跑完 500ms
+    self.assertGreaterEqual(elapsed, 0.45)
+    self.assertEqual(result.content, "finished")
+```
+
+### 5. 打断 debug 日志
 
 每次进入打断路径时记录关键上下文：
 
@@ -165,7 +285,7 @@ def _stream_chars_for_log(self, session_id: str) -> int:
 
 如果 `_active_contexts` 不存在（engine 没有这种 plumbing），可以简化为 best-effort：从最近一次 stream callback 的 metadata 拿；拿不到就记 unknown。
 
-### 5. Footer queued badge 边界
+### 6. Footer queued badge 边界
 
 bug 复现：
 

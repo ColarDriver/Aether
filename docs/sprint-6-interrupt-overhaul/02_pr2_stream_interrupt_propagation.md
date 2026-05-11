@@ -1,5 +1,26 @@
 # PR 6.2 — Stream callback 打断传播
 
+> **状态：已合并**。本节作为历史 / 设计参考保留。
+>
+> **架构后续兼容性说明**：本 PR 的 stream callback poll
+> `self._is_interrupted(session_id)`，内部走 `InterruptController.is_interrupted`。
+> PR 6.3 引入 `InterruptSignal` 后，`is_interrupted(sid)` 改成
+> `session_signal.is_aborted()` 的 wrapper —— 对调用点完全透明，**本 PR 不需要回改**。
+>
+> **chunk 级 polling 为什么保留**：stream callback 是一个**同步函数**，由 provider
+> 在 worker thread 里每收到一个 delta 就调用一次。两个 delta 之间没有"Python 代码
+> 主循环"可以接 event —— 等于回到了"必须 polling"的场景。所以 chunk-level
+> polling 是事件驱动模型里的合理例外，跟 claude-code 的 `signal.aborted` check
+> 在 stream loop 里的写法一致（`src/QueryEngine.ts` 的 stream chunk 检查）。
+>
+> **后续 PR 的补强**：单个 HTTP 请求**内部**的阻塞由 PR 6.7 用 signal listener
+> 关 httpx client 解决（事件驱动）；chunk 间的 polling 由本 PR 解决。两者互补。
+>
+> **与 claude-code 的对应**：本 PR 的 `EngineInterrupted(BaseException)` 设计
+> 思想跟 claude-code `AbortError` 的传播一致 —— 都是让中断信号穿透所有
+> `except Exception:` 包裹。区别仅在异常机制（Python 用 BaseException、JS 用
+> 自定义 Error 子类 + 主动 `signal.throwIfAborted()`）。
+
 ## 目标
 
 让模型**正在流式输出**时按下打断键能在 < 200ms 内停下，不需要等流自然完成。这是用户感知最强的"打断有没有用"指标 —— 长回复（5 ~ 60s）期间打断必须立即生效。

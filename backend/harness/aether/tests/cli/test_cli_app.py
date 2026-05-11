@@ -11,13 +11,43 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from rich.console import Console
 
 from aether.cli.app import AetherApp
 from aether.cli.ui import CLIUI
+
+
+def _make_event(buffer_text: str = "") -> SimpleNamespace:
+    """Build a minimal prompt_toolkit-shaped event for handler tests."""
+    buf = Buffer()
+    if buffer_text:
+        buf.text = buffer_text
+    return SimpleNamespace(current_buffer=buf, app=MagicMock())
+
+
+def _make_app(
+    *,
+    on_interrupt=None,
+    on_clear_history=None,
+) -> AetherApp:
+    ui = CLIUI(Console())
+
+    async def submit(_line: str) -> None:
+        return None
+
+    return AetherApp(
+        ui,
+        submit,
+        on_interrupt=on_interrupt,
+        on_clear_history=on_clear_history,
+    )
 
 
 # ANSI escape sequences (CSI) — stripped before substring assertions.
@@ -283,7 +313,10 @@ class AetherAppRendererTests(unittest.TestCase):
         app._pending = []
         text = _plain(app._get_footer_text())
         self.assertIn("running", text)
-        self.assertIn("Ctrl-C", text)
+        # ESC is the primary interrupt key now (PR 6.1); the always-on
+        # ESC fragment with its "interrupt" suffix carries the hint.
+        self.assertIn("Esc", text)
+        self.assertIn("interrupt", text)
 
     def test_aether_app_flips_managed_externally_on_ui(self) -> None:
         ui, app = self._build_app()
@@ -324,6 +357,208 @@ class AetherAppKeybindingTests(unittest.TestCase):
         app.enqueue("b")
         self.assertEqual(app.pending_count, 2)
         self.assertTrue(app._pending_event.is_set())
+
+
+class AetherAppEscPriorityChainTests(unittest.TestCase):
+    """ESC dispatch must follow the documented 5-tier priority chain."""
+
+    def test_esc_with_busy_triggers_interrupt(self) -> None:
+        interrupts: list[int] = []
+        app = _make_app(on_interrupt=lambda: interrupts.append(1))
+        app._busy = True
+        app._pending = ["queued-1", "queued-2"]
+        event = _make_event()
+
+        app._handle_esc(event)
+
+        self.assertEqual(interrupts, [1])
+        # Queue drained as part of the interrupt action.
+        self.assertEqual(app._pending, [])
+        # Double-press window never armed — busy is a terminal branch.
+        self.assertIsNone(app._last_esc_at)
+
+    def test_esc_with_text_clears_buffer_and_arms_window(self) -> None:
+        app = _make_app()
+        event = _make_event("hello world")
+
+        app._handle_esc(event)
+
+        self.assertEqual(event.current_buffer.text, "")
+        # Double-press window armed so a quick follow-up ESC clears
+        # history (matches claude-code's "Esc Esc" workflow).
+        self.assertIsNotNone(app._last_esc_at)
+
+    def test_esc_with_pending_queue_pops_most_recent(self) -> None:
+        app = _make_app()
+        app._pending = ["older", "newer"]
+        app._pending_event.set()
+        event = _make_event()
+
+        app._handle_esc(event)
+
+        self.assertEqual(event.current_buffer.text, "newer")
+        self.assertEqual(app._pending, ["older"])
+        # Queue still has entries → event stays set.
+        self.assertTrue(app._pending_event.is_set())
+
+    def test_esc_pop_clears_pending_event_when_queue_empties(self) -> None:
+        app = _make_app()
+        app._pending = ["only-one"]
+        app._pending_event.set()
+        event = _make_event()
+
+        app._handle_esc(event)
+
+        self.assertEqual(app._pending, [])
+        self.assertFalse(app._pending_event.is_set())
+
+    def test_double_esc_clears_history(self) -> None:
+        cleared: list[int] = []
+        app = _make_app(on_clear_history=lambda: cleared.append(1))
+
+        # First ESC arms the double-press window via the default branch.
+        app._handle_esc(_make_event())
+        self.assertEqual(cleared, [])
+        self.assertIsNotNone(app._last_esc_at)
+        self.assertEqual(app._transient_hint, "press ESC again to clear history")
+
+        # Second ESC within the window triggers on_clear_history.
+        app._handle_esc(_make_event())
+        self.assertEqual(cleared, [1])
+        # Window resets after firing.
+        self.assertIsNone(app._last_esc_at)
+
+    def test_esc_outside_double_window_rearms_instead_of_clearing(self) -> None:
+        cleared: list[int] = []
+        app = _make_app(on_clear_history=lambda: cleared.append(1))
+
+        # Simulate a stale prior ESC (much older than the 0.8 s window).
+        app._last_esc_at = time.monotonic() - 5.0
+
+        app._handle_esc(_make_event())
+
+        self.assertEqual(cleared, [])
+        self.assertIsNotNone(app._last_esc_at)
+        # Re-armed within window now.
+        self.assertLess(time.monotonic() - app._last_esc_at, 0.5)
+
+    def test_esc_without_clear_history_callback_only_toasts(self) -> None:
+        # Two quick ESCs without a callback should not crash; the
+        # second falls through the chain harmlessly.
+        app = _make_app(on_clear_history=None)
+        app._handle_esc(_make_event())
+        app._handle_esc(_make_event())  # must not raise
+
+
+class AetherAppCtrlCDoublePressExitTests(unittest.TestCase):
+    """Ctrl-C must require two presses to exit when idle + empty."""
+
+    def test_ctrl_c_idle_first_press_warns_without_exiting(self) -> None:
+        app = _make_app()
+        event = _make_event()
+
+        app._handle_ctrl_c(event)
+
+        self.assertFalse(app._exit_requested)
+        self.assertIsNotNone(app._last_ctrl_c_at)
+        self.assertEqual(app._transient_hint, "press Ctrl-C again to exit")
+        event.app.exit.assert_not_called()
+
+    def test_ctrl_c_idle_double_press_exits(self) -> None:
+        app = _make_app()
+
+        # First press arms the window.
+        app._handle_ctrl_c(_make_event())
+        self.assertFalse(app._exit_requested)
+
+        # Second press within 2 s actually exits.
+        second_event = _make_event()
+        app._handle_ctrl_c(second_event)
+
+        self.assertTrue(app._exit_requested)
+        second_event.app.exit.assert_called_once()
+
+    def test_ctrl_c_outside_window_does_not_exit(self) -> None:
+        app = _make_app()
+        app._last_ctrl_c_at = time.monotonic() - 5.0
+
+        event = _make_event()
+        app._handle_ctrl_c(event)
+
+        self.assertFalse(app._exit_requested)
+        event.app.exit.assert_not_called()
+
+    def test_ctrl_c_with_text_clears_buffer_without_exiting(self) -> None:
+        app = _make_app()
+        event = _make_event("draft message")
+
+        app._handle_ctrl_c(event)
+
+        self.assertEqual(event.current_buffer.text, "")
+        self.assertFalse(app._exit_requested)
+        self.assertIsNone(app._last_ctrl_c_at)
+
+    def test_ctrl_c_busy_interrupts_regardless_of_double_press(self) -> None:
+        interrupts: list[int] = []
+        app = _make_app(on_interrupt=lambda: interrupts.append(1))
+        app._busy = True
+        app._pending = ["one", "two"]
+        event = _make_event()
+
+        app._handle_ctrl_c(event)
+
+        self.assertEqual(interrupts, [1])
+        self.assertEqual(app._pending, [])
+        self.assertFalse(app._exit_requested)
+
+
+class AetherAppFooterHintTests(unittest.TestCase):
+    """Footer reflects ESC affordance + Shift+Enter newline label."""
+
+    @staticmethod
+    def _build_app() -> AetherApp:
+        return _make_app()
+
+    def test_idle_footer_shows_esc_clear(self) -> None:
+        app = self._build_app()
+        text = _plain(app._get_footer_text())
+        self.assertIn("Esc", text)
+        self.assertIn("clear", text)
+
+    def test_busy_footer_shows_esc_interrupt(self) -> None:
+        app = self._build_app()
+        app._busy = True
+        text = _plain(app._get_footer_text())
+        self.assertIn("Esc", text)
+        self.assertIn("interrupt", text)
+
+    def test_idle_with_queue_shows_esc_pop_queued_label(self) -> None:
+        app = self._build_app()
+        app._pending = ["draft"]
+        text = _plain(app._get_footer_text())
+        self.assertIn("Esc", text)
+        self.assertIn("pop queued", text)
+
+    def test_footer_uses_shift_enter_label_not_esc_enter(self) -> None:
+        app = self._build_app()
+        text = _plain(app._get_footer_text())
+        self.assertIn("Shift+Enter", text)
+        self.assertNotIn("Esc+Enter", text)
+
+    def test_transient_hint_renders_in_footer(self) -> None:
+        app = self._build_app()
+        app._set_transient_hint("press ESC again to clear history")
+        text = _plain(app._get_footer_text())
+        self.assertIn("press ESC again to clear history", text)
+
+    def test_transient_hint_expires(self) -> None:
+        app = self._build_app()
+        # Manually set an expired hint — `_active_transient_hint` must
+        # drop it so the footer renders without the toast.
+        app._transient_hint = "stale"
+        app._transient_hint_until = time.monotonic() - 1.0
+        text = _plain(app._get_footer_text())
+        self.assertNotIn("stale", text)
 
 
 if __name__ == "__main__":

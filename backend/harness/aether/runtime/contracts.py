@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
 
 from aether.config.schema import ModelCallConfig
+
+if TYPE_CHECKING:
+    from aether.runtime.interrupt_signal import InterruptSignal
 
 
 class LoopState(str, Enum):
@@ -166,6 +169,7 @@ class TurnContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     task_id: str | None = None
     turn_id: str | None = None
+    interrupt_signal: "InterruptSignal | None" = None
 
 
 @dataclass(slots=True)
@@ -190,6 +194,7 @@ class EngineRequest:
     # of ``aether.cli.approval_prompter`` from the runtime layer; it
     # is duck-typed against the ``Prompter`` protocol.
     approval_prompter: Any = None
+    interrupt_signal: "InterruptSignal | None" = None
 
 
 @dataclass(slots=True)

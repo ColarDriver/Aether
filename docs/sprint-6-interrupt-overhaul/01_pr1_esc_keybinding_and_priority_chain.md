@@ -1,5 +1,19 @@
 # PR 6.1 — ESC 单按打断 + 优先级链
 
+> **状态：已合并**。本节作为历史 / 设计参考保留。
+>
+> **架构后续兼容性说明**：本 PR 调用 `engine.interrupt(session_id)` 来发出中断；
+> `engine.interrupt` 内部走 `InterruptController.request(session_id)`。PR 6.3 引入
+> `InterruptSignal` 后，`InterruptController.request` 改成调
+> `session_signal.abort("user-interrupt")` 的 wrapper —— 对 CLI 层完全透明，
+> **本 PR 不需要任何回改**。
+>
+> **与 claude-code 的对应**：本 PR 的优先级链直接参照
+> `open-claude-code/src/hooks/useCancelRequest.ts` 行 87-115 的 `handleCancel`，
+> 以及 `src/components/PromptInput/PromptInput.tsx` 行 1922-1957 的 ESC 上下文分发。
+> 唯一区别：claude-code 的 cancel 触发的是 `abortController.abort('user-cancel')`
+> 事件，我们的实现是 `engine.interrupt(session_id)` flag —— PR 6.3 之后两者语义一致。
+
 ## 目标
 
 让用户按 **ESC** 即可打断当前任务（claude-code / codex 一致的肌肉记忆），并实现按场景分发的优先级链：当前没有任务在跑时 ESC 做"上下文相关动作"（清输入框、关弹窗、双击清对话），不会粗暴 fallthrough 到中断逻辑。Ctrl-C 保留但行为对齐（idle 时改为双击退出）。

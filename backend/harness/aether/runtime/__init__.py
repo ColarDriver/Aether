@@ -10,6 +10,7 @@ from .contracts import (
     ToolResult,
     NormalizedResponse,
 )
+from .exceptions import EngineInterrupted
 from .interrupts import InterruptController
 from .hooks import EngineHooks, HookOutcome
 from .session_store import InMemorySessionStore, SessionStore
@@ -32,6 +33,7 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "NormalizedResponse",
+    "EngineInterrupted",
     "InterruptController",
     "EngineStateMachine",
     "StateTransitionError",

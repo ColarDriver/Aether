@@ -44,6 +44,7 @@ Threading model:
 from __future__ import annotations
 
 import asyncio
+import time
 from io import StringIO
 from typing import Awaitable, Callable, Optional
 
@@ -53,7 +54,9 @@ from prompt_toolkit.completion import Completer
 from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import History
+from prompt_toolkit.input.vt100_parser import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout, Window
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
@@ -88,6 +91,42 @@ from aether.cli.ui import (
 
 SubmitCallback = Callable[[str], Awaitable[None]]
 InterruptCallback = Callable[[], None]
+ClearHistoryCallback = Callable[[], None]
+
+
+# ---------------------------------------------------------------------------
+# Shift+Enter → newline plumbing
+# ---------------------------------------------------------------------------
+#
+# prompt_toolkit's :class:`Keys` enum doesn't model Shift+Enter natively
+# because most legacy terminals collapse it down to plain CR / LF.
+# Modern terminals report it through one of two extended keyboard
+# protocols, both as escape sequences we can intercept at the parser:
+#
+#  * kitty / CSI-u   : ``\x1b[13;2u``
+#  * xterm modifyOtherKeys 2 : ``\x1b[27;2;13~``
+#
+# We map both to :data:`Keys.ControlJ` so the regular ``c-j`` binding
+# (which inserts a newline) catches the press without us needing a
+# dedicated Shift+Enter Keys enum entry.  Terminals that don't support
+# either protocol fall back to plain Ctrl-J — users can still emit a
+# newline by holding Ctrl-J directly.
+for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
+    ANSI_SEQUENCES.setdefault(_seq, Keys.ControlJ)
+del _seq
+
+
+# Double-press windows for the ESC priority chain (PR 6.1).
+# - ESC: 0.8s matches claude-code's `useDoublePress` default for the
+#   "press ESC again to clear" workflow.
+# - Ctrl-C: 2.0s — wider window because Ctrl-C exits the REPL outright,
+#   so we want to be extra forgiving against accidental double-taps.
+_ESC_DOUBLE_PRESS_SEC: float = 0.8
+_CTRL_C_DOUBLE_PRESS_SEC: float = 2.0
+# How long a transient hint ("press ESC again to clear") stays visible
+# in the footer.  Mirrors the longest double-press window so the hint
+# is gone by the time the user could no longer act on it.
+_HINT_DISPLAY_SEC: float = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +222,15 @@ class AetherApp:
         history: optional prompt_toolkit ``History`` for ↑/↓ recall.
         completer: optional ``Completer``; pass the slash-command
             completer here so ``/`` triggers the popup.
-        on_interrupt: invoked when the user presses Ctrl-C while the
-            engine is busy.  Should call ``engine.interrupt(...)``.  The
-            REPL is never killed by Ctrl-C; the buffer is preserved so
-            the user can re-submit.
+        on_interrupt: invoked when the user presses ESC or Ctrl-C while
+            the engine is busy.  Should call ``engine.interrupt(...)``.
+            The REPL is never killed by an interrupt key; the buffer is
+            preserved so the user can re-submit.
+        on_clear_history: invoked on a double-ESC from idle/empty state
+            — analogous to claude-code's "Esc Esc → clear conversation".
+            Implementers typically reset their in-memory message list
+            while keeping the session id; ``None`` makes the chain fall
+            through to a toast.
     """
 
     def __init__(
@@ -197,10 +241,12 @@ class AetherApp:
         history: History | None = None,
         completer: Completer | None = None,
         on_interrupt: Optional[InterruptCallback] = None,
+        on_clear_history: Optional[ClearHistoryCallback] = None,
     ) -> None:
         self.ui = ui
         self._on_submit = on_submit
         self._on_interrupt = on_interrupt
+        self._on_clear_history = on_clear_history
         self._history = history
         self._completer = completer
 
@@ -243,6 +289,22 @@ class AetherApp:
         self._exit_requested = False
         self._consumer_task: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[None] | None = None
+
+        # Double-press bookkeeping for the ESC priority chain and the
+        # Ctrl-C "press again to exit" guard.  Both store a
+        # ``time.monotonic()`` timestamp of the previous press (or
+        # ``None`` if no press is currently in flight / the window has
+        # expired).
+        self._last_esc_at: float | None = None
+        self._last_ctrl_c_at: float | None = None
+
+        # Transient footer toast — set when the user presses an
+        # interrupt key but no action matched (e.g. first ESC on idle +
+        # empty buffer).  Cleared automatically when the display
+        # deadline passes; the existing 5 Hz refresh loop drives the
+        # cleanup repaint.
+        self._transient_hint: str | None = None
+        self._transient_hint_until: float = 0.0
 
         self._buffer = Buffer(
             history=history,
@@ -456,33 +518,26 @@ class AetherApp:
 
         @bindings.add("c-c")
         def _ctrl_c(event):  # noqa: ANN001
-            buf = event.current_buffer
-            if self._busy:
-                # Engine in flight — ask it to stop, drop pending queue
-                # entries, but keep the REPL alive.
-                if self._on_interrupt is not None:
-                    try:
-                        self._on_interrupt()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._pending.clear()
-                event.app.invalidate()
-                return
-            if buf.text:
-                buf.reset()
-                event.app.invalidate()
-                return
-            # Ctrl-C on empty buffer while idle — exit.
-            self._exit_requested = True
-            event.app.exit()
+            self._handle_ctrl_c(event)
 
-        @bindings.add("escape", "enter")
-        def _esc_enter(event):  # noqa: ANN001
-            event.current_buffer.insert_text("\n")
+        # ESC single-press → priority chain (PR 6.1).  ``eager=True``
+        # bypasses prompt_toolkit's 25 ms ESC-sequence timeout so the
+        # press feels instantaneous; this also displaces the legacy
+        # ``escape, enter`` newline binding (intentional — Shift+Enter
+        # / Ctrl-J are the newline keys now).
+        @bindings.add("escape", eager=True)
+        def _esc(event):  # noqa: ANN001
+            self._handle_esc(event)
 
         @bindings.add("c-j")
         def _ctrl_j(event):  # noqa: ANN001
-            # Fallback newline for terminals that swallow Esc-Enter.
+            # Newline binding.  Catches three input sources:
+            #   * Direct Ctrl-J press (byte 0x0a — same as ``\n``)
+            #   * Shift+Enter on kitty / CSI-u terminals (the
+            #     module-level ``ANSI_SEQUENCES`` extension translates
+            #     ``\x1b[13;2u`` into ``Keys.ControlJ``)
+            #   * Shift+Enter on xterm with ``modifyOtherKeys=2``
+            #     (translates ``\x1b[27;2;13~`` the same way)
             event.current_buffer.insert_text("\n")
 
         @bindings.add("enter")
@@ -517,6 +572,173 @@ class AetherApp:
             event.app.invalidate()
 
         return bindings
+
+    # ------------------------------------------------------------------
+    # Interrupt-key handlers (PR 6.1)
+    # ------------------------------------------------------------------
+
+    def _handle_esc(self, event) -> None:  # noqa: ANN001
+        """ESC priority chain — first match wins.
+
+        Order mirrors claude-code's ``useCancelRequest`` cascade and
+        ``PromptInput`` ESC dispatch.  Each branch performs its action
+        then returns; the bottom branch is a no-op that arms the
+        double-press window so a *second* quick ESC clears history.
+        """
+        buf = event.current_buffer
+        now = time.monotonic()
+
+        # 1. Engine in flight → interrupt and drop the queue.
+        if self._busy:
+            if self._on_interrupt is not None:
+                try:
+                    self._on_interrupt()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._pending.clear()
+            self._last_esc_at = None
+            self._clear_transient_hint()
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 2. Buffer has text → reset, arm the double-press window so a
+        #    follow-up ESC clears history.
+        if buf.text:
+            buf.reset()
+            self._last_esc_at = now
+            self._clear_transient_hint()
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 3. Pending queue → pop the most recent entry back for edit.
+        if self._pending:
+            last = self._pending.pop()
+            buf.text = last
+            buf.cursor_position = len(buf.text)
+            # Re-clear the pending event if the queue just drained.
+            if not self._pending:
+                self._pending_event.clear()
+            self._last_esc_at = None
+            self._clear_transient_hint()
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 4. Double-ESC within the window → clear conversation history.
+        if self._is_double_press(self._last_esc_at, _ESC_DOUBLE_PRESS_SEC):
+            self._last_esc_at = None
+            self._clear_transient_hint()
+            if self._on_clear_history is not None:
+                try:
+                    self._on_clear_history()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 5. Default — arm the double-press window and surface a hint.
+        self._last_esc_at = now
+        self._set_transient_hint("press ESC again to clear history")
+        try:
+            event.app.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _handle_ctrl_c(self, event) -> None:  # noqa: ANN001
+        """Ctrl-C handler with double-press exit on idle.
+
+        Busy and "buffer has text" branches mirror the ESC chain so the
+        two keys feel interchangeable.  Idle + empty buffer is the only
+        place behaviour diverges: a single Ctrl-C arms a 2 s exit
+        window instead of killing the REPL outright.
+        """
+        buf = event.current_buffer
+        now = time.monotonic()
+
+        # 1. Engine in flight → interrupt.
+        if self._busy:
+            if self._on_interrupt is not None:
+                try:
+                    self._on_interrupt()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._pending.clear()
+            self._last_ctrl_c_at = None
+            self._clear_transient_hint()
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 2. Buffer has text → reset.
+        if buf.text:
+            buf.reset()
+            self._last_ctrl_c_at = None
+            self._clear_transient_hint()
+            try:
+                event.app.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        # 3. Idle + empty → double-press exit.
+        if self._is_double_press(self._last_ctrl_c_at, _CTRL_C_DOUBLE_PRESS_SEC):
+            self._exit_requested = True
+            try:
+                event.app.exit()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        self._last_ctrl_c_at = now
+        self._set_transient_hint(
+            "press Ctrl-C again to exit",
+            duration=_CTRL_C_DOUBLE_PRESS_SEC,
+        )
+        try:
+            event.app.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _is_double_press(last_at: float | None, window: float) -> bool:
+        if last_at is None:
+            return False
+        return (time.monotonic() - last_at) < window
+
+    def _set_transient_hint(
+        self,
+        text: str,
+        *,
+        duration: float = _HINT_DISPLAY_SEC,
+    ) -> None:
+        self._transient_hint = text
+        self._transient_hint_until = time.monotonic() + duration
+
+    def _clear_transient_hint(self) -> None:
+        self._transient_hint = None
+        self._transient_hint_until = 0.0
+
+    def _active_transient_hint(self) -> str | None:
+        if self._transient_hint is None:
+            return None
+        if time.monotonic() >= self._transient_hint_until:
+            self._transient_hint = None
+            self._transient_hint_until = 0.0
+            return None
+        return self._transient_hint
 
     # ------------------------------------------------------------------
     # Filters / text providers — all called on the prompt_toolkit thread
@@ -690,13 +912,29 @@ class AetherApp:
 
     def _get_footer_text(self) -> FormattedText:
         sep = ("class:footer.sep", "  " + (icon("dot") or "·") + "  ")
+
+        # Esc gets a context-aware label so the footer hint reflects
+        # what the next ESC will actually do.  Visible at all times
+        # (not gated on ``_busy``) so the user always knows the key
+        # exists — claude-code does the same with its "press ESC to
+        # cancel" / "ESC clear" rotation.
+        if self._busy:
+            esc_label = " interrupt"
+        elif self._pending:
+            esc_label = " pop queued"
+        else:
+            esc_label = " clear"
+
         fragments: list[tuple[str, str]] = [
             ("class:footer", "  "),
             ("class:footer.kbd", "Enter"),
             ("class:footer", " send"),
             sep,
-            ("class:footer.kbd", "Esc+Enter"),
+            ("class:footer.kbd", "Shift+Enter"),
             ("class:footer", " newline"),
+            sep,
+            ("class:footer.kbd", "Esc"),
+            ("class:footer", esc_label),
             sep,
             ("class:footer.kbd", "/help"),
             ("class:footer", " commands"),
@@ -711,7 +949,12 @@ class AetherApp:
             )
         elif self._busy:
             fragments.append(sep)
-            fragments.append(("class:footer.busy", "running…  Ctrl-C to stop"))
+            fragments.append(("class:footer.busy", "running…"))
+
+        hint = self._active_transient_hint()
+        if hint:
+            fragments.append(sep)
+            fragments.append(("class:footer.busy", hint))
         return FormattedText(fragments)
 
     # ------------------------------------------------------------------

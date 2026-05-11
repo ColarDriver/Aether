@@ -101,4 +101,11 @@ class ToolRegistry:
             task_id=context.task_id,
             context_metadata=context.metadata,
         )
-        return executor.execute(call, context)
+        result = executor.execute(call, context)
+        if (
+            getattr(executor, "interrupt_behavior", "block") == "cancel"
+            and context.interrupt_signal is not None
+            and context.interrupt_signal.is_aborted()
+        ):
+            result.metadata.setdefault("interrupted", True)
+        return result

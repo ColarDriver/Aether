@@ -74,6 +74,7 @@ from aether.runtime.error_classifier import (
     classify_api_error,
 )
 from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
+from aether.runtime.interrupt_signal import InterruptSignal
 
 if TYPE_CHECKING:  # pragma: no cover
     from aether.runtime.contracts import TurnContext
@@ -584,26 +585,18 @@ def wait_interruptible(
     interrupt_controller: "InterruptController | None",
     session_id: str,
     poll_interval: float = 0.1,
+    interrupt_signal: InterruptSignal | None = None,
 ) -> bool:
-    """Sleep up to ``seconds``, polling ``interrupt_controller`` periodically.
-
-    Returns ``True`` if the full duration elapsed normally, ``False`` if an
-    interrupt was raised against ``session_id`` part-way through.
-
-    Implementation note: we use ``time.monotonic()`` and a coarse
-    ``poll_interval`` (default 100ms) rather than ``threading.Event`` so
-    we don't have to plumb a per-session event through the interrupt
-    controller.  The 100ms poll is more than fast enough for any human-
-    facing interruption — the user's perceived latency is dominated by
-    the network round-trip we're waiting on, not by the polling cadence.
-    """
+    """Sleep up to ``seconds`` and return early when interrupted."""
+    if interrupt_signal is None and interrupt_controller is not None:
+        interrupt_signal = interrupt_controller.signal_for(session_id)
     if seconds <= 0:
-        return interrupt_controller is None or not interrupt_controller.is_interrupted(session_id)
+        return interrupt_signal is None or not interrupt_signal.is_aborted()
+    if interrupt_signal is not None:
+        return not interrupt_signal.wait(seconds)
 
     deadline = time.monotonic() + seconds
     while True:
-        if interrupt_controller is not None and interrupt_controller.is_interrupted(session_id):
-            return False
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return True

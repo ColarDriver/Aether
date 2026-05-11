@@ -88,8 +88,40 @@ def _cmd_session(state: "ReplState", _args: list[str]) -> CommandResult:
 
 
 def _cmd_clear(state: "ReplState", _args: list[str]) -> CommandResult:
+    from aether.cli import sessions as session_store
+
     state.messages = []
-    state.ui.success("Cleared in-memory conversation history.")
+    if state.session_record is None:
+        state.session_record = session_store.SessionRecord.new(
+            session_id=state.session_id,
+            provider=state.provider_name,
+            model=getattr(state.engine.services.provider, "model", "") or "",
+            base_url=getattr(state.engine.services.provider, "base_url", None),
+            system_prompt=state.system_prompt,
+        )
+    session_store.update_session_from_state(
+        state.session_record,
+        messages=[],
+        provider=state.provider_name,
+        model=getattr(state.engine.services.provider, "model", "") or "",
+        base_url=getattr(state.engine.services.provider, "base_url", None),
+        system_prompt=state.system_prompt,
+    )
+    try:
+        session_store.save_session(state.session_record)
+    except Exception:
+        pass
+    state.engine.clear_interrupt(session_id=state.session_id)
+    state.ui.success("Cleared conversation history.")
+    return CommandResult()
+
+
+def _cmd_refresh(state: "ReplState", _args: list[str]) -> CommandResult:
+    try:
+        state.ui.console.clear()
+    except Exception:
+        pass
+    state.ui.success("Refreshed screen.")
     return CommandResult()
 
 
@@ -413,6 +445,7 @@ REGISTRY: dict[str, SlashCommand] = {
     "/exit": SlashCommand("/exit", "Exit the REPL", _cmd_exit),
     "/new": SlashCommand("/new", "Start a new session (saves the current one first)", _cmd_new),
     "/clear": SlashCommand("/clear", "Clear conversation history (keep session)", _cmd_clear),
+    "/refresh": SlashCommand("/refresh", "Refresh the visible terminal area", _cmd_refresh),
     "/session": SlashCommand("/session", "Show current session info", _cmd_session),
     "/sessions": SlashCommand("/sessions", "List previously saved sessions", _cmd_sessions),
     "/resume": SlashCommand("/resume", "Resume a previous session: /resume [<id|prefix>]", _cmd_resume),

@@ -143,6 +143,7 @@ class AgentTool(ToolExecutor):
                 "parent_session_id": context.session_id,
                 "parent_task_id": task_id,
             },
+            interrupt_signal=context.interrupt_signal,
         )
         task = SubagentTask(
             task_id=task_id,
@@ -151,6 +152,7 @@ class AgentTool(ToolExecutor):
             metadata={
                 "subagent_type": subagent_type,
                 "expected_output": expected_output,
+                "run_in_background": False,
             },
         )
 

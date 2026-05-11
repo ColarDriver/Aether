@@ -38,6 +38,7 @@ _DEFAULT_USER_AGENT = "Aether/0.1 (+https://github.com/ColarDriver/Aether)"
 
 
 class WebSearchTool(ToolExecutor):
+    interrupt_behavior = "cancel"
     """Search the web via Brave Search; return top-N results as markdown."""
 
     NAME = "web_search"
@@ -120,7 +121,7 @@ class WebSearchTool(ToolExecutor):
 
         try:
             results = self._brave_search(
-                query.strip(), api_key=api_key, max_results=max_results
+                query.strip(), api_key=api_key, max_results=max_results, context=context
             )
         except httpx.TimeoutException:
             return _error(call, "search timed out")
@@ -128,6 +129,8 @@ class WebSearchTool(ToolExecutor):
             status = exc.response.status_code if exc.response is not None else "?"
             return _error(call, f"search returned HTTP {status}")
         except httpx.HTTPError as exc:
+            if context.interrupt_signal is not None and context.interrupt_signal.is_aborted():
+                return _error(call, "search interrupted by user", metadata={"interrupted": True})
             return _error(call, f"search failed: {exc}")
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("web_search unexpected failure")
@@ -171,7 +174,7 @@ class WebSearchTool(ToolExecutor):
         return value
 
     def _brave_search(
-        self, query: str, *, api_key: str, max_results: int
+        self, query: str, *, api_key: str, max_results: int, context: TurnContext
     ) -> list[dict[str, str]]:
         headers = {
             "Accept": "application/json",
@@ -185,9 +188,17 @@ class WebSearchTool(ToolExecutor):
         else:
             ctx = httpx.Client(timeout=self.DEFAULT_TIMEOUT, headers=headers)
         with ctx as client:
-            response = client.get(self._endpoint, params=params)
-            response.raise_for_status()
-            data = response.json()
+            listener = None
+            if context.interrupt_signal is not None:
+                listener = lambda _reason: client.close()
+                context.interrupt_signal.add_listener(listener)
+            try:
+                response = client.get(self._endpoint, params=params)
+                response.raise_for_status()
+                data = response.json()
+            finally:
+                if context.interrupt_signal is not None and listener is not None:
+                    context.interrupt_signal.remove_listener(listener)
 
         web = data.get("web") or {}
         items = web.get("results") or []

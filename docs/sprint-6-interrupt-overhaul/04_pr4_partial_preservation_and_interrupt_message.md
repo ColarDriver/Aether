@@ -1,5 +1,17 @@
 # PR 6.4 — Partial 保留 + INTERRUPT_MESSAGE 注入
 
+> **架构调整（参考 open-claude-code）**：在 PR 6.3 引入 `InterruptSignal` 之后，
+> 本 PR 的 `context.metadata["interrupt"]` 写入点从"polling 检查点"改成
+> "signal listener 回调"。好处：abort 触发的瞬间 listener 同步 fire，
+> 把"当时在干什么（stream / tool / idle）"准确记下来，不需要在 run_loop
+> 的三处 INTERRUPTED 分支各写一遍。
+>
+> **与 claude-code 的对应**：
+> - `open-claude-code/src/screens/REPL.tsx` 行 2120-2130 的"先存 partial 再 abort"
+>   顺序在我们这里变成"abort 触发 listener → listener 把 partial 从
+>   stream buffer snapshot 到 context.metadata"。
+> - 两个 marker 常量直接照搬 `src/utils/messages.ts` 行 207-213。
+
 ## 目标
 
 打断之后让模型**知道用户打断了**，并且能**看到自己刚才说到一半的内容**。这是让"打断"从"硬切流"升级成"自然对话操作"的关键 PR —— 没有它，打断只是停止流，下一轮模型不知道发生了什么，可能直接重复刚才的尝试。
@@ -105,7 +117,57 @@ if status_value == "INTERRUPTED":
 
 副作用：现有 `engine.run_loop` 测试可能预期 INTERRUPTED 的 messages 不变，需要更新。
 
-### `was_in_tool_call` 的判定
+### `was_in_tool_call` 的判定（PR 6.3 InterruptSignal 之后的写法）
+
+**新做法（推荐）**：注册一个**单一 listener** 在 `InterruptSignal` 上，由 listener
+统一把当下的 `was_in_tool_call` / `partial_text` 写到 `context.metadata["interrupt"]`。
+不需要在 run_loop 的三处分支各写一遍。
+
+```python
+# agents/core/agent.py 在 run_loop 进入时
+context.metadata["_in_tool_call"] = False  # 状态机标志，下面切换
+
+signal = request.interrupt_signal or self.services.interrupt_controller.signal(request.session_id)
+
+def _record_interrupt_state(reason):
+    """signal 触发的瞬间 fire — 同步在按 ESC 的线程跑。
+
+    只做轻量 snapshot，不阻塞、不调用 engine 重活。
+    """
+    if "interrupt" in context.metadata:
+        return  # 已被记录（双源中断），first-write-wins
+    context.metadata["interrupt"] = {
+        "reason": reason or "user-interrupt",
+        "partial_text": str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or ""),
+        "was_in_tool_call": bool(context.metadata.get("_in_tool_call", False)),
+        "triggered_at": time.time(),
+    }
+
+unregister = signal.add_listener(_record_interrupt_state, once=True)
+
+# 整个 turn 期间用 _in_tool_call 标记当前阶段
+# - PRE_LLM / LLM_CALL / POST_LLM: False
+# - TOOL_DISPATCH / TOOL_EXECUTE: True
+# 切换在 state_machine.transition() 旁边一行：
+state_machine.transition(LoopState.TOOL_EXECUTE)
+context.metadata["_in_tool_call"] = True
+# ... tool 跑完之后 ...
+context.metadata["_in_tool_call"] = False
+
+# turn 退出时
+unregister()
+```
+
+**老做法（PR 6.2 已部分实施）**：在三个中断检测点（stream callback raise / tool result metadata / iteration boundary）各自写 `context.metadata["interrupt"]`。
+
+旧做法的问题是**重复**且**易错** —— 加一个新的中断检测点就要记得也写 metadata。
+新做法只有 **一个写入点**（listener），run_loop 各分支只需要标记 `_in_tool_call` 状态。
+
+**保留**老做法作为 fallback：PR 6.2 已经在 `_invoke_provider_with_recovery` 里
+catch `EngineInterrupted` 并写过 metadata；listener 检查"已存在则跳过"（first-write-wins）。
+两种机制共存不冲突。
+
+### 三个中断检测点（向后兼容老逻辑）
 
 run_loop 在抛 / 检测中断的位置就要记下当时是不是在 tool 中：
 

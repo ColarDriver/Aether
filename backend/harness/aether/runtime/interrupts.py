@@ -1,30 +1,46 @@
-"""Thread-safe interrupt controller."""
+"""Thread-safe session-scoped interrupt controller."""
 
 from __future__ import annotations
 
 from threading import RLock
-from typing import Dict, Optional
+from typing import Dict
+
+from aether.runtime.interrupt_signal import InterruptSignal
 
 
 class InterruptController:
-    """Session-scoped interrupt flags."""
+    """Session-scoped interrupt signals with legacy flag-style API."""
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self._reasons: Dict[str, Optional[str]] = {}
+        self._signals: Dict[str, InterruptSignal] = {}
+
+    def signal_for(self, session_id: str) -> InterruptSignal:
+        with self._lock:
+            signal = self._signals.get(session_id)
+            if signal is None:
+                signal = InterruptSignal()
+                self._signals[session_id] = signal
+            return signal
 
     def request(self, session_id: str, reason: str | None = None) -> None:
-        with self._lock:
-            self._reasons[session_id] = reason
+        self.signal_for(session_id).abort(reason)
 
     def clear(self, session_id: str) -> None:
         with self._lock:
-            self._reasons.pop(session_id, None)
+            signal = self._signals.pop(session_id, None)
+        if signal is not None:
+            signal.close()
 
     def is_interrupted(self, session_id: str) -> bool:
         with self._lock:
-            return session_id in self._reasons
+            signal = self._signals.get(session_id)
+        return False if signal is None else signal.is_aborted()
 
     def reason(self, session_id: str) -> str | None:
         with self._lock:
-            return self._reasons.get(session_id)
+            signal = self._signals.get(session_id)
+        return None if signal is None else signal.reason()
+
+
+__all__ = ["InterruptController"]

@@ -192,12 +192,16 @@ def run_repl(
             pass
         ui.warn("interrupted")
 
+    def _on_clear_history() -> None:
+        slash.dispatch(state, "/clear")
+
     app = AetherApp(
         ui,
         on_submit=_on_submit,
         history=pt_history,
         completer=completer,
         on_interrupt=_on_interrupt,
+        on_clear_history=_on_clear_history,
     )
 
     try:

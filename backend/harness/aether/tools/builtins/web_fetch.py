@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.interrupt_messages import FETCH_INTERRUPTED_MESSAGE
 from aether.runtime.web_safety import is_url_safe
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
@@ -39,6 +40,7 @@ _DEFAULT_USER_AGENT = "Aether/0.1 (+https://github.com/ColarDriver/Aether)"
 
 
 class WebFetchTool(ToolExecutor):
+    interrupt_behavior = "cancel"
     """Fetch a URL, convert to markdown, return for the model to read."""
 
     NAME = "web_fetch"
@@ -122,11 +124,13 @@ class WebFetchTool(ToolExecutor):
 
         try:
             response_status, response_body, response_ct = self._http_get(
-                url, timeout=timeout, max_bytes=max_bytes
+                url, timeout=timeout, max_bytes=max_bytes, context=context
             )
         except httpx.TimeoutException:
             return _error(call, f"fetch timed out after {timeout:.0f}s", metadata={"url": url})
         except httpx.HTTPError as exc:
+            if context.interrupt_signal is not None and context.interrupt_signal.is_aborted():
+                return _error(call, FETCH_INTERRUPTED_MESSAGE, metadata={"url": url, "interrupted": True})
             return _error(call, f"fetch failed: {exc}", metadata={"url": url})
         except OSError as exc:
             return _error(call, f"network error: {exc}", metadata={"url": url})
@@ -165,7 +169,7 @@ class WebFetchTool(ToolExecutor):
     # ------------------------------------------------------------- impl
 
     def _http_get(
-        self, url: str, *, timeout: float, max_bytes: int
+        self, url: str, *, timeout: float, max_bytes: int, context: TurnContext
     ) -> tuple[int, bytes, str]:
         if self._client_factory is not None:
             ctx = self._client_factory()
@@ -177,10 +181,18 @@ class WebFetchTool(ToolExecutor):
                 headers={"User-Agent": self._user_agent, "Accept": "text/html, */*;q=0.5"},
             )
         with ctx as client:
-            response = client.get(url)
-            content = response.content[:max_bytes]
-            content_type = response.headers.get("content-type", "")
-            return int(response.status_code), bytes(content), str(content_type)
+            listener = None
+            if context.interrupt_signal is not None:
+                listener = lambda _reason: client.close()
+                context.interrupt_signal.add_listener(listener)
+            try:
+                response = client.get(url)
+                content = response.content[:max_bytes]
+                content_type = response.headers.get("content-type", "")
+                return int(response.status_code), bytes(content), str(content_type)
+            finally:
+                if context.interrupt_signal is not None and listener is not None:
+                    context.interrupt_signal.remove_listener(listener)
 
     @staticmethod
     def _html_to_markdown(body: bytes, *, content_type: str) -> str:

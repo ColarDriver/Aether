@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from aether.agents.core.agent import AgentEngine
+from aether.runtime.interrupt_signal import InterruptSignal
 from aether.config.schema import EngineConfig
 from aether.subagents.builder import SubagentBuilder
 from aether.subagents.contracts import SubagentTask
@@ -48,4 +49,12 @@ class DefaultSubagentBuilder(SubagentBuilder):
             session_store=parent._session_store,
             hooks=parent._hooks,
         )
+        parent_signal = None
+        if getattr(task.request, "interrupt_signal", None) is not None:
+            parent_signal = task.request.interrupt_signal
+        elif getattr(parent, "_current_session_id", None):
+            parent_signal = parent.services.interrupt_controller.signal_for(parent._current_session_id)
+        if parent_signal is not None:
+            async_mode = bool(task.metadata.get("run_in_background", False))
+            task.request.interrupt_signal = InterruptSignal() if async_mode else InterruptSignal(parent=parent_signal)
         return child

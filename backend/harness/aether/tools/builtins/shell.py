@@ -1,30 +1,9 @@
-"""Built-in ``shell`` tool — run a shell command in a subprocess.
-
-Mirrors the ergonomics of claude-code's ``Bash`` and hermes-agent's
-``terminal`` tool: a single ``command`` string is executed via the user's
-shell, stdout/stderr are captured, and a structured ``ToolResult`` is
-returned with an exit code, duration, and a ``truncated`` flag.
-
-Output handling \u2014 Sprint 3.5 / PR 3.5.1
-----------------------------------------
-The pre-3.5 head+tail truncation has been replaced with the unified
-spill mechanism shared across builtins.  Combined ``$ command`` +
-exit_code header + stdout + stderr is built first; if the total exceeds
-``max_result_chars`` (40 KB), the full payload is written to disk and
-``ToolResult.content`` retains only the inline preview plus a standard
-``... [output truncated: ... saved to ...] ...`` notice.  The model
-follows the notice with ``read_file <spilled-path>`` to retrieve the
-complete output.
-
-Why head+tail was retired: with disk spill we no longer need to
-synthesise a "head + tail" view to stay under context budget \u2014 the
-model can read the exact same contiguous output it would have seen
-without truncation.  Single-form preview also makes the spill notice
-cleaner (no mid-content marker).
-"""
+"""Built-in ``shell`` tool — run a shell command in a subprocess."""
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -33,17 +12,15 @@ from typing import Any
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
-
 _DEFAULT_TIMEOUT_SEC = 60
-# Sprint 3.5 / PR 3.5.1 \u2014 see module docstring.  40 KB is roughly 800
-# lines of typical CLI output, ~10 KB tokens; large enough that most
-# shell calls render inline, small enough that runaway ``find /`` style
-# commands trigger spill rather than blowing the context.
 _MAX_RESULT_CHARS = 40_000
+_INTERRUPT_GRACE_SEC = 2.0
 
 
 class ShellTool(ToolExecutor):
     """Execute shell commands via the platform shell."""
+
+    interrupt_behavior = "cancel"
 
     def __init__(
         self,
@@ -62,7 +39,7 @@ class ShellTool(ToolExecutor):
                 "code. Use this for anything that requires a real subprocess "
                 "(git, find, npm, pytest, etc.). When combined output exceeds "
                 f"{self.max_result_chars // 1024} KB the full payload spills "
-                "to disk and the inline preview ends with a ``[output truncated"
+                "to disk and the inline preview ends with a ``[output truncated" 
                 " ... saved to ...]`` notice; use ``read_file`` on the saved "
                 "path to retrieve the complete output."
             ),
@@ -117,83 +94,66 @@ class ShellTool(ToolExecutor):
 
         cwd = self._resolve_cwd(args.get("cwd"))
         timeout = self._resolve_timeout(args.get("timeout_sec"))
-
         started = time.monotonic()
+        interrupted = False
+        timed_out = False
+
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(cwd) if cwd else None,
+            start_new_session=True,
+        )
+
+        def _cancel(_reason: str | None) -> None:
+            nonlocal interrupted
+            if process.poll() is not None:
+                return
+            interrupted = True
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + _INTERRUPT_GRACE_SEC
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        listener = None
+        if context.interrupt_signal is not None:
+            listener = _cancel
+            context.interrupt_signal.add_listener(listener)
+
         try:
-            completed = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                cwd=str(cwd) if cwd else None,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            duration_ms = int((time.monotonic() - started) * 1000)
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-            stdout_text = stdout if isinstance(stdout, str) else stdout.decode("utf-8", "replace")
-            stderr_text = stderr if isinstance(stderr, str) else stderr.decode("utf-8", "replace")
-            full_output = self._format_output(
-                command=command,
-                cwd=cwd,
-                exit_code=None,
-                stdout=stdout_text,
-                stderr=stderr_text,
-                duration_ms=duration_ms,
-                timed_out=True,
-                timeout=timeout,
-            )
-            content = maybe_spill_for_tool(
-                full_output,
-                call=call,
-                context=context,
-                max_chars=self.max_result_chars,
-                extension="txt",
-                full_lines=full_output.count("\n") + 1,
-            )
-            return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                content=content,
-                is_error=True,
-                metadata={
-                    "exit_code": None,
-                    "timed_out": True,
-                    "timeout_sec": timeout,
-                    "duration_ms": duration_ms,
-                    "cwd": str(cwd) if cwd else None,
-                    "command": command,
-                },
-            )
-        except FileNotFoundError as exc:
-            return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                content=f"error: shell unavailable: {exc}",
-                is_error=True,
-                metadata={"exit_code": -1, "cwd": str(cwd) if cwd else None},
-            )
+            stdout_text, stderr_text = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _cancel("timeout")
+            stdout_text, stderr_text = process.communicate()
+        finally:
+            if context.interrupt_signal is not None and listener is not None:
+                context.interrupt_signal.remove_listener(listener)
 
         duration_ms = int((time.monotonic() - started) * 1000)
-        stdout_text = completed.stdout or ""
-        stderr_text = completed.stderr or ""
-
+        exit_code = process.returncode
         full_output = self._format_output(
             command=command,
             cwd=cwd,
-            exit_code=completed.returncode,
-            stdout=stdout_text,
-            stderr=stderr_text,
+            exit_code=exit_code,
+            stdout=stdout_text or "",
+            stderr=stderr_text or "",
             duration_ms=duration_ms,
-            timed_out=False,
+            timed_out=timed_out,
             timeout=timeout,
+            interrupted=interrupted,
         )
-
-        # Pre-spill length is the canonical "real" payload size that
-        # downstream observers care about; capture it here so the
-        # metadata doesn't lie about whether the model saw the full body.
         original_chars = len(full_output)
         content = maybe_spill_for_tool(
             full_output,
@@ -204,24 +164,21 @@ class ShellTool(ToolExecutor):
             full_lines=full_output.count("\n") + 1,
         )
         spilled = len(content) != original_chars
-
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
             content=content,
-            is_error=completed.returncode != 0,
+            is_error=bool(interrupted or timed_out or (exit_code or 0) != 0),
             metadata={
-                "exit_code": completed.returncode,
+                "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "truncated": spilled,
+                "timed_out": timed_out,
+                "interrupted": interrupted,
                 "cwd": str(cwd) if cwd else None,
                 "command": command,
             },
         )
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
     def _resolve_cwd(self, value: Any) -> Path | None:
         if value:
@@ -253,35 +210,20 @@ class ShellTool(ToolExecutor):
         duration_ms: int,
         timed_out: bool,
         timeout: int,
+        interrupted: bool,
     ) -> str:
-        # Header order is intentional: the model needs ``exit`` (or
-        # timeout) and ``stderr_lines`` to judge success even if the
-        # body is later spilled and only the preview survives in
-        # context.  Matches the contract described in the module
-        # docstring.
-        lines: list[str] = []
-        lines.append(f"$ {command}")
-        if cwd is not None:
-            lines.append(f"(cwd: {cwd})")
-        if timed_out:
-            lines.append(
-                f"[timeout after {timeout}s, partial output below \u2014 duration {duration_ms}ms]"
-            )
+        stderr_lines = stderr.count("\n") + (1 if stderr else 0)
+        if interrupted:
+            header = f"[interrupted after {duration_ms}ms · stderr_lines={stderr_lines}]"
+        elif timed_out:
+            header = f"[timeout after {timeout}s · {duration_ms}ms · stderr_lines={stderr_lines}]"
         else:
-            stderr_line_count = stderr.count("\n") if stderr else 0
-            lines.append(
-                f"[exit {exit_code} in {duration_ms}ms, "
-                f"stderr_lines={stderr_line_count}]"
-            )
+            header = f"[exit {exit_code} · {duration_ms}ms · stderr_lines={stderr_lines}]"
+        lines = [f"$ {command}", header]
+        if cwd is not None:
+            lines.append(f"cwd: {cwd}")
         if stdout:
-            lines.append("--- stdout ---")
-            lines.append(stdout.rstrip("\n"))
+            lines.extend(["", stdout])
         if stderr:
-            lines.append("--- stderr ---")
-            lines.append(stderr.rstrip("\n"))
-        if not stdout and not stderr and not timed_out:
-            lines.append("(no output)")
-        return "\n".join(lines)
-
-
-__all__ = ["ShellTool"]
+            lines.extend(["", "[stderr]", stderr])
+        return "\n".join(lines).rstrip() + "\n"

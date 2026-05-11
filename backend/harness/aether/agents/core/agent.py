@@ -35,6 +35,9 @@ from aether.runtime.contracts import (
     TurnContext,
 )
 from aether.runtime.error_classifier import FailoverReason
+from aether.runtime.exceptions import EngineInterrupted
+from aether.runtime.interrupt_messages import FETCH_INTERRUPTED_MESSAGE, select_interrupt_marker
+from aether.runtime.interrupt_signal import InterruptSignal
 from aether.runtime.fallback_chain import FallbackChain
 from aether.runtime.hooks import EngineHooks, HookOutcome
 from aether.runtime.image_shrink import shrink_image_parts_in_messages
@@ -165,6 +168,7 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_schema_sanitized_tool_descriptors",
     "_schema_sanitizer_retry_attempted",
     "_image_shrink_retry_attempted",
+    "_interrupt_signal",
 })
 
 
@@ -413,7 +417,7 @@ class AgentEngine:
             )
 
             state_machine.transition(LoopState.PREPARE)
-            if self._is_interrupted(request.session_id):
+            if self._is_interrupted(request.session_id, context):
                 state_machine.transition(LoopState.INTERRUPTED)
                 exit_reason = ExitReason.INTERRUPTED
             else:
@@ -454,7 +458,7 @@ class AgentEngine:
                 while budget.consume():
                     context.iteration = iterations + 1
 
-                    if self._is_interrupted(request.session_id):
+                    if self._is_interrupted(request.session_id, context):
                         state_machine.transition(LoopState.INTERRUPTED)
                         exit_reason = ExitReason.INTERRUPTED
                         break
@@ -774,7 +778,7 @@ class AgentEngine:
                         tool_failed = False
                         for prepared in dispatch_plan.prepared:
                             call = prepared.call
-                            if self._is_interrupted(request.session_id):
+                            if self._is_interrupted(request.session_id, context):
                                 state_machine.transition(LoopState.INTERRUPTED)
                                 exit_reason = ExitReason.INTERRUPTED
                                 break
@@ -820,6 +824,11 @@ class AgentEngine:
                                 # a deterministic fallback ToolResult for this exact invocation.
                                 context.metadata.pop("tool_error_result", None)
                                 context.metadata["_active_tool_call"] = tool_call
+                                context.metadata["_tool_interrupt_behavior"] = getattr(
+                                    self.services.tool_registry.get(tool_call.name),
+                                    "interrupt_behavior",
+                                    "block",
+                                )
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
                                 except UnknownToolError:
@@ -877,6 +886,7 @@ class AgentEngine:
                                         )
                                 finally:
                                     context.metadata.pop("_active_tool_call", None)
+                                    context.metadata.pop("_tool_interrupt_behavior", None)
 
                             try:
                                 # after_tool middleware stage for redaction, auditing, or shaping.
@@ -1138,8 +1148,10 @@ class AgentEngine:
                 self._cleanup_task_resources(
                     context=context,
                     completed=False,
-                    interrupted=self._is_interrupted(context.session_id),
+                    interrupted=self._is_interrupted(context.session_id, context),
                 )
+            if context is not None:
+                self.clear_interrupt(session_id=context.session_id)
             self._current_session_id = None
 
     def _get_compaction_pipeline(self) -> CompactionPipeline:
@@ -1338,12 +1350,15 @@ class AgentEngine:
             }
         )
 
+        interrupt_signal = self._signal_for_request(request)
+        metadata["_interrupt_signal"] = interrupt_signal
         context = TurnContext(
             session_id=request.session_id,
             iteration=0,
             metadata=metadata,
             task_id=task_id,
             turn_id=turn_id,
+            interrupt_signal=interrupt_signal,
         )
         # Sprint 3.5 / PR 3.5.1: inject the live ``EngineConfig`` so
         # tools can consult per-tool feature switches (currently
@@ -1658,7 +1673,7 @@ class AgentEngine:
 
         state_machine.transition(LoopState.TOOL_EXECUTE)
         for call in response.tool_calls:
-            if self._is_interrupted(request.session_id):
+            if self._is_interrupted(request.session_id, context):
                 state_machine.transition(LoopState.INTERRUPTED)
                 return "interrupted", ExitReason.INTERRUPTED, None
 
@@ -1675,6 +1690,11 @@ class AgentEngine:
                 tool_call = pre_tool
                 context.metadata.pop("tool_error_result", None)
                 context.metadata["_active_tool_call"] = tool_call
+                context.metadata["_tool_interrupt_behavior"] = getattr(
+                    self.services.tool_registry.get(tool_call.name),
+                    "interrupt_behavior",
+                    "block",
+                )
                 try:
                     result = self.services.tool_registry.dispatch(tool_call, context)
                 except UnknownToolError:
@@ -1708,6 +1728,7 @@ class AgentEngine:
                         )
                 finally:
                     context.metadata.pop("_active_tool_call", None)
+                    context.metadata.pop("_tool_interrupt_behavior", None)
 
             try:
                 result = self.services.middleware_pipeline.run_after_tool(result, context)
@@ -1748,6 +1769,28 @@ class AgentEngine:
         def _wrapped(delta: str) -> None:
             if not isinstance(delta, str) or not delta:
                 return
+
+            # Sprint 6 / PR 6.2 — fast-path interrupt check.  Polled at
+            # the *top* of every delta so the latency between the user
+            # pressing ESC and the stream actually stopping is bounded
+            # by one chunk arrival (typically <50 ms for any modern
+            # provider).  Cost is one dict lookup + one RLock acquire
+            # — ~100 ns per call, ~0.01 % CPU even at 1000 chunks/s.
+            #
+            # The exception is a ``BaseException`` subclass so the
+            # ``except Exception:`` clauses in providers / middleware
+            # do not accidentally swallow it.  See
+            # ``runtime/exceptions.py`` for the full rationale.
+            if self._is_interrupted(request.session_id, context):
+                partial = str(
+                    context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or ""
+                )
+                raise EngineInterrupted(
+                    reason="user-interrupt",
+                    partial_text=partial,
+                    was_in_tool_call=False,
+                )
+
             if getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
                 current = str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or "")
                 context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = current + delta
@@ -2355,7 +2398,21 @@ class AgentEngine:
         merged.insert(0, {"role": "system", "content": prompt})
         return merged
 
-    def _is_interrupted(self, session_id: str) -> bool:
+    def _signal_for_request(self, request: EngineRequest) -> InterruptSignal:
+        if request.interrupt_signal is not None:
+            return request.interrupt_signal
+        return self.services.interrupt_controller.signal_for(request.session_id)
+
+    def _signal_for_context(self, context: TurnContext) -> InterruptSignal | None:
+        signal = context.interrupt_signal
+        if signal is not None:
+            return signal
+        cached = context.metadata.get("_interrupt_signal")
+        return cached if isinstance(cached, InterruptSignal) else None
+
+    def _is_interrupted(self, session_id: str, context: TurnContext | None = None) -> bool:
+        if context is not None and context.interrupt_signal is not None:
+            return context.interrupt_signal.is_aborted()
         return self.services.interrupt_controller.is_interrupted(session_id)
 
     @staticmethod
@@ -2600,6 +2657,21 @@ class AgentEngine:
                         terminal="success",
                     )
                 return AgentEngine._ProviderInvocationOutcome(response=response)
+            except EngineInterrupted as exc:
+                # Sprint 6 / PR 6.2 — the stream callback observed a
+                # user-interrupt mid-stream and raised through the
+                # provider stack.  Package it into the existing
+                # ``interrupted=True`` channel so ``run_loop`` does not
+                # need a separate handler, and stash the partial text +
+                # tool-call flag on context.metadata for ``_build_result``
+                # to surface under ``EngineResult.metadata["interrupt"]``.
+                context.metadata["interrupt"] = {
+                    "reason": exc.reason,
+                    "partial_text": exc.partial_text,
+                    "was_in_tool_call": exc.was_in_tool_call,
+                    "triggered_at": time.time(),
+                }
+                return AgentEngine._ProviderInvocationOutcome(interrupted=True)
             except ProviderInvocationError as exc:
                 # Bump the observability counter once per failed attempt.
                 context.metadata[TURN_KEY_PROVIDER_ERROR_RETRIES] = (
@@ -2768,6 +2840,7 @@ class AgentEngine:
                         decision.wait_seconds,
                         interrupt_controller=self.services.interrupt_controller,
                         session_id=request.session_id,
+                        interrupt_signal=self._signal_for_context(context),
                     )
                     attempt_state.total_wait_seconds += decision.wait_seconds
                     if not completed:
@@ -3998,6 +4071,39 @@ class AgentEngine:
             }
         )
 
+    def _append_interrupt_marker_message(self, messages: List[Dict[str, Any]], marker: str) -> None:
+        messages.append({"role": "user", "content": marker})
+
+    def _preserve_interrupt_context(self, messages: List[Dict[str, Any]], context: TurnContext) -> None:
+        interrupt_meta = context.metadata.get("interrupt")
+        if not isinstance(interrupt_meta, dict):
+            return
+        partial_text = str(interrupt_meta.get("partial_text") or "").strip()
+        was_in_tool_call = bool(interrupt_meta.get("was_in_tool_call", False))
+        marker = str(interrupt_meta.get("marker") or select_interrupt_marker(was_in_tool_call=was_in_tool_call))
+        interrupt_meta["marker"] = marker
+        interrupt_meta["partial_assistant_chars"] = len(partial_text)
+
+        if partial_text:
+            last = messages[-1] if messages else None
+            if not (
+                isinstance(last, dict)
+                and last.get("role") == "assistant"
+                and str(last.get("content") or "").strip() == partial_text
+            ):
+                self._append_assistant_text_message(
+                    messages,
+                    NormalizedResponse(content=partial_text, finish_reason="interrupt"),
+                )
+
+        last = messages[-1] if messages else None
+        if not (
+            isinstance(last, dict)
+            and last.get("role") == "user"
+            and str(last.get("content") or "").strip() == marker
+        ):
+            self._append_interrupt_marker_message(messages, marker)
+
     def _apply_pending_steer_to_tool_results(
         self,
         messages: List[Dict[str, Any]],
@@ -4662,6 +4768,8 @@ class AgentEngine:
             messages=messages,
             context=context,
         )
+        if exit_reason == ExitReason.INTERRUPTED:
+            self._preserve_interrupt_context(messages, context)
 
         if exit_reason == ExitReason.INTERRUPTED:
             status = EngineStatus.INTERRUPTED
@@ -4842,6 +4950,16 @@ class AgentEngine:
                 "trajectory",
                 {"saved": False, "path": None, "error": None},
             ),
+            # Sprint 6 / PR 6.2 — populated when the turn ended via a
+            # user-interrupt that was observed inside the stream
+            # callback / tool path.  Schema:
+            #   {"reason": str,
+            #    "partial_text": str,
+            #    "was_in_tool_call": bool,
+            #    "triggered_at": float}
+            # ``None`` on every non-interrupted turn so consumers can
+            # branch on truthiness instead of catching KeyErrors.
+            "interrupt": context.metadata.get("interrupt"),
             # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
             # Filled by the live ``IterationBudget`` instance the loop
             # carries on ``context.metadata['_iteration_budget_obj']``.

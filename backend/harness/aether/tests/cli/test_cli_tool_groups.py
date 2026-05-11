@@ -216,15 +216,21 @@ class ToolGroupTrackerTests(unittest.TestCase):
         assert active is not None
         self.assertFalse(active.is_active)
 
-    def test_begin_iteration_flushes_past_tense_to_sink(self) -> None:
+    def test_begin_iteration_flushes_explore_tree_to_sink(self) -> None:
+        # Tracker now flushes the codex-style ``● Explored`` umbrella +
+        # tree of sub-calls (replaces the old ``Read 1 file`` summary
+        # headline).  The middleware passes pre-computed verb/detail so
+        # the tree rows read as ``<Verb> <detail>``.
         tracker = ToolGroupTracker(sink=self._sink)
-        tracker.start_call("Read", {"file_path": "x"})
+        tracker.start_call("Read", {"file_path": "x"}, verb="Read", detail="x")
         tracker.finish_call()
         tracker.begin_iteration()
         self.assertIsNone(tracker.active)
         self.assertEqual(len(self.printed), 1)
-        self.assertIn("Read", self.printed[0].plain)
-        self.assertIn("1 file", self.printed[0].plain)
+        plain = self.printed[0].plain
+        self.assertIn("Explored", plain)
+        self.assertIn("Read", plain)
+        self.assertIn("x", plain)
 
     def test_flush_active_with_no_group_is_noop(self) -> None:
         tracker = ToolGroupTracker(sink=self._sink)
@@ -238,23 +244,36 @@ class ToolGroupTrackerTests(unittest.TestCase):
         self.assertIsNone(tracker.active)
         self.assertEqual(self.printed, [])
 
-    def test_consecutive_iterations_print_two_separate_lines(self) -> None:
+    def test_consecutive_iterations_print_two_separate_explore_trees(self) -> None:
+        # Each iteration's burst becomes its own ``● Explored`` block
+        # in scrollback, with the tree containing every sub-call from
+        # that iteration.
         tracker = ToolGroupTracker(sink=self._sink)
         # Iteration 1: 2 reads
-        tracker.start_call("Read", {"file_path": "a"})
-        tracker.start_call("Read", {"file_path": "b"})
+        tracker.start_call("Read", {"file_path": "a"}, verb="Read", detail="a")
+        tracker.start_call("Read", {"file_path": "b"}, verb="Read", detail="b")
         tracker.finish_call()
         tracker.finish_call()
         # Boundary
         tracker.begin_iteration()
         # Iteration 2: 1 search
-        tracker.start_call("Grep", {"pattern": "foo"})
+        tracker.start_call(
+            "Grep", {"pattern": "foo"}, verb="Search", detail='"foo"',
+        )
         tracker.finish_call()
         tracker.flush_active()
         self.assertEqual(len(self.printed), 2)
-        self.assertIn("Read", self.printed[0].plain)
-        self.assertIn("2 files", self.printed[0].plain)
-        self.assertIn("Searched for", self.printed[1].plain)
+        first = self.printed[0].plain
+        second = self.printed[1].plain
+        # Iteration 1: explore tree with both reads
+        self.assertIn("Explored", first)
+        self.assertIn("Read", first)
+        self.assertIn("a", first)
+        self.assertIn("b", first)
+        # Iteration 2: explore tree with the search
+        self.assertIn("Explored", second)
+        self.assertIn("Search", second)
+        self.assertIn("foo", second)
 
 
 if __name__ == "__main__":

@@ -126,6 +126,85 @@ class AetherAppQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(app._exit_requested)
 
 
+class AetherAppStreamingPreviewCapTests(unittest.TestCase):
+    """Streaming preview must keep growing with terminal height.
+
+    The legacy implementation hard-capped the preview at 12 rows so
+    long streaming responses froze visually — the bottom region
+    plateaued, then ``end_stream`` flushed the full body to scrollback
+    in one jarring jump.  The dynamic cap (``terminal_rows - reserved``)
+    lets the preview grow naturally for as long as the terminal can
+    fit it.
+    """
+
+    @staticmethod
+    def _build_app() -> AetherApp:
+        ui = CLIUI(Console())
+
+        async def submit(line: str) -> None:
+            pass
+
+        return AetherApp(ui, submit)
+
+    def test_dynamic_cap_grows_with_terminal_height(self) -> None:
+        app = self._build_app()
+
+        class _Out:
+            def __init__(self, rows: int) -> None:
+                self.rows = rows
+
+            def get_size(self):
+                # Mimic prompt_toolkit's Size dataclass shape.
+                size = type("S", (), {})()
+                size.rows = self.rows
+                size.columns = 80
+                return size
+
+        # 24-row terminal: 24 - 9 reserved = 15 (still above the floor).
+        app._app.output = _Out(24)  # type: ignore[assignment]
+        self.assertEqual(app._streaming_preview_max_rows(), 15)
+        # 50-row terminal: meaningfully more space (was hard-capped at 12).
+        app._app.output = _Out(50)  # type: ignore[assignment]
+        self.assertEqual(app._streaming_preview_max_rows(), 41)
+        # 100-row terminal: nearly the whole screen is preview.
+        app._app.output = _Out(100)  # type: ignore[assignment]
+        self.assertEqual(app._streaming_preview_max_rows(), 91)
+
+    def test_dynamic_cap_floors_to_min_when_terminal_is_tiny(self) -> None:
+        app = self._build_app()
+
+        class _Out:
+            class _Size:
+                rows = 8
+                columns = 80
+
+            def get_size(self):
+                return self._Size()
+
+        app._app.output = _Out()  # type: ignore[assignment]
+        # 8 - 9 = -1 → floor to the 12-row min so the layout still
+        # has *something* to allocate.
+        self.assertEqual(
+            app._streaming_preview_max_rows(),
+            app._streaming_preview_min_cap,
+        )
+
+    def test_dynamic_cap_falls_back_when_get_size_raises(self) -> None:
+        # Detached / piped stdout: ``get_size`` may raise OSError.
+        # We must still return a usable cap so streaming can proceed.
+        app = self._build_app()
+
+        class _BrokenOut:
+            def get_size(self):
+                raise OSError("no tty")
+
+        app._app.output = _BrokenOut()  # type: ignore[assignment]
+        self.assertEqual(
+            app._streaming_preview_max_rows(),
+            app._streaming_preview_min_cap,
+        )
+
+
 class AetherAppRendererTests(unittest.TestCase):
     """The public text providers feed the prompt_toolkit FormattedTextControl."""
 

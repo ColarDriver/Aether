@@ -22,8 +22,21 @@ from aether.cli.activity import (
     MODE_THINKING,
     MODE_TOOL_USE,
 )
-from aether.cli.tool_groups import hint_for_call
-from aether.cli.ui import CLIUI, _verb_for_tool
+from aether.cli.tool_groups import ToolCategory, category_for, hint_for_call
+from aether.cli.ui import CLIUI, _truncate_inline, _verb_for_tool
+
+
+# Categories that get COALESCED under a single ``● Explored`` umbrella
+# header with a tree of sub-calls underneath, claude/codex-style.
+# Bash / Web / Subagent / MCP stay per-call because their output IS
+# the user-relevant signal and lives inline below the call header.
+_EXPLORE_CATEGORIES: frozenset[ToolCategory] = frozenset({
+    ToolCategory.READ,
+    ToolCategory.LIST,
+    ToolCategory.SEARCH,
+    ToolCategory.WRITE,
+    ToolCategory.EDIT,
+})
 from aether.runtime.contracts import (
     LoopState,
     NormalizedResponse,
@@ -81,12 +94,11 @@ class CLIUIMiddleware(EngineMiddleware):
         st.has_active_tools = True
 
         if isinstance(call, ToolResult):
-            # Short-circuit: the call never runs.  We still feed the
-            # tracker so the headline reflects what the model asked for,
-            # then immediately mark it finished so the active-group line
-            # doesn't linger.
-            self.ui.tool_groups.start_call(call.name, {})
-            self.ui.tool_groups.finish_call(is_error=call.is_error)
+            # Short-circuit: the call never runs.  We render the
+            # call header + result inline (not via the explore
+            # tracker) so the user sees the policy-denial reason
+            # without it being collapsed into an "Explored" burst.
+            self.ui.tool_groups.flush_active()
             self.ui.stats.tool_calls += 1
             if call.is_error:
                 self.ui.stats.tool_errors += 1
@@ -103,41 +115,67 @@ class CLIUIMiddleware(EngineMiddleware):
 
         args = dict(call.arguments or {})
         # End any in-flight stream so the prelude lands in scrollback
-        # before the tool group line / active-group preview shows up.
-        # ``ToolGroupTracker`` itself doesn't care about ordering, but
-        # the active-group rendering inside ``_TurnSurface`` relies on
-        # the prelude being flushed so it doesn't get tail-cropped.
+        # before the explore tree / standalone call shows up.
         if self.ui._stream.active:
             self.ui.end_stream()
 
-        self.ui.tool_groups.start_call(call.name, args)
         self.ui.stats.tool_calls += 1
 
-        # Reuse the same human-readable verb the tracker will display
-        # ("Reading file…", "Running command…", …) so the activity bar
-        # visibly follows the action that's underway.  Prefer a short
-        # hint over the raw verb because it's more informative.
         verb = _verb_for_tool(call.name)
         hint = hint_for_call(call.name, args)
         bar_verb = f"{verb}…  {hint}" if hint else f"{verb}…"
         self.ui.set_status(bar_verb, spinner="dots")
 
-        # Verbose: keep the per-call legacy block for debugging.  In
-        # normal mode this is a no-op (see ``CLIUI.render_tool_call``).
-        self.ui.render_tool_call(call.name, args, tool_call_id=call.id)
+        cat = category_for(call.name)
+        if cat in _EXPLORE_CATEGORIES:
+            # Coalesce into the current ``● Explored`` umbrella.
+            # Per-call rendering is *deferred* until the umbrella
+            # flushes (next non-explore call, iteration boundary,
+            # or end_turn) — that's what produces the codex-style
+            # tree instead of one bullet per Read/List/Search.
+            #
+            # ``hint_for_call`` is category-aware (Search formats as
+            # ``"pattern" in path``, Read/List/Edit/Write give just
+            # the path) so the tree rows read naturally without us
+            # having to special-case each tool here.
+            detail = _truncate_inline(hint_for_call(call.name, args))
+            self.ui.tool_groups.start_call(
+                call.name, args, verb=verb, detail=detail,
+            )
+        else:
+            # Standalone call (Bash / Web / Subagent / MCP / Other) —
+            # flush any pending explore burst first so the tree
+            # always lands in scrollback ABOVE this call's header,
+            # then render the per-call ``● <Verb> <detail>`` line.
+            # ``render_tool_result`` will append the output block
+            # under it when the result arrives.
+            self.ui.tool_groups.flush_active()
+            self.ui.render_tool_call(call.name, args, tool_call_id=call.id)
+
         st.tool_use_count += 1
         return call
 
     def after_tool(self, result: ToolResult, context: TurnContext) -> ToolResult:
-        self.ui.tool_groups.finish_call(is_error=result.is_error)
         if result.is_error:
             self.ui.stats.tool_errors += 1
-        self.ui.render_tool_result(
-            result.name,
-            result.content,
-            is_error=result.is_error,
-            metadata=dict(result.metadata),
-        )
+
+        cat = category_for(result.name)
+        if cat in _EXPLORE_CATEGORIES:
+            # Explore call: tally the result on the umbrella's
+            # active group (so the tree can mark errored entries
+            # with ``(failed)``); content stays unrendered — the
+            # filename on the call line is enough.
+            self.ui.tool_groups.finish_call(is_error=result.is_error)
+        else:
+            # Standalone call: render its output block (or error) below
+            # the call header from before_tool.
+            self.ui.render_tool_result(
+                result.name,
+                result.content,
+                is_error=result.is_error,
+                metadata=dict(result.metadata),
+            )
+
         # Tool finished — bar goes back to a thinking verb for the gap
         # between tool result and the next LLM iteration.
         st = self.ui._turn_state

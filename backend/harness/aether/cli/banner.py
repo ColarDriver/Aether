@@ -6,7 +6,6 @@ import os
 import shutil
 from dataclasses import dataclass
 
-from rich.align import Align
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
@@ -192,20 +191,36 @@ def _hint_line() -> Text:
     return txt
 
 
-def render_banner(console: Console, info: BannerInfo) -> None:
-    """Print the Aether welcome banner: logo + info panel + key hints."""
-    term_width = shutil.get_terminal_size((100, 24)).columns
-    compact = term_width < (_logo_width(compact=False) + 4)
+_BANNER_MAX_WIDTH = 72
 
-    logo = _render_logo(compact=compact)
+
+def render_banner(console: Console, info: BannerInfo) -> None:
+    """Print the Aether welcome banner: tagline + info panel + key hints.
+
+    Compact layout: just a slim panel with the tagline and the info
+    table (provider / model / session / cwd / tools / system).  We
+    bound the panel width to ``_BANNER_MAX_WIDTH`` so it doesn't span
+    the entire terminal — the content inside is short and a panel
+    that hugs the content reads as a "session header" instead of a
+    splash screen.
+
+    The wide ASCII ``AETHER`` wordmark + mascot used to live above
+    the tagline (see ``_render_logo`` / ``_LOGO_LINES``) but was
+    visually overwhelming relative to the info it framed.  We keep
+    those helpers around in case we ever want to re-introduce a
+    splash mode behind a flag, but the default boot UI now skips
+    them entirely.
+    """
+    term_width = shutil.get_terminal_size((100, 24)).columns
+    panel_width = min(_BANNER_MAX_WIDTH, max(48, term_width - 4))
+
     tagline = Text(
-        f"  industrial agent harness  v{info.version}",
+        f"industrial agent harness  v{info.version}",
         style=f"italic {AETHER_DIM}",
         justify="left",
     )
 
     body = Group(
-        Align.left(logo),
         tagline,
         Text(),
         _info_table(info),
@@ -214,15 +229,19 @@ def render_banner(console: Console, info: BannerInfo) -> None:
     panel = Panel(
         body,
         border_style=f"{AETHER_PRIMARY_DIM}",
-        padding=(1, 2),
+        padding=(0, 2),
         title=Text(f"{icon('logo')} Aether", style=f"bold {AETHER_PRIMARY}"),
         title_align="left",
-        subtitle=_hint_line(),
-        subtitle_align="center",
+        width=panel_width,
+        expand=False,
     )
 
     console.print()
     console.print(panel)
+    # Hint line lives outside the panel so it can stretch to the full
+    # terminal width without being cropped by the (intentionally
+    # narrow) panel border.
+    console.print(_hint_line())
     console.print()
 
 

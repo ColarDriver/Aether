@@ -50,15 +50,13 @@ from typing import Awaitable, Callable, Optional
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout, Window
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
-    Float,
-    FloatContainer,
     HSplit,
 )
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -208,12 +206,22 @@ class AetherApp:
 
         self._renderer = _RichRenderer()
 
-        # Streaming preview cap — the bottom region shows at most this
-        # many rows of the in-flight assistant body.  When the response
-        # exceeds the cap the *tail* is shown so users see the latest
-        # tokens; the full formatted body still lands in scrollback at
-        # ``end_stream``.
-        self._streaming_preview_max_rows: int = 12
+        # Floor on the streaming preview cap.  The actual cap is computed
+        # dynamically from the terminal height (see
+        # :meth:`_streaming_preview_max_rows`) so the in-flight body
+        # grows as far as the terminal allows; this constant is just
+        # the fallback for the rare path where ``output.get_size()``
+        # can't tell us the real geometry (detached / piped stdout).
+        self._streaming_preview_min_cap: int = 12
+
+        # Rows reserved at the bottom of the terminal for the rest of
+        # the layout — input frame border (2) + 1 row of input content
+        # + footer (1) + activity bar (1) + reasoning excerpt (1) +
+        # leading spacer (1) + a 2-row safety buffer for resize jitter
+        # = 9 rows.  We subtract this from the terminal height to
+        # decide how tall the streaming preview can grow before we
+        # tail-crop.
+        self._streaming_preview_reserved_rows: int = 9
 
         # Per-frame snapshot of the streaming preview — refreshed at the
         # start of every prompt_toolkit render cycle so the height
@@ -376,6 +384,24 @@ class AetherApp:
             wrap_lines=False,
         )
 
+        # Slash-command completion menu — placed *above* the input
+        # frame as a regular HSplit child rather than floating below
+        # the cursor.  Why: prompt_toolkit's ``Float(ycursor=True)``
+        # tries to draw the popup below the cursor and only flips
+        # upward when the *full* ``max_height`` rows fit above; in a
+        # short IDE terminal pane (small Cursor split, narrow split-
+        # screen layout, …) neither side has 12 free rows, so the
+        # float falls back to "draw below" with whatever space is
+        # left — which clipped the menu to 1-2 visible entries.
+        # Inlining the menu in the HSplit gives prompt_toolkit's row
+        # allocator dedicated space for the popup so it always shows
+        # however many entries the terminal can fit, without
+        # overlapping the input frame border.
+        completions_menu = ConditionalContainer(
+            content=CompletionsMenu(max_height=12, scroll_offset=1),
+            filter=has_completions,
+        )
+
         root = HSplit(
             [
                 spacer_container,
@@ -383,23 +409,13 @@ class AetherApp:
                 active_group_container,
                 activity_container,
                 reasoning_container,
+                completions_menu,
                 input_frame,
                 footer_window,
             ],
         )
 
-        layout = Layout(
-            FloatContainer(
-                content=root,
-                floats=[
-                    Float(
-                        xcursor=True,
-                        ycursor=True,
-                        content=CompletionsMenu(max_height=12, scroll_offset=1),
-                    ),
-                ],
-            )
-        )
+        layout = Layout(root)
 
         app: Application[None] = Application(
             layout=layout,
@@ -416,10 +432,10 @@ class AetherApp:
             refresh_interval=0.2,
         )
         # Refresh the streaming preview snapshot at the start of every
-        # render cycle so the height callback and the text callback see
-        # the same buffer state — otherwise the engine thread can append
-        # tokens between the two queries and the activity bar will
-        # overpaint the preview's tail row.
+        # render cycle so the height callback and the text callback
+        # see the same buffer state — otherwise the engine thread can
+        # append tokens between the two queries and the activity bar
+        # will overpaint the preview's tail row.
         app.before_render += lambda *_: self._refresh_preview_cache()
         return app
 
@@ -559,11 +575,34 @@ class AetherApp:
         """
         return ANSI(self._cached_preview_text)
 
+    def _streaming_preview_max_rows(self) -> int:
+        """Compute the streaming preview cap from current terminal height.
+
+        Returns ``terminal_rows - reserved`` so the preview window
+        keeps growing with the in-flight response — claude-code-style
+        — instead of hitting a hard 12-row ceiling and tail-cropping
+        the rest of the stream.  Falls back to
+        ``_streaming_preview_min_cap`` (12 rows) when the geometry
+        can't be queried (piped / detached stdout in tests).
+
+        The cap is recomputed every call (cheap — one ``get_size``)
+        so a terminal resize while a stream is in flight immediately
+        adjusts the available preview area.
+        """
+        try:
+            rows = int(self._app.output.get_size().rows)
+        except Exception:  # noqa: BLE001
+            return self._streaming_preview_min_cap
+        return max(
+            self._streaming_preview_min_cap,
+            rows - self._streaming_preview_reserved_rows,
+        )
+
     def _streaming_preview_height(self) -> D:
         """Exact-row dimension matching the cached preview snapshot."""
         if self._cached_preview_lines <= 0:
             return D.exact(0)
-        return D.exact(min(self._cached_preview_lines, self._streaming_preview_max_rows))
+        return D.exact(min(self._cached_preview_lines, self._streaming_preview_max_rows()))
 
     def _refresh_preview_cache(self, *_args, **_kwargs) -> None:
         """Recompute the streaming preview snapshot for the next render.
@@ -617,7 +656,12 @@ class AetherApp:
                 width=cols,
             )
             lines = rendered.splitlines()
-            max_rows = max(1, self._streaming_preview_max_rows)
+            # Tail-crop only when the rendered body actually exceeds
+            # the (terminal-aware) preview cap so users see the latest
+            # tokens; below the cap every single newline grows the
+            # preview window so the visual length tracks the response
+            # length all the way through streaming.
+            max_rows = max(1, self._streaming_preview_max_rows())
             if len(lines) > max_rows:
                 lines = lines[-max_rows:]
             stripped = [line.rstrip() for line in lines]

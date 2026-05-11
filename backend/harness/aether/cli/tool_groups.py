@@ -31,6 +31,7 @@ from rich.text import Text
 
 from aether.cli.theme import (
     AETHER_DIM,
+    AETHER_ERROR,
     AETHER_PRIMARY,
     AETHER_TEXT,
     AETHER_WARNING,
@@ -297,11 +298,23 @@ def hint_for_call(name: str, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 @dataclass(slots=True)
+class ToolGroupEntry:
+    """One sub-call inside an explore burst — verb + detail for the tree."""
+
+    verb: str
+    detail: str
+    is_error: bool = False
+
+
+@dataclass(slots=True)
 class ToolGroup:
     """Aggregated state for one or more dispatches inside a single iteration.
 
     Survives until ``ToolGroupTracker.flush_active`` is called, which
     happens at iteration boundaries (``before_llm``) and on turn end.
+    Each call's ``(verb, detail)`` is captured so the flush sink can
+    render the codex-style ``● Explored`` umbrella with a tree of
+    sub-calls underneath.
     """
 
     counts: dict[ToolCategory, int] = field(default_factory=dict)
@@ -310,8 +323,16 @@ class ToolGroup:
     in_flight: int = 0
     has_error: bool = False
     total_calls: int = 0
+    entries: list[ToolGroupEntry] = field(default_factory=list)
 
-    def add_call(self, name: str, args: dict[str, Any]) -> None:
+    def add_call(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        verb: str = "",
+        detail: str = "",
+    ) -> None:
         cat = category_for(name)
         self.counts[cat] = self.counts.get(cat, 0) + 1
         self.last_category = cat
@@ -320,12 +341,26 @@ class ToolGroup:
             self.last_hint = hint
         self.in_flight += 1
         self.total_calls += 1
+        # Stash the per-call display fragment so flush_active can
+        # render the explore tree.  Verb/detail come precomputed from
+        # the middleware (which owns the verb table) to keep this
+        # module free of UI-renderer imports.
+        self.entries.append(ToolGroupEntry(verb=verb or cat.value, detail=detail))
 
     def finish_call(self, *, is_error: bool = False) -> None:
         if self.in_flight > 0:
             self.in_flight -= 1
         if is_error:
             self.has_error = True
+            # Mark the most recent unmarked entry as errored.  We
+            # don't track per-call ids so the heuristic is "the most
+            # recently added entry that isn't already an error" —
+            # works for single-in-flight groups and is a best-effort
+            # for parallel dispatch.
+            for entry in reversed(self.entries):
+                if not entry.is_error:
+                    entry.is_error = True
+                    break
 
     @property
     def is_active(self) -> bool:
@@ -364,6 +399,46 @@ class ToolGroup:
         line.append("  ⎿ ", style=AETHER_DIM)
         line.append(self.last_hint, style=f"dim {AETHER_TEXT}")
         return line
+
+    def render_explore_tree(self) -> Text:
+        """Render the codex-style ``● Explored`` umbrella + sub-call tree.
+
+        Shape::
+
+            ● Explored
+              ⎿ Read backend/harness/aether/cli/ui.py
+                List backend/harness/aether/tools
+                Search "ToolCategory" in backend/
+                Read backend/harness/aether/runtime/contracts.py
+
+        The first sub-call uses the ``⎿`` corner glyph; subsequent
+        rows align with the content column for a clean tree look.
+        Errored entries are tagged with a dim ``(failed)`` suffix
+        so the user can spot retries inside the burst without
+        having to re-run.
+        """
+        bullet = icon("assistant") or "●"
+        text = Text()
+        text.append(f"{bullet} ", style=f"bold {AETHER_PRIMARY}")
+        text.append("Explored", style=f"bold {AETHER_TEXT}")
+        if self.has_error:
+            text.append(f"  {icon('warn')} ", style=f"bold {AETHER_WARNING}")
+            text.append("with errors", style=AETHER_WARNING)
+        text.append("\n")
+
+        for i, entry in enumerate(self.entries):
+            prefix = "  ⎿ " if i == 0 else "    "
+            text.append(prefix, style=AETHER_DIM)
+            text.append(entry.verb, style=f"bold {AETHER_TEXT}")
+            if entry.detail:
+                text.append(" ", style="")
+                text.append(entry.detail, style=f"dim {AETHER_TEXT}")
+            if entry.is_error:
+                text.append("  ", style="")
+                text.append("(failed)", style=f"dim {AETHER_ERROR}")
+            if i < len(self.entries) - 1:
+                text.append("\n")
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -406,10 +481,17 @@ class ToolGroupTracker:
         """Flush the previous iteration's group (if any)."""
         self.flush_active()
 
-    def start_call(self, name: str, args: dict[str, Any]) -> None:
+    def start_call(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        verb: str = "",
+        detail: str = "",
+    ) -> None:
         if self._active is None:
             self._active = ToolGroup()
-        self._active.add_call(name, args)
+        self._active.add_call(name, args, verb=verb, detail=detail)
 
     def finish_call(self, *, is_error: bool = False) -> None:
         if self._active is None:
@@ -419,9 +501,9 @@ class ToolGroupTracker:
     def flush_active(self) -> None:
         if self._active is None:
             return
-        if self._active.total_calls > 0:
+        if self._active.total_calls > 0 and self._active.entries:
             try:
-                self._sink(self._active.render_headline(active=False))
+                self._sink(self._active.render_explore_tree())
             except Exception:  # noqa: BLE001 — never let render kill engine
                 pass
         self._active = None

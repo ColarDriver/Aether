@@ -16,7 +16,9 @@ from aether.cli.activity import (
 )
 from aether.cli.ui import (
     CLIUI,
+    _format_output_preview,
     _StreamState,
+    _strip_ansi,
     _TurnSurface,
     _extract_all_command_fences,
     _extract_inline_tool_intent,
@@ -127,7 +129,7 @@ class CLIUITests(unittest.TestCase):
 
     def test_inline_activity_from_bracket_style_tool_lines_uses_last_tool(self) -> None:
         activity = _inline_activity_from_text(_raw_bracket_tool_output())
-        self.assertEqual(activity, "Finding files…")
+        self.assertEqual(activity, "Glob…")
 
     def test_inline_activity_from_xml_invoke_uses_name_and_parameter(self) -> None:
         raw = (
@@ -138,7 +140,7 @@ class CLIUITests(unittest.TestCase):
             '</function_calls>'
         )
         activity = _inline_activity_from_text(raw)
-        self.assertEqual(activity, "Reading file…  README.md")
+        self.assertEqual(activity, "Read…  README.md")
 
     def test_strip_tool_blocks_hides_partial_inline_xml_tag(self) -> None:
         cleaned = strip_tool_blocks("先看看。<funct")
@@ -307,24 +309,40 @@ class ReasoningChannelTests(unittest.TestCase):
 
 
 class ToolGroupIntegrationTests(unittest.TestCase):
-    """Integration tests for the active-group renderer inside _TurnSurface."""
+    """Integration tests for tracker behaviour inside the UI surface.
 
-    def test_in_flight_tool_group_renders_headline_and_hint(self) -> None:
+    The codex-style per-call rendering (``● Running command`` +
+    ``  └ <detail>`` + ``    ⎿ <output>`` printed by
+    :meth:`CLIUI.render_tool_call` / :meth:`CLIUI.render_tool_result`)
+    replaced the old coalesced ``● Searching for 2 patterns…`` view in
+    both the live region and the past-tense scrollback flush.  These
+    tests pin both suppressions so we don't accidentally regress to
+    duplicated "ran X commands" output above an already-rendered list
+    of per-call lines.
+    """
+
+    def test_in_flight_tool_group_no_longer_rendered_inside_turn_surface(self) -> None:
+        # The activity bar carries the live "Running command…  $ ls -la"
+        # signal, and per-call ``● Running command`` lines hit
+        # scrollback at dispatch time — a third surface inside the
+        # Live region would just duplicate them.
         console = Console(record=True, width=100, height=10, force_terminal=False)
         ui = CLIUI(console)
         ui._turn_state.verb = "Searching"
-        # Simulate the middleware path: start a tool call, but don't
-        # finish it yet.  The active group should render in _TurnSurface.
         ui.tool_groups.start_call("Bash", {"command": "ls -la"})
 
         console.print(_TurnSurface(ui))
         output = console.export_text()
-        self.assertIn("Running", output)
-        self.assertIn("1 command", output)
-        self.assertIn("⎿", output)
-        self.assertIn("$ ls -la", output)
+        self.assertNotIn("1 command", output)
+        self.assertNotIn("$ ls -la", output)
+        # Activity bar verb still surfaces — that's the in-flight signal now.
+        self.assertIn("Searching", output)
 
-    def test_resolved_group_flushes_past_tense_to_scrollback(self) -> None:
+    def test_resolved_group_does_not_flush_past_tense_to_scrollback(self) -> None:
+        # ``ui.tool_groups`` still tracks counts (used by stats and
+        # activity-bar mode transitions), but the UI sink no longer
+        # writes the ``● Ran 1 file`` headline because the per-call
+        # rendering is the visible record now.
         console = Console(record=True, width=100, force_terminal=False)
         ui = CLIUI(console)
         ui.tool_groups.start_call("Read", {"file_path": "README.md"})
@@ -332,12 +350,10 @@ class ToolGroupIntegrationTests(unittest.TestCase):
         ui.tool_groups.flush_active()
 
         output = console.export_text()
-        self.assertIn("Read", output)
-        self.assertIn("1 file", output)
-        # Past tense must not carry the trailing ellipsis used by active.
+        self.assertNotIn("Read 1 file", output)
         self.assertNotIn("Reading 1 file…", output)
 
-    def test_tool_group_renders_two_categories_in_one_headline(self) -> None:
+    def test_tool_group_active_no_longer_rendered_for_two_categories(self) -> None:
         console = Console(record=True, width=120, height=10, force_terminal=False)
         ui = CLIUI(console)
         ui._turn_state.verb = "Searching"
@@ -346,9 +362,143 @@ class ToolGroupIntegrationTests(unittest.TestCase):
 
         console.print(_TurnSurface(ui))
         output = console.export_text()
-        # Both categories on one line.
-        self.assertIn("Searching for 1 pattern", output)
-        self.assertIn("reading 1 file", output)
+        self.assertNotIn("Searching for 1 pattern", output)
+        self.assertNotIn("reading 1 file", output)
+
+
+class PerCallRenderingTests(unittest.TestCase):
+    """Codex-style ``● <verb>`` + ``  └ <detail>`` + ``    ⎿ <output>`` tree.
+
+    Replaces the old verbose-only per-call path: every dispatch now
+    renders a two-line header at call-start time and an indented
+    output preview when the result lands.
+    """
+
+    def test_render_tool_call_prints_single_line_header_without_verbose(self) -> None:
+        console = Console(record=True, width=100, force_terminal=False)
+        ui = CLIUI(console)  # NOT verbose
+
+        ui.render_tool_call("Bash", {"command": "git status"})
+
+        output = console.export_text()
+        # Single-word verb + detail on the same line (claude/codex style).
+        self.assertIn("Bash", output)
+        self.assertIn("git status", output)
+
+    def test_render_tool_call_prints_header_with_path_for_read(self) -> None:
+        console = Console(record=True, width=120, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Read", {"file_path": "backend/harness/aether/cli/ui.py"})
+
+        output = console.export_text()
+        self.assertIn("Read", output)
+        self.assertIn("backend/harness/aether/cli/ui.py", output)
+
+    def test_render_tool_result_renders_short_output_for_bash(self) -> None:
+        console = Console(record=True, width=120, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Bash", {"command": "git status"})
+        ui.render_tool_result(
+            "Bash",
+            "On branch master\nnothing to commit, working tree clean\n",
+        )
+
+        output = console.export_text()
+        self.assertIn("Bash", output)
+        self.assertIn("git status", output)
+        self.assertIn("⎿", output)
+        self.assertIn("On branch master", output)
+        self.assertIn("nothing to commit, working tree clean", output)
+
+    def test_render_tool_result_truncates_long_bash_output_with_summary(self) -> None:
+        console = Console(record=True, width=120, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Bash", {"command": "ls -la"})
+        long_output = "\n".join(f"line-{i:03d}" for i in range(40))
+        ui.render_tool_result("Bash", long_output)
+
+        output = console.export_text()
+        # First few lines visible.
+        self.assertIn("line-000", output)
+        self.assertIn("line-009", output)
+        # Tail dropped.
+        self.assertNotIn("line-039", output)
+        # Truncation summary present with line count + size hint.
+        self.assertIn("more line", output)
+
+    def test_render_tool_result_silent_for_read_even_with_content(self) -> None:
+        # Read / List / Edit / Write / Search results are filename-level
+        # by design — the contents are for the model, not the user.
+        # Only the call header (``● Read foo.py``) lands in scrollback.
+        console = Console(record=True, width=100, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Read", {"file_path": "foo.py"})
+        ui.render_tool_result("Read", "line 1\nline 2\nline 3")
+
+        output = console.export_text()
+        self.assertIn("Read", output)
+        self.assertIn("foo.py", output)
+        # File contents must NOT leak into the transcript.
+        self.assertNotIn("⎿", output)
+        self.assertNotIn("line 1", output)
+
+    def test_render_tool_result_silent_on_empty_success_content(self) -> None:
+        console = Console(record=True, width=100, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Edit", {"file_path": "foo.py"})
+        ui.render_tool_result("Edit", "")  # Edit/Write commonly returns ""
+
+        output = console.export_text()
+        self.assertIn("Edit", output)
+        # No trailing ``⎿`` row for the empty result.
+        self.assertNotIn("⎿", output)
+
+    def test_render_tool_result_renders_error_with_message(self) -> None:
+        console = Console(record=True, width=100, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Bash", {"command": "git status"})
+        ui.render_tool_result("Bash", "fatal: not a git repository", is_error=True)
+
+        output = console.export_text()
+        self.assertIn("⎿", output)
+        self.assertIn("fatal: not a git repository", output)
+
+    def test_render_tool_result_error_with_empty_content_still_prints_placeholder(self) -> None:
+        console = Console(record=True, width=100, force_terminal=False)
+        ui = CLIUI(console)
+        ui.render_tool_call("Bash", {"command": "false"})
+        ui.render_tool_result("Bash", "", is_error=True)
+
+        output = console.export_text()
+        # Errors must always surface even with empty content so users
+        # see *that* something failed even without details.
+        self.assertIn("⎿", output)
+        self.assertIn("(no message)", output)
+
+    def test_format_output_preview_strips_ansi_color_codes(self) -> None:
+        # `git status -c` colourised output must not leak escape bytes
+        # into the rendered preview.
+        raw = "\x1b[31m M\x1b[m foo.txt\n\x1b[32m A\x1b[m bar.txt"
+        lines, summary = _format_output_preview(raw)
+        self.assertEqual(summary, "")
+        self.assertEqual(lines, [" M foo.txt", " A bar.txt"])
+
+    def test_format_output_preview_returns_empty_for_whitespace_only(self) -> None:
+        self.assertEqual(_format_output_preview("   \n  \n\t"), ([], ""))
+        self.assertEqual(_format_output_preview(""), ([], ""))
+
+    def test_format_output_preview_clips_per_line_to_max_chars(self) -> None:
+        long_line = "x" * 500
+        lines, summary = _format_output_preview(long_line)
+        self.assertEqual(summary, "")
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith("…"))
+        self.assertLess(len(lines[0]), 500)
+
+    def test_strip_ansi_handles_empty_input(self) -> None:
+        self.assertEqual(_strip_ansi(""), "")
+        self.assertEqual(_strip_ansi("plain"), "plain")
+        self.assertEqual(_strip_ansi("\x1b[1mbold\x1b[0m"), "bold")
 
 
 class ActivityBarTests(unittest.TestCase):

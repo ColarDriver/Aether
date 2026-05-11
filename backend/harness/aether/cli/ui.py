@@ -46,7 +46,7 @@ from aether.cli.theme import (
     AETHER_WARNING,
     icon,
 )
-from aether.cli.tool_groups import ToolGroupTracker
+from aether.cli.tool_groups import ToolCategory, ToolGroupTracker, category_for
 
 
 # ---------------------------------------------------------------------------
@@ -338,45 +338,51 @@ def _should_render_inline_tool_preview(cleaned_text: str, stripped_chars: int) -
 # Verb mapping used to convert raw tool names into human-readable action
 # phrases.  Tools whose name isn't in the table fall through to the
 # heuristic in :func:`_verb_for_tool` below.
+#
+# Single-word verbs (claude / codex style) so the call header reads as
+# one line: ``● Read backend/harness/aether/cli/ui.py``.  Past-tense
+# base form works as both "currently doing this" and "this happened",
+# which lets us print the header at dispatch time without a verb-
+# rewrite when the result lands.
 _TOOL_VERBS: dict[str, str] = {
-    "read_file": "Reading file",
-    "read": "Reading file",
-    "Read": "Reading file",
-    "view_file": "Reading file",
-    "ViewFile": "Reading file",
-    "list_directory": "Listing directory",
-    "execute_command": "Running command",
-    "ListDirectory": "Listing directory",
-    "ls": "Listing directory",
-    "list": "Listing directory",
-    "write_file": "Writing file",
-    "WriteFile": "Writing file",
-    "Write": "Writing file",
-    "create_file": "Creating file",
-    "edit_file": "Editing file",
-    "Edit": "Editing file",
-    "EditFile": "Editing file",
-    "patch": "Patching file",
-    "apply_patch": "Applying patch",
-    "delete_file": "Deleting file",
-    "DeleteFile": "Deleting file",
-    "run_bash": "Running command",
-    "Bash": "Running command",
-    "bash": "Running command",
-    "shell": "Running command",
-    "execute": "Running command",
-    "Exec": "Running command",
-    "search": "Searching",
-    "grep": "Searching",
-    "Grep": "Searching",
-    "search_code": "Searching code",
-    "find": "Searching",
-    "Glob": "Finding files",
-    "glob": "Finding files",
-    "WebFetch": "Fetching URL",
-    "fetch_url": "Fetching URL",
-    "WebSearch": "Searching the web",
-    "Task": "Spawning subagent",
+    "read_file": "Read",
+    "read": "Read",
+    "Read": "Read",
+    "view_file": "Read",
+    "ViewFile": "Read",
+    "list_directory": "List",
+    "execute_command": "Bash",
+    "ListDirectory": "List",
+    "ls": "List",
+    "list": "List",
+    "write_file": "Write",
+    "WriteFile": "Write",
+    "Write": "Write",
+    "create_file": "Write",
+    "edit_file": "Edit",
+    "Edit": "Edit",
+    "EditFile": "Edit",
+    "patch": "Edit",
+    "apply_patch": "Edit",
+    "delete_file": "Delete",
+    "DeleteFile": "Delete",
+    "run_bash": "Bash",
+    "Bash": "Bash",
+    "bash": "Bash",
+    "shell": "Bash",
+    "execute": "Bash",
+    "Exec": "Bash",
+    "search": "Search",
+    "grep": "Search",
+    "Grep": "Search",
+    "search_code": "Search",
+    "find": "Search",
+    "Glob": "Glob",
+    "glob": "Glob",
+    "WebFetch": "Fetch",
+    "fetch_url": "Fetch",
+    "WebSearch": "Search",
+    "Task": "Task",
 }
 
 # Argument keys we'll surface as the "detail" line under the action verb.
@@ -392,25 +398,30 @@ _TOOL_DETAIL_KEYS: tuple[str, ...] = (
 
 
 def _verb_for_tool(name: str) -> str:
-    """Map a raw tool name to a human-readable verb phrase."""
+    """Map a raw tool name to a single-word action verb.
+
+    Falls through to a prefix heuristic for tools we don't know
+    explicitly (``read_secret_dossier`` → ``Read``,
+    ``execute_workflow`` → ``Bash``, …) and finally to the raw
+    name for fully unknown tools.
+    """
     name = _canonical_tool_name(name)
     if name in _TOOL_VERBS:
         return _TOOL_VERBS[name]
     lname = name.lower()
     for prefix, verb in (
-        ("read_", "Reading"), ("get_", "Reading"), ("view_", "Reading"),
-        ("write_", "Writing"), ("create_", "Creating"), ("save_", "Writing"),
-        ("edit_", "Editing"), ("update_", "Editing"), ("patch_", "Patching"),
-        ("delete_", "Deleting"), ("remove_", "Deleting"),
-        ("list_", "Listing"), ("show_", "Showing"),
-        ("run_", "Running"), ("exec_", "Running"), ("execute_", "Running"),
-        ("search_", "Searching"), ("find_", "Searching"), ("grep_", "Searching"),
-        ("fetch_", "Fetching"), ("download_", "Fetching"),
+        ("read_", "Read"), ("get_", "Read"), ("view_", "Read"),
+        ("write_", "Write"), ("create_", "Write"), ("save_", "Write"),
+        ("edit_", "Edit"), ("update_", "Edit"), ("patch_", "Edit"),
+        ("delete_", "Delete"), ("remove_", "Delete"),
+        ("list_", "List"), ("show_", "List"),
+        ("run_", "Bash"), ("exec_", "Bash"), ("execute_", "Bash"),
+        ("search_", "Search"), ("find_", "Search"), ("grep_", "Search"),
+        ("fetch_", "Fetch"), ("download_", "Fetch"),
     ):
         if lname.startswith(prefix):
-            tail = lname[len(prefix):].replace("_", " ")
-            return f"{verb} {tail}".strip()
-    return f"Calling {name}"
+            return verb
+    return name or "Call"
 
 
 def _detail_for_args(args: dict[str, Any]) -> str:
@@ -449,6 +460,91 @@ def _format_size(n_bytes: int) -> str:
     if n_bytes < 1024 * 1024:
         return f"{n_bytes / 1024:.1f} KB"
     return f"{n_bytes / 1024 / 1024:.1f} MB"
+
+
+# ---------------------------------------------------------------------------
+# Tool-result preview — codex-style "    ⎿ <line>" tree under each call
+# ---------------------------------------------------------------------------
+
+# Strip ANSI CSI sequences before display.  Many bash tools (git, grep,
+# ls --color=auto …) emit colour codes that Rich would otherwise render
+# as visible ``\x1b[31m`` literals, which is uglier than just losing the
+# colour.  We deliberately keep the strip narrow (CSI only) so any other
+# control bytes the tool meant to send round-trip unchanged.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+# Output preview budgets.  The whole point of the per-call "    ⎿ …"
+# block is to give a quick glance at what the tool returned without
+# drowning the transcript in long stdout dumps — the user can always
+# re-run with the actual command if they want the full text.
+_OUTPUT_PREVIEW_MAX_LINES = 10
+_OUTPUT_PREVIEW_MAX_CHARS = 1200
+_OUTPUT_LINE_MAX_CHARS = 200
+
+# Indent strings shared by success + error rendering of the result tree.
+_RESULT_PREFIX = "    ⎿ "      # 4 spaces + ⎿ + 1 space → content at col 6
+_RESULT_CONT = "      "         # 6 spaces — aligns continuation lines
+
+
+def _strip_ansi(text: str) -> str:
+    if not text:
+        return text
+    return _ANSI_CSI_RE.sub("", text)
+
+
+def _format_output_preview(content: str) -> tuple[list[str], str]:
+    """Return ``(lines, summary)`` for rendering tool output as a tree.
+
+    ``lines`` are the verbatim rows to print under the ``  ⎿ `` prefix
+    (already truncated to ``_OUTPUT_PREVIEW_MAX_LINES`` and clipped at
+    ``_OUTPUT_LINE_MAX_CHARS`` per row).  ``summary`` is an optional
+    trailing dim row like ``… (+12 more lines, 4.5 KB)`` indicating
+    how much was hidden — empty string when nothing was truncated.
+
+    Empty / whitespace-only content collapses to ``([], "")`` so the
+    caller can stay silent when the tool produced no output.
+    """
+    if not content:
+        return [], ""
+    cleaned = _strip_ansi(content).rstrip()
+    if not cleaned:
+        return [], ""
+
+    full_chars = len(cleaned)
+    full_lines = cleaned.split("\n")
+    total_lines = len(full_lines)
+
+    # Line-count truncation — most common shape for `git log`, `ls -la`,
+    # large `grep` dumps, etc.
+    if total_lines > _OUTPUT_PREVIEW_MAX_LINES:
+        display_lines = full_lines[:_OUTPUT_PREVIEW_MAX_LINES]
+        more_lines = total_lines - _OUTPUT_PREVIEW_MAX_LINES
+        summary = (
+            f"… (+{more_lines} more line{'s' if more_lines != 1 else ''}, "
+            f"{_format_size(full_chars)})"
+        )
+    # Character-count truncation — single very long line (eg. base64
+    # blob, json dump).  Cut at a line boundary if possible so the
+    # truncation marker doesn't land mid-word.
+    elif full_chars > _OUTPUT_PREVIEW_MAX_CHARS:
+        truncated = cleaned[:_OUTPUT_PREVIEW_MAX_CHARS]
+        last_nl = truncated.rfind("\n")
+        if last_nl > 0:
+            truncated = truncated[:last_nl]
+        display_lines = truncated.split("\n")
+        summary = f"… (truncated, {_format_size(full_chars)} total)"
+    else:
+        display_lines = full_lines
+        summary = ""
+
+    # Per-line clip so a single 5KB line doesn't blow the terminal.
+    clipped: list[str] = []
+    for line in display_lines:
+        if len(line) > _OUTPUT_LINE_MAX_CHARS:
+            clipped.append(line[: _OUTPUT_LINE_MAX_CHARS - 1] + "…")
+        else:
+            clipped.append(line)
+    return clipped, summary
 
 
 # ---------------------------------------------------------------------------
@@ -893,18 +989,17 @@ class _TurnSurface:
                     cleaned = "\n".join(lines)
                 streamed_body = ui._render_assistant(cleaned)
 
-        # Active tool group — when at least one tool is in flight, render
-        # the rolling "Searching for X, reading Y…" line plus a single
-        # ``⎿ <hint>`` row directly above the activity bar.  Mirrors
-        # claude-code's CollapsedReadSearchContent (lines 448-490) where
-        # an active group sits inline above the spinner.
-        active_group = ui.tool_groups.active
-        group_renderables: list[ConsoleRenderable] = []
-        if active_group is not None and active_group.is_active:
-            group_renderables.append(active_group.render_headline(active=True))
-            hint = active_group.render_hint()
-            if hint is not None:
-                group_renderables.append(hint)
+        # We used to render an in-flight ``● Searching for 1 pattern…
+        # ⎿ "foo" in src/`` line here, mirroring claude-code's
+        # CollapsedReadSearchContent.  The codex-style per-call
+        # rendering (``render_tool_call`` writing ``● Running command
+        # \n  └ git status`` to scrollback at dispatch time, plus the
+        # activity bar at the bottom carrying the ``Running command…
+        # $ git status`` verb) now covers both the "what's running"
+        # and "what just finished" signals — a third in-flight
+        # surface above the bar would just duplicate the activity
+        # verb.  We keep the tracker (counts feed stats + the bar's
+        # mode transitions) but no longer surface its headline here.
 
         # Reasoning excerpt — single-line dim hint shown beneath the
         # activity bar when the model is producing chain-of-thought
@@ -923,8 +1018,6 @@ class _TurnSurface:
             yield streamed_body
             return
 
-        for r in group_renderables:
-            yield r
         yield ActivityBar(ui._turn_state)
         if reasoning_renderable is not None:
             yield reasoning_renderable
@@ -1036,8 +1129,15 @@ class CLIUI:
     # Block kinds that count toward the spacer policy.  Anything not in
     # this set (info / warn / debug lines) is treated as transient and
     # doesn't reset the policy.
+    #
+    # ``tool_result`` is deliberately *absent*: result lines
+    # (``    ⎿ <output>``) belong directly under the call's
+    # ``  └ <detail>`` line with no blank gap, so we never want a
+    # spacer between a ``tool_call`` block and its trailing output.
+    # ``tool_call`` is included so back-to-back dispatches and the
+    # transition into / out of an assistant block get one blank row.
     _SPACED_BLOCK_KINDS: frozenset[str] = frozenset({
-        "user", "assistant", "tool_group", "tool_legacy", "footer",
+        "user", "assistant", "tool_group", "tool_call", "footer",
     })
 
     def _ensure_block_spacer(self, next_kind: str) -> None:
@@ -1047,24 +1147,41 @@ class CLIUI:
         we print a separator if and only if the previous spaced block
         is something we want to push apart from the new one (e.g. user
         echo → assistant prose → tool group → footer transitions).
+
+        Special case: consecutive ``tool_call`` blocks **don't** get a
+        separator.  With the codex-style single-line per-call header
+        (``● Read foo.py``), a blank row between every back-to-back
+        call is what makes a long exploratory read/list/edit burst
+        look "scattered" — the spacer takes more visual real estate
+        than the calls themselves.  Tight stacking reads as one
+        coherent activity block, which matches what the agent is
+        actually doing semantically.  We still keep the spacer for
+        the *transition* into / out of a tool burst (user → tool,
+        tool → assistant, …).
         """
         prev = self._last_block_kind
-        if prev and prev in self._SPACED_BLOCK_KINDS and next_kind in self._SPACED_BLOCK_KINDS:
-            try:
-                self.console.print()
-            except Exception:  # noqa: BLE001 — never let a spacer kill the run
-                pass
+        if not prev or prev not in self._SPACED_BLOCK_KINDS or next_kind not in self._SPACED_BLOCK_KINDS:
+            return
+        if prev == next_kind == "tool_call":
+            return
+        try:
+            self.console.print()
+        except Exception:  # noqa: BLE001 — never let a spacer kill the run
+            pass
 
     def _record_block(self, kind: str) -> None:
         if kind in self._SPACED_BLOCK_KINDS:
             self._last_block_kind = kind
 
     def _flush_tool_group(self, renderable: ConsoleRenderable) -> None:
-        """Sink wired into :class:`ToolGroupTracker` — prints the past-tense headline.
+        """Sink wired into :class:`ToolGroupTracker` — prints the explore tree.
 
-        Adds the same blank-row spacer policy used by user/assistant
-        blocks so a tool group never glues to the assistant prelude
-        directly above it.
+        The tracker passes its rendered output (a Rich :class:`Text`
+        that includes the ``● Explored`` umbrella header followed by
+        the per-call sub-call tree) and we land it in scrollback as
+        a single visually coherent block.  Same blank-row spacer
+        policy used by user/assistant blocks so an explore tree
+        never glues to the assistant prelude directly above it.
         """
         self._ensure_block_spacer("tool_group")
         self.console.print(renderable)
@@ -1659,21 +1776,27 @@ class CLIUI:
         *,
         tool_call_id: str | None = None,
     ) -> None:
-        """Verbose-only legacy rendering — one ``● <verb>`` line per call.
+        """Per-call header rendering — single-line ``● <Verb> <detail>``.
 
-        In normal mode the :class:`ToolGroupTracker` coalesces tool
-        dispatches into a single rolling line (``● Searching for 2
-        patterns, reading 1 file…``) so we deliberately do **not**
-        render anything per-call.  Verbose mode keeps the old per-call
-        block for debugging — it's the only path that reaches the
-        ``● <verb>`` + ``└ <detail>`` two-line shape.
+        Always renders (no longer verbose-gated).  Each tool dispatch
+        produces ONE line in scrollback at call-start time::
+
+            ● Read backend/harness/aether/cli/ui.py
+            ● Bash git status
+            ● Edit foo.py
+
+        :meth:`render_tool_result` appends a ``    ⎿ <output>`` block
+        below when the tool finishes — but only for output-bearing
+        categories (Bash, Web, Search) where the result text is what
+        the user actually wants to see.  Read / List / Edit / Write
+        results stay silent because the *content* is for the model
+        to consume; the user-relevant info (filename) is already on
+        the call line above.
 
         Note: stats accounting (``self.stats.tool_calls += 1``) lives in
-        :class:`CLIUIMiddleware` now so verbose / non-verbose paths agree.
+        :class:`CLIUIMiddleware` so this method only owns rendering.
         """
         del tool_call_id
-        if not self.verbose:
-            return
         self.clear_status()
         if self._stream.active:
             self.end_stream()
@@ -1681,18 +1804,26 @@ class CLIUI:
         verb = _verb_for_tool(name)
         detail = _truncate_inline(_detail_for_args(args)) if args else ""
 
-        self._ensure_block_spacer("tool_legacy")
+        self._ensure_block_spacer("tool_call")
         head = Text()
         head.append(f"{icon('assistant')} ", style=f"bold {AETHER_PRIMARY}")
         head.append(verb, style=f"bold {AETHER_TEXT}")
-        self.console.print(head)
-
         if detail:
-            sub = Text()
-            sub.append("  └ ", style=AETHER_DIM)
-            sub.append(detail, style=f"dim {AETHER_TEXT}")
-            self.console.print(sub)
-        self._record_block("tool_legacy")
+            head.append(" ", style="")
+            head.append(detail, style=f"dim {AETHER_TEXT}")
+        self.console.print(head)
+        self._record_block("tool_call")
+
+    # Categories whose result content we render below the call header.
+    # Other categories (READ / LIST / WRITE / EDIT / SEARCH / SUBAGENT
+    # / MCP) stay silent on success — their content is fed back into
+    # the model, not the user, and the call line itself already says
+    # *what* was read / listed / edited.  Errors always render
+    # regardless of category.
+    _RESULT_VERBOSE_CATEGORIES: frozenset[ToolCategory] = frozenset({
+        ToolCategory.BASH,
+        ToolCategory.WEB,
+    })
 
     def render_tool_result(
         self,
@@ -1702,61 +1833,90 @@ class CLIUI:
         is_error: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Print a one-line indented summary of how the tool finished.
+        """Print the codex-style ``    ⎿ <output>`` tree under each call.
 
-        Shape (always indented under the ``└`` detail line above):
+        Shape::
 
-            (silent)                   ← success with content (always)
-            ✓ 412 B  · 23 lines        ← success with content (verbose only)
-            ✗ error  <reason…>         ← failure (always)
+            ● Read backend/harness/aether/cli/ui.py
+            ● Bash git status
+                ⎿ On branch master
+                  nothing to commit, working tree clean
+            ● Edit foo.py
 
-        Successful results stay silent by default — claude-code's
-        transcript style.  The :class:`ToolGroupTracker` headline above
-        is the visual record; printing size/line counts after every
-        read would clutter the scroll and compete with the activity bar
-        for attention.
+        Output-bearing tools (Bash / Web) get a ``    ⎿ <output>``
+        block with up to ``_OUTPUT_PREVIEW_MAX_LINES`` lines plus a
+        ``… (+N more lines)`` trailer if we had to truncate.
 
-        Errors *always* render so the user can see why the tool failed
-        even though the group headline only flips to "with errors".
+        Read / List / Write / Edit / Search / Subagent / MCP stay
+        SILENT on success — the user wanted "filename-level" info,
+        which is already on the call header above.  Showing the
+        actual file contents / listings / search hits would just
+        flood the transcript (claude-code and codex both suppress
+        these by default for the same reason).
+
+        Errors *always* render so the user can see why a call
+        failed regardless of category.
 
         Note: stats accounting (``self.stats.tool_errors``) lives in
-        :class:`CLIUIMiddleware` now so verbose / non-verbose paths agree.
+        :class:`CLIUIMiddleware` so this method only owns rendering.
         """
-        del name  # only used for /verbose path; kept for API stability
         del metadata
         self.clear_status()
 
+        display_lines, summary = _format_output_preview(content or "")
+
         if is_error:
-            line = Text()
-            line.append("    ", style="")  # indent under "  ⎿ " detail column
-            msg = _truncate_inline(content or "(no message)", limit=200)
-            line.append(f"{icon('error')} ", style=f"bold {AETHER_ERROR}")
-            line.append("error  ", style=f"bold {AETHER_ERROR}")
-            line.append(msg, style=AETHER_ERROR)
-            self.console.print(line)
+            # Errors *always* render — we synthesise a "(no message)"
+            # placeholder when the tool returned nothing so the user
+            # can still see something failed.
+            if not display_lines:
+                display_lines = [(content or "(no message)").strip() or "(no message)"]
+                summary = ""
+
+            head = Text()
+            head.append(_RESULT_PREFIX, style=AETHER_DIM)
+            head.append(f"{icon('error')} ", style=f"bold {AETHER_ERROR}")
+            head.append(display_lines[0], style=AETHER_ERROR)
+            self.console.print(head)
+            for line in display_lines[1:]:
+                cont = Text()
+                cont.append(_RESULT_CONT, style="")
+                cont.append(line, style=AETHER_ERROR)
+                self.console.print(cont)
+            if summary:
+                tail = Text()
+                tail.append(_RESULT_CONT, style="")
+                tail.append(summary, style=f"dim {AETHER_DIM}")
+                self.console.print(tail)
+            self._record_block("tool_result")
             return
 
-        if not self.verbose:
-            return  # successful results stay silent — see docstring.
-
-        # ---- verbose success path ----------------------------------------
-        if not content:
-            line = Text()
-            line.append("    ", style="")
-            line.append(f"{icon('warn')} ", style=f"bold {AETHER_WARNING}")
-            line.append("empty result", style=AETHER_WARNING)
-            self.console.print(line)
+        # Suppress success output for read-style tools.  The user
+        # asked for "filename-level" detail; the path is already on
+        # the call header line and the contents are for the model.
+        if category_for(name) not in self._RESULT_VERBOSE_CATEGORIES:
             return
 
-        line = Text()
-        line.append("    ", style="")
-        size = _format_size(len(content))
-        nlines = content.count("\n") + (0 if content.endswith("\n") else 1)
-        line.append(f"{icon('success')} ", style=AETHER_SUCCESS)
-        line.append(size, style=f"dim {AETHER_DIM}")
-        if nlines > 1:
-            line.append(f"  {icon('dot')} {nlines} lines", style=f"dim {AETHER_DIM}")
-        self.console.print(line)
+        # Success path: stay silent for empty content too (Bash
+        # commands like ``git config`` regularly return "").
+        if not display_lines:
+            return
+
+        head = Text()
+        head.append(_RESULT_PREFIX, style=AETHER_DIM)
+        head.append(display_lines[0], style=f"dim {AETHER_TEXT}")
+        self.console.print(head)
+        for line in display_lines[1:]:
+            cont = Text()
+            cont.append(_RESULT_CONT, style="")
+            cont.append(line, style=f"dim {AETHER_TEXT}")
+            self.console.print(cont)
+        if summary:
+            tail = Text()
+            tail.append(_RESULT_CONT, style="")
+            tail.append(summary, style=f"dim {AETHER_DIM}")
+            self.console.print(tail)
+        self._record_block("tool_result")
 
     def render_verbose_tool_result(
         self,
@@ -2006,34 +2166,60 @@ class CLIUI:
         ):
             self._render_idle_turn_hint()
 
-        # Render the always-on one-line turn footer — Claude-Code style.
-        # We used to be silent on success which made it impossible to
-        # tell "model finished" from "REPL ate the response".
+        # Render the always-on one-line turn footer.  Format::
+        #
+        #   ✓ done   ·   ↻ 5 iters   ·   ⚙ 7 tools   ·   2 errors   ·   68.9s
+        #
+        # Earlier versions glued the icon directly to the number
+        # (``↻5``, ``⚙7/2 err``) which the user reported as "looks
+        # overlapping, can't tell what each field is".  We now space
+        # the icon away from the value AND tag every field with a
+        # word label so the line is self-documenting.  The ``·``
+        # separator is the same one used in the banner / hint line
+        # so the visual style is consistent.
+        sep = ("  " + (icon("dot") or "·") + "  ", AETHER_BORDER)
+
         line = Text()
         line.append("  ", style="")
         if status == "COMPLETED":
-            line.append(f"{icon('success')} done  ", style=f"bold {AETHER_SUCCESS}")
+            line.append(f"{icon('success')} done", style=f"bold {AETHER_SUCCESS}")
         elif status == "INTERRUPTED":
-            line.append(f"{icon('interrupt')} interrupted  ", style=f"bold {AETHER_WARNING}")
+            line.append(f"{icon('interrupt')} interrupted", style=f"bold {AETHER_WARNING}")
         elif status == "MAX_ITERATIONS":
-            line.append(f"{icon('warn')} max iterations  ", style=f"bold {AETHER_WARNING}")
+            line.append(f"{icon('warn')} max iterations", style=f"bold {AETHER_WARNING}")
         else:
-            line.append(f"{icon('error')} failed  ", style=f"bold {AETHER_ERROR}")
+            line.append(f"{icon('error')} failed", style=f"bold {AETHER_ERROR}")
 
-        line.append(f"{icon('iter')}{iterations}  ", style=AETHER_DIM)
+        line.append(*sep)
+        iter_label = "iter" if iterations == 1 else "iters"
+        line.append(f"{icon('iter')} {iterations} {iter_label}", style=AETHER_DIM)
+
         if self.stats.tool_calls:
+            line.append(*sep)
+            tool_label = "tool" if self.stats.tool_calls == 1 else "tools"
             line.append(
-                f"{icon('tool')}{self.stats.tool_calls}"
-                f"{'/' + str(self.stats.tool_errors) + ' err' if self.stats.tool_errors else ''}  ",
+                f"{icon('tool')} {self.stats.tool_calls} {tool_label}",
                 style=AETHER_DIM,
             )
+
+        if self.stats.tool_errors:
+            line.append(*sep)
+            err_label = "error" if self.stats.tool_errors == 1 else "errors"
+            line.append(
+                f"{self.stats.tool_errors} {err_label}",
+                style=f"bold {AETHER_ERROR}",
+            )
+
+        line.append(*sep)
         line.append(f"{self.stats.elapsed_sec:.1f}s", style=AETHER_DIM)
+
         # ``exit_reason`` is technical jargon ("natural_completion",
         # "tool_calls", …) that's only useful when debugging the engine —
         # show it in verbose mode and on non-success terminal states.
         if self.verbose or status != "COMPLETED":
+            line.append(*sep)
             line.append(
-                f"  {icon('dot')} {exit_reason.lower().replace('_', ' ')}",
+                exit_reason.lower().replace("_", " "),
                 style=f"dim {AETHER_DIM}",
             )
 

@@ -216,6 +216,8 @@ class EngineResult:
     * ``pending_steer`` — unconsumed async user guidance text, or ``None``.
       Sprint 5.2 populates this when `/steer` arrived but no tool result
       boundary existed to inject it safely.
+    * ``trajectory`` — ``{saved, path, error}``.  Sprint 5.5 populates
+      this when optional trajectory persistence is enabled.
     * ``iteration_budget`` — ``{used, max, remaining, grace_consumed}``.
       Filled with structured data by PR 3.2 (IterationBudget); PR 3.1
       surfaces ``max == EngineConfig.max_iterations`` so downstream

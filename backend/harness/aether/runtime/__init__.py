@@ -17,6 +17,7 @@ from .state_machine import EngineStateMachine, StateTransitionError
 from .steer import SteerInbox
 from .unicode_sanitizer import strip_non_ascii, strip_surrogates
 from .reasoning import extract_last_reasoning
+from .trajectory import convert_to_trajectory_format
 
 __all__ = [
     "EngineRequest",
@@ -36,6 +37,7 @@ __all__ = [
     "strip_non_ascii",
     "strip_surrogates",
     "extract_last_reasoning",
+    "convert_to_trajectory_format",
     "SessionStore",
     "InMemorySessionStore",
 ]

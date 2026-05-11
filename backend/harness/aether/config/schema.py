@@ -421,6 +421,10 @@ class EngineConfig:
     # data even after credential/header redaction.
     dump_failed_requests: bool = False
     request_dump_dir: Path = Path("./request_dumps")
+    # Sprint 5 / PR 5.5: optional trajectory JSONL persistence.
+    # Disabled by default because transcripts can contain sensitive user/tool data.
+    save_trajectories: bool = False
+    trajectory_dir: Path = Path("./trajectories")
     # Sprint 3.5 / PR 3.5.10 — Headless Chromium browser tool.
     # **Disabled by default** because Playwright is a heavyweight
     # optional dependency (~150 MB Chromium download) and most

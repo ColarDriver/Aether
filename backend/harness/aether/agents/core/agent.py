@@ -75,6 +75,7 @@ from aether.runtime.session_runtime import (
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.steer import SteerInbox
+from aether.runtime.trajectory import build_trajectory_record, save_trajectory_record
 from aether.runtime.unicode_sanitizer import (
     sanitize_provider_credentials_non_ascii,
     sanitize_structure_non_ascii,
@@ -1102,6 +1103,11 @@ class AgentEngine:
                 context=context,
                 active_system_prompt=active_system_prompt,
             )
+            self._save_trajectory_if_enabled(
+                result=result,
+                messages=messages,
+                context=context,
+            )
             self.services.interrupt_controller.clear(request.session_id)
 
             self._safe_call_hook(
@@ -2112,6 +2118,42 @@ class AgentEngine:
                 "error": str(dump_error),
             }
             self.services.logger.exception("failed request dump failed")
+
+    def _save_trajectory_if_enabled(
+        self,
+        *,
+        result: EngineResult,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> None:
+        trajectory_meta = {"saved": False, "path": None, "error": None}
+        if not getattr(self.config, "save_trajectories", False):
+            result.metadata["trajectory"] = trajectory_meta
+            return
+        completed = result.status in {EngineStatus.COMPLETED, EngineStatus.MAX_ITERATIONS}
+        provider = self.services.provider
+        try:
+            record = build_trajectory_record(
+                messages=messages,
+                session_id=result.session_id,
+                turn_id=context.turn_id,
+                task_id=context.task_id,
+                model=str(getattr(provider, "model", "unknown") or "unknown"),
+                provider=str(getattr(provider, "provider_name", type(provider).__name__)),
+                completed=completed,
+            )
+            path = save_trajectory_record(
+                record,
+                trajectory_dir=Path(self.config.trajectory_dir),
+                session_id=result.session_id,
+                completed=completed,
+            )
+            trajectory_meta = {"saved": True, "path": str(path), "error": None}
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            trajectory_meta = {"saved": False, "path": None, "error": str(exc)}
+            self.services.logger.exception("trajectory persistence failed")
+        context.metadata["trajectory"] = trajectory_meta
+        result.metadata["trajectory"] = trajectory_meta
 
     def _inject_system_prompt(
         self,
@@ -4370,6 +4412,10 @@ class AgentEngine:
             "request_dump": context.metadata.get(
                 "request_dump",
                 {"path": None, "reason": None},
+            ),
+            "trajectory": context.metadata.get(
+                "trajectory",
+                {"saved": False, "path": None, "error": None},
             ),
             # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
             # Filled by the live ``IterationBudget`` instance the loop

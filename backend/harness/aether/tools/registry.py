@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.task_cleanup import acquire_task_resource_for_executor
 from aether.tools.base import ToolDescriptor, ToolExecutor, UnknownToolError
 
 
@@ -95,4 +96,9 @@ class ToolRegistry:
                 is_error=True,
                 metadata={"plan_mode_blocked": True},
             )
+        acquire_task_resource_for_executor(
+            executor,
+            task_id=context.task_id,
+            context_metadata=context.metadata,
+        )
         return executor.execute(call, context)

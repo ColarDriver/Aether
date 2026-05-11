@@ -218,6 +218,8 @@ class EngineResult:
       boundary existed to inject it safely.
     * ``trajectory`` — ``{saved, path, error}``.  Sprint 5.5 populates
       this when optional trajectory persistence is enabled.
+    * ``resource_cleanup`` — ``{completed, interrupted, acquired, released,
+      errors}``.  Sprint 5.6 populates this after task-scoped cleanup runs.
     * ``iteration_budget`` — ``{used, max, remaining, grace_consumed}``.
       Filled with structured data by PR 3.2 (IterationBudget); PR 3.1
       surfaces ``max == EngineConfig.max_iterations`` so downstream

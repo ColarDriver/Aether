@@ -93,3 +93,14 @@ class EngineHooks:
         context_metadata: dict[str, Any],
     ) -> None:
         return None
+
+    def on_task_cleanup(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        completed: bool,
+        interrupted: bool,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        return None

@@ -75,6 +75,7 @@ from aether.runtime.session_runtime import (
 from aether.runtime.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.state_machine import EngineStateMachine
 from aether.runtime.steer import SteerInbox
+from aether.runtime.task_cleanup import normalize_task_cleanup_metadata, release_task_resources
 from aether.runtime.trajectory import build_trajectory_record, save_trajectory_record
 from aether.runtime.unicode_sanitizer import (
     sanitize_provider_credentials_non_ascii,
@@ -154,6 +155,9 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_api_request_attempt_count",
     "_failed_request_dump_written",
     "turn_start_idx",
+    "_task_resource_handles",
+    "_task_resource_keys",
+    "_task_cleanup_done",
 })
 
 
@@ -1108,6 +1112,10 @@ class AgentEngine:
                 messages=messages,
                 context=context,
             )
+            self._cleanup_task_resources_if_needed(
+                result=result,
+                context=context,
+            )
             self.services.interrupt_controller.clear(request.session_id)
 
             self._safe_call_hook(
@@ -1119,6 +1127,12 @@ class AgentEngine:
             )
             return result
         finally:
+            if context is not None and not context.metadata.get("_task_cleanup_done"):
+                self._cleanup_task_resources(
+                    context=context,
+                    completed=False,
+                    interrupted=self._is_interrupted(context.session_id),
+                )
             self._current_session_id = None
 
     def _get_compaction_pipeline(self) -> CompactionPipeline:
@@ -2154,6 +2168,94 @@ class AgentEngine:
             self.services.logger.exception("trajectory persistence failed")
         context.metadata["trajectory"] = trajectory_meta
         result.metadata["trajectory"] = trajectory_meta
+
+    def _cleanup_task_resources_if_needed(
+        self,
+        *,
+        result: EngineResult,
+        context: TurnContext,
+    ) -> None:
+        cleanup_meta = self._cleanup_task_resources(
+            context=context,
+            completed=result.status in {EngineStatus.COMPLETED, EngineStatus.MAX_ITERATIONS},
+            interrupted=result.status == EngineStatus.INTERRUPTED,
+        )
+        result.metadata["resource_cleanup"] = cleanup_meta
+        turn_meta = result.metadata.get("turn")
+        if isinstance(turn_meta, dict):
+            turn_meta["resource_cleanup"] = cleanup_meta
+
+    def _cleanup_task_resources(
+        self,
+        *,
+        context: TurnContext,
+        completed: bool,
+        interrupted: bool,
+    ) -> dict[str, Any]:
+        existing = context.metadata.get("resource_cleanup")
+        cleanup_meta: dict[str, Any] = existing if isinstance(existing, dict) else {}
+        cleanup_meta.update(
+            {
+                "completed": bool(completed),
+                "interrupted": bool(interrupted),
+            }
+        )
+        normalize_task_cleanup_metadata(cleanup_meta)
+
+        if context.metadata.get("_task_cleanup_done"):
+            return cleanup_meta
+
+        task_id = context.task_id
+        if task_id:
+            resources = context.metadata.get("_task_resource_handles")
+            if not isinstance(resources, list):
+                resources = []
+            release_task_resources(
+                resources,
+                task_id=task_id,
+                cleanup_meta=cleanup_meta,
+                logger=self.services.logger,
+            )
+            self._call_task_cleanup_hook(
+                task_id=task_id,
+                session_id=context.session_id,
+                completed=completed,
+                interrupted=interrupted,
+                context_metadata=context.metadata,
+                cleanup_meta=cleanup_meta,
+            )
+
+        context.metadata["resource_cleanup"] = cleanup_meta
+        context.metadata["_task_cleanup_done"] = True
+        return cleanup_meta
+
+    def _call_task_cleanup_hook(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        completed: bool,
+        interrupted: bool,
+        context_metadata: dict[str, Any],
+        cleanup_meta: dict[str, Any],
+    ) -> None:
+        hook = getattr(self._hooks, "on_task_cleanup", None)
+        if hook is None:
+            return
+        try:
+            hook(
+                task_id=task_id,
+                session_id=session_id,
+                completed=completed,
+                interrupted=interrupted,
+                context_metadata=context_metadata,
+            )
+            cleanup_meta["hook_called"] = True
+        except Exception as exc:  # noqa: BLE001 - cleanup hooks are best-effort
+            cleanup_meta.setdefault("errors", []).append(
+                {"resource": "hook:on_task_cleanup", "error": str(exc)}
+            )
+            self.services.logger.exception("Engine hook failed: on_task_cleanup")
 
     def _inject_system_prompt(
         self,

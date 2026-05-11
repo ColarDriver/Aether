@@ -18,6 +18,7 @@ from .steer import SteerInbox
 from .unicode_sanitizer import strip_non_ascii, strip_surrogates
 from .reasoning import extract_last_reasoning
 from .trajectory import convert_to_trajectory_format
+from .task_cleanup import acquire_task_resource_for_executor, release_task_resources
 
 __all__ = [
     "EngineRequest",
@@ -38,6 +39,8 @@ __all__ = [
     "strip_surrogates",
     "extract_last_reasoning",
     "convert_to_trajectory_format",
+    "acquire_task_resource_for_executor",
+    "release_task_resources",
     "SessionStore",
     "InMemorySessionStore",
 ]

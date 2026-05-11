@@ -4,13 +4,23 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Protocol
 
 from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
 
 
 class UnknownToolError(KeyError):
     """Raised when a tool call references an unknown tool."""
+
+
+class TaskResourceAware(Protocol):
+    """Optional protocol for tools that own task-scoped resources."""
+
+    def acquire_task_resource(self, task_id: str) -> None:
+        ...
+
+    def release_task_resource(self, task_id: str) -> None:
+        ...
 
 
 @dataclass(slots=True)

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Aether" width="240" />
+</p>
+
 # Aether Harness
 
 Aether Harness is a lightweight agent runtime framework focused on provider abstraction, middleware pipelines, tool calling, and subagent orchestration.

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aether.runtime.request_dump import dump_api_request_debug, redact_for_dump
+from aether.runtime.observability.request_dump import dump_api_request_debug, redact_for_dump
 
 
 class RequestDumpTests(unittest.TestCase):

@@ -19,7 +19,7 @@ import dataclasses
 import json
 import unittest
 
-from aether.runtime.usage import (
+from aether.runtime.observability.usage import (
     CanonicalUsage,
     normalize_usage,
     sum_usages,

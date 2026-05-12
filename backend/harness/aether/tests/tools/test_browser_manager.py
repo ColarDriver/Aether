@@ -1,4 +1,4 @@
-"""Tests for ``aether.runtime.browser_manager.BrowserManager``.
+"""Tests for ``aether.runtime.resources.browser_manager.BrowserManager``.
 
 Sprint 3.5 / PR-3 (PR 3.5.10).
 
@@ -15,8 +15,8 @@ import unittest
 from typing import Any
 from unittest import mock
 
-from aether.runtime import browser_manager as bm
-from aether.runtime.browser_manager import BrowserManager, BrowserUnavailable
+from aether.runtime.resources import browser_manager as bm
+from aether.runtime.resources.browser_manager import BrowserManager, BrowserUnavailable
 
 
 class _FakeBrowser:

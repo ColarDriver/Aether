@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from aether.config.schema import ModelCallConfig
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
     StreamSilentCallback,
@@ -19,7 +19,7 @@ class ModelProvider(ABC):
     """Provider contract used by AgentEngine."""
 
     # Sprint 3 / PR 3.1: stable identifier consumed by
-    # ``aether.runtime.usage.normalize_usage`` to pick the right parser.
+    # ``aether.runtime.observability.usage.normalize_usage`` to pick the right parser.
     # Subclasses MUST override.  Defaults are openai-compatible (best-effort
     # fallback) so tests / scripted providers don't crash on lookup.
     provider_name: str = "openai"

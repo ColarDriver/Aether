@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from aether.agents.middlewares.base import EngineMiddleware
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
 
 
 class RuntimeMiddlewareBase(EngineMiddleware):

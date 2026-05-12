@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.tool_permissions import ToolPermissionPreview
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.tool_permissions import ToolPermissionPreview
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 _DEFAULT_TIMEOUT_SEC = 60

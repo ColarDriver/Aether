@@ -23,7 +23,7 @@ import unittest
 from dataclasses import dataclass
 from typing import Any
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.compactor import CompactionContext
 from aether.services.compact.snip import SNIP_DUPE_RULE_TOOLS, Snipper, _SnipPlan
 

@@ -29,8 +29,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.tool_result_storage import DEFAULT_SPILL_ROOT
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
 

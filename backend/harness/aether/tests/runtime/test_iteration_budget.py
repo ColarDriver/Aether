@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`aether.runtime.iteration_budget`.
+"""Unit tests for :mod:`aether.runtime.core.iteration_budget`.
 
 Sprint 3 / PR 3.2 — covers the four behaviour groups laid out in
 ``docs/sprint-3-compaction-pipeline/02_pr3_2_iteration_budget.md``
@@ -16,7 +16,7 @@ import json
 import time
 import unittest
 
-from aether.runtime.iteration_budget import IterationBudget
+from aether.runtime.core.iteration_budget import IterationBudget
 
 
 class TestGroupABasicSemantics(unittest.TestCase):

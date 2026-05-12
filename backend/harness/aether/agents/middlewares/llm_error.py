@@ -10,7 +10,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 from aether.agents.middlewares.common import RuntimeMiddlewareBase
-from aether.runtime.contracts import LoopState, NormalizedResponse, TurnContext
+from aether.runtime.core.contracts import LoopState, NormalizedResponse, TurnContext
 
 logger = logging.getLogger(__name__)
 

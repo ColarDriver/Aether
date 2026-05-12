@@ -53,7 +53,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.compactor import CompactionContext
 from aether.services.compact.token_estimation import estimate_messages_tokens
 

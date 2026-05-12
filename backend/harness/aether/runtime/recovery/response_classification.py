@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from aether.runtime.contracts import NormalizedResponse
+from aether.runtime.core.contracts import NormalizedResponse
 
 
 class EmptyKind(str, Enum):

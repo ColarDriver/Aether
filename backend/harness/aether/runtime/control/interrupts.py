@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import RLock
 from typing import Dict
 
-from aether.runtime.interrupt_signal import InterruptSignal
+from aether.runtime.control.interrupt_signal import InterruptSignal
 
 
 class InterruptController:

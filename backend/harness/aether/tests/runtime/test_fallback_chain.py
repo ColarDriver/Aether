@@ -27,7 +27,7 @@ from aether import AgentEngine
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     ExitReason,
@@ -35,18 +35,18 @@ from aether.runtime.contracts import (
     StreamDeltaCallback,
     TurnContext,
 )
-from aether.runtime.fallback_chain import (
+from aether.runtime.recovery.fallback_chain import (
     FallbackChain,
     FallbackChainExhausted,
     ProviderSlot,
 )
-from aether.runtime.interrupts import InterruptController
-from aether.runtime.provider_errors import ProviderInvocationError
-from aether.runtime.recovery import (
+from aether.runtime.control.interrupts import InterruptController
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.strategies import (
     ClassifiedRecoveryStrategy,
     GenericBackoffStrategy,
 )
-from aether.runtime.services import EngineServices
+from aether.runtime.core.services import EngineServices
 from aether.tools.base import ToolDescriptor
 from aether.tools.registry import ToolRegistry
 
@@ -349,7 +349,7 @@ class FallbackChainEngineIntegrationTests(unittest.TestCase):
     def test_response_invalid_eagerly_falls_back(self) -> None:
         # ResponseInvalidError on the primary should rotate without
         # waiting — no exponential backoff, immediate fallback.
-        from aether.runtime.provider_errors import ResponseInvalidError
+        from aether.runtime.recovery.provider_errors import ResponseInvalidError
 
         engine, primary, fallback = _engine_with_chain(
             primary_script=[ResponseInvalidError(validation_errors=["raw.error"])],

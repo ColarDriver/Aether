@@ -15,7 +15,7 @@ from __future__ import annotations
 import unittest
 
 from aether.config.schema import EngineConfig
-from aether.runtime.contracts import ToolCall, TurnContext
+from aether.runtime.core.contracts import ToolCall, TurnContext
 from aether.tools.builtins.todo_write import (
     TodoWriteTool,
     clear_session_todos,

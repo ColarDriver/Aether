@@ -4,7 +4,7 @@ import unittest
 
 from aether import AgentEngine
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     NormalizedResponse,
     StreamDeltaCallback,
@@ -13,7 +13,7 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.interrupts import InterruptController
+from aether.runtime.control.interrupts import InterruptController
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 

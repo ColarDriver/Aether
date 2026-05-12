@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Dict
 
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import EngineRequest, EngineResult
+from aether.runtime.core.contracts import EngineRequest, EngineResult
 
 
 class SubagentStatus(str, Enum):

@@ -1,4 +1,4 @@
-"""Tests for ``aether.runtime.lsp_client.LSPClient``.
+"""Tests for ``aether.runtime.resources.lsp_client.LSPClient``.
 
 Sprint 3.5 / PR-3 (PR 3.5.9).
 
@@ -24,7 +24,7 @@ import time
 import unittest
 from pathlib import Path
 
-from aether.runtime.lsp_client import LSPClient, LSPProtocolError
+from aether.runtime.resources.lsp_client import LSPClient, LSPProtocolError
 
 
 # A minimal LSP-framed JSON-RPC echo server.  Behaviour:

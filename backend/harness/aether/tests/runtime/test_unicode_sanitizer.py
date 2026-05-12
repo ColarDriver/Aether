@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.unicode_sanitizer import (
+from aether.runtime.observability.unicode_sanitizer import (
     sanitize_provider_credentials_non_ascii,
     sanitize_structure_non_ascii,
     sanitize_structure_surrogates,

@@ -1,4 +1,4 @@
-"""Unit tests for ``aether.runtime.session_state``.
+"""Unit tests for ``aether.runtime.session.session_state``.
 
 Sprint 3.5 / PR-2 (PR 3.5.7).
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 import unittest
 
-from aether.runtime.session_state import (
+from aether.runtime.session.session_state import (
     SessionMode,
     all_sessions,
     clear_mode,

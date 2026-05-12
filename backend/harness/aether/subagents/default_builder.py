@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from aether.agents.core.agent import AgentEngine
-from aether.runtime.interrupt_signal import InterruptSignal
+from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.config.schema import EngineConfig
 from aether.subagents.builder import SubagentBuilder
 from aether.subagents.contracts import SubagentTask
@@ -33,6 +33,17 @@ class DefaultSubagentBuilder(SubagentBuilder):
             enable_todo_hydration=parent.config.enable_todo_hydration,
             memory_nudge_interval=parent.config.memory_nudge_interval,
             skill_nudge_interval=parent.config.skill_nudge_interval,
+            memory_enabled=parent.config.memory_enabled,
+            memory_mode=parent.config.memory_mode,
+            memory_token_budget_pct=parent.config.memory_token_budget_pct,
+            memory_token_budget_max=parent.config.memory_token_budget_max,
+            memory_block_token_max=parent.config.memory_block_token_max,
+            memory_retrieval_timeout_ms=parent.config.memory_retrieval_timeout_ms,
+            memory_project_store_enabled=parent.config.memory_project_store_enabled,
+            memory_user_profile_enabled=parent.config.memory_user_profile_enabled,
+            memory_auto_write_enabled=parent.config.memory_auto_write_enabled,
+            memory_llm_rerank_enabled=parent.config.memory_llm_rerank_enabled,
+            memory_debug_log_content=parent.config.memory_debug_log_content,
         )
 
         child = AgentEngine(
@@ -48,6 +59,7 @@ class DefaultSubagentBuilder(SubagentBuilder):
             subagent_manager=parent.subagent_manager,
             session_store=parent._session_store,
             hooks=parent._hooks,
+            memory_provider=parent.services.memory_provider,
         )
         parent_signal = None
         if getattr(task.request, "interrupt_signal", None) is not None:

@@ -19,8 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aether.runtime.contracts import ToolCall, TurnContext
-from aether.runtime.tool_result_storage import DEFAULT_SPILL_ROOT
+from aether.runtime.core.contracts import ToolCall, TurnContext
+from aether.runtime.tools.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.builtins.notebook_edit import NotebookEditTool
 
 

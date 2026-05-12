@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.contracts import TurnContext
-from aether.runtime.error_classifier import FailoverReason
-from aether.runtime.provider_errors import (
+from aether.runtime.core.contracts import TurnContext
+from aether.runtime.recovery.error_classifier import FailoverReason
+from aether.runtime.recovery.provider_errors import (
     ProviderInvocationError,
     ResponseInvalidError,
     StreamStallError,
 )
-from aether.runtime.recovery import (
+from aether.runtime.recovery.strategies import (
     AttemptState,
     ClassifiedRecoveryStrategy,
     RecoveryDecision,

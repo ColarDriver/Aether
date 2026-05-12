@@ -8,7 +8,7 @@ from pathlib import Path
 from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineStatus,
     EngineRequest,
     NormalizedResponse,

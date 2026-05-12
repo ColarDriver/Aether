@@ -28,7 +28,7 @@ import unittest
 from dataclasses import dataclass, field
 from typing import Any
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.collapse import (
     CollapseSegment,
     CollapseStore,

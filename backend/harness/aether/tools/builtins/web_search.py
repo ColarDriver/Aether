@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 logger = logging.getLogger(__name__)

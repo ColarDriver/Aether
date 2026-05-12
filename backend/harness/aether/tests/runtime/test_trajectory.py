@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aether.runtime.trajectory import (
+from aether.runtime.observability.trajectory import (
     build_trajectory_record,
     convert_to_trajectory_format,
     save_trajectory_record,

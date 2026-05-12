@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from aether.runtime.contracts import NormalizedResponse
+    from aether.runtime.core.contracts import NormalizedResponse
 
 
 @dataclass(slots=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.reasoning import extract_last_reasoning
+from aether.runtime.observability.reasoning import extract_last_reasoning
 
 
 class ReasoningExtractionTests(unittest.TestCase):

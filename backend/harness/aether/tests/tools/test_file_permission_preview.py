@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aether.runtime.contracts import ToolCall, TurnContext
-from aether.runtime.tool_permissions import ToolPermissionPreview
+from aether.runtime.core.contracts import ToolCall, TurnContext
+from aether.runtime.tools.tool_permissions import ToolPermissionPreview
 from aether.tools.builtins.file_edit import FileEditTool
 from aether.tools.builtins.write_file import WriteFileTool
 

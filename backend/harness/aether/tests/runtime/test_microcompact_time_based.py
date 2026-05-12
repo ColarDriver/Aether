@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.compactor import CompactionContext
 from aether.services.compact.microcompact import (
     DEFAULT_COMPACTABLE_TOOLS,

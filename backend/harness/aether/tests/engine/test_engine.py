@@ -5,10 +5,10 @@ import unittest
 from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import EngineRequest, EngineStatus, ExitReason, NormalizedResponse, ToolCall, ToolResult
-from aether.runtime.hooks import EngineHooks
-from aether.runtime.interrupts import InterruptController
-from aether.runtime.session_store import InMemorySessionStore
+from aether.runtime.core.contracts import EngineRequest, EngineStatus, ExitReason, NormalizedResponse, ToolCall, ToolResult
+from aether.runtime.core.hooks import EngineHooks
+from aether.runtime.control.interrupts import InterruptController
+from aether.runtime.session.session_store import InMemorySessionStore
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 

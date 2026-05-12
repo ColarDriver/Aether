@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from aether.config.schema import EngineConfig
-from aether.runtime.contracts import ToolCall, TurnContext
+from aether.runtime.core.contracts import ToolCall, TurnContext
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
 from aether.subagents.manager import SubagentManager
 from aether.tools.builtins.agent_tool import AgentTool
@@ -297,7 +297,7 @@ class _PausingChildAgent:
         # Wait for either the proceed event (set by interrupt) or the
         # max hold period — whichever comes first.
         self.proceed_event.wait(timeout=self.hold_seconds)
-        from aether.runtime.contracts import EngineStatus
+        from aether.runtime.core.contracts import EngineStatus
         return SimpleNamespace(
             status=EngineStatus.INTERRUPTED if self.proceed_event.is_set() else EngineStatus.COMPLETED,
             final_response=None,
@@ -339,7 +339,7 @@ class SubagentManagerStopTests(unittest.TestCase):
         builder = _StubBuilder(child)
         mgr = SubagentManager(builder=builder)
         parent = _ParentForBuilder()
-        from aether.runtime.contracts import EngineRequest
+        from aether.runtime.core.contracts import EngineRequest
         from aether.config.schema import ModelCallConfig
         task = SubagentTask(
             task_id="task-pause",
@@ -374,7 +374,7 @@ class SubagentManagerStopTests(unittest.TestCase):
         builder = _StubBuilder(child)
         mgr = SubagentManager(builder=builder)
         parent = _ParentForBuilder()
-        from aether.runtime.contracts import EngineRequest
+        from aether.runtime.core.contracts import EngineRequest
         from aether.config.schema import ModelCallConfig
         task = SubagentTask(
             task_id="task-quick",

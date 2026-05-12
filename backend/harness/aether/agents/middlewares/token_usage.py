@@ -2,7 +2,7 @@
 
 Sprint 3 / PR 3.1: this middleware shares the canonical normalisation
 path with the engine's per-turn accumulator (see
-``aether.runtime.usage.normalize_usage``) so log output stays consistent
+``aether.runtime.observability.usage.normalize_usage``) so log output stays consistent
 with what ends up in ``EngineResult.metadata['usage']``.
 """
 
@@ -12,8 +12,8 @@ import logging
 from typing import Any
 
 from aether.agents.middlewares.common import RuntimeMiddlewareBase
-from aether.runtime.contracts import NormalizedResponse, TurnContext
-from aether.runtime.usage import CanonicalUsage, normalize_usage
+from aether.runtime.core.contracts import NormalizedResponse, TurnContext
+from aether.runtime.observability.usage import CanonicalUsage, normalize_usage
 
 logger = logging.getLogger(__name__)
 

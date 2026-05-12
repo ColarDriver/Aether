@@ -1,6 +1,6 @@
 """Sprint 3.5 / PR 3.5.1 \u2014 spill primitive coverage.
 
-Pins the contract of :mod:`aether.runtime.tool_result_storage`:
+Pins the contract of :mod:`aether.runtime.tools.tool_result_storage`:
 
 * ``spill_to_disk`` writes the right path / extension / content.
 * ``build_truncation_notice`` emits the canonical machine-readable
@@ -22,7 +22,7 @@ import time
 import unittest
 from pathlib import Path
 
-from aether.runtime.tool_result_storage import (
+from aether.runtime.tools.tool_result_storage import (
     DEFAULT_SPILL_ROOT,
     SpillReceipt,
     build_truncation_notice,

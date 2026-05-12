@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.contracts import ToolCall
-from aether.runtime.tool_permissions import (
+from aether.runtime.core.contracts import ToolCall
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionMode,
     ToolPermissionPreview,
     ToolPermissionRequest,

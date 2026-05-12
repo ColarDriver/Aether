@@ -27,8 +27,8 @@ from aether.models.provider.openai_compatible import (
     OpenAICompatibleModel,
     _parse_sse_stream,
 )
-from aether.runtime.contracts import TurnContext
-from aether.runtime.provider_errors import (
+from aether.runtime.core.contracts import TurnContext
+from aether.runtime.recovery.provider_errors import (
     ProviderInvocationError,
     StreamStallError,
 )

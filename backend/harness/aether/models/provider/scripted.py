@@ -7,7 +7,7 @@ from typing import Iterable, List
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
     StreamSilentCallback,

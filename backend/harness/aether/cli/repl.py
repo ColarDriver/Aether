@@ -36,7 +36,7 @@ from aether.cli.theme import THEME, color_enabled
 from aether.cli.ui import CLIUI
 from aether.cli.ui_middleware import CLIUIHooks, CLIUIMiddleware
 from aether.config.schema import ModelCallConfig
-from aether.runtime.contracts import EngineRequest, EngineStatus
+from aether.runtime.core.contracts import EngineRequest, EngineStatus
 
 if TYPE_CHECKING:
     from pathlib import Path

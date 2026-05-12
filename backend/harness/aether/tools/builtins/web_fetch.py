@@ -7,7 +7,7 @@ markdown without an extra round-trip to a utility model.
 
 Why a dedicated tool (instead of letting the model ``shell: curl ...``):
 
-* SSRF defence — :func:`aether.runtime.web_safety.is_url_safe` rejects
+* SSRF defence — :func:`aether.runtime.resources.web_safety.is_url_safe` rejects
   loopback / private / link-local / multicast IPs *and* unsupported
   schemes (``file:`` / ``ftp:`` / ``gopher:``).  ``shell`` cannot give
   this guarantee.
@@ -28,9 +28,9 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.interrupt_messages import FETCH_INTERRUPTED_MESSAGE
-from aether.runtime.web_safety import is_url_safe
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.control.interrupt_messages import FETCH_INTERRUPTED_MESSAGE
+from aether.runtime.resources.web_safety import is_url_safe
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 logger = logging.getLogger(__name__)

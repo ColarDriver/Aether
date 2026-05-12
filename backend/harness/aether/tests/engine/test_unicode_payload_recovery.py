@@ -8,7 +8,7 @@ from typing import Any
 from aether import AgentEngine, HookOutcome
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     NormalizedResponse,
@@ -16,7 +16,7 @@ from aether.runtime.contracts import (
     StreamSilentCallback,
     TurnContext,
 )
-from aether.runtime.hooks import EngineHooks
+from aether.runtime.core.hooks import EngineHooks
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 

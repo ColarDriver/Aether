@@ -27,7 +27,7 @@ from typing import Any, Iterable, List, Optional
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     ExitReason,
@@ -36,9 +36,9 @@ from aether.runtime.contracts import (
     StreamSilentCallback,
     TurnContext,
 )
-from aether.runtime.fallback_chain import FallbackChain, ProviderSlot
-from aether.runtime.provider_errors import ProviderInvocationError
-from aether.runtime.recovery import ClassifiedRecoveryStrategy
+from aether.runtime.recovery.fallback_chain import FallbackChain, ProviderSlot
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.strategies import ClassifiedRecoveryStrategy
 from aether.tools.base import ToolDescriptor
 
 

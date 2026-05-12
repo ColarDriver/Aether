@@ -37,14 +37,14 @@ _EXPLORE_CATEGORIES: frozenset[ToolCategory] = frozenset({
     ToolCategory.WRITE,
     ToolCategory.EDIT,
 })
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     LoopState,
     NormalizedResponse,
     ToolCall,
     ToolResult,
     TurnContext,
 )
-from aether.runtime.hooks import EngineHooks
+from aether.runtime.core.hooks import EngineHooks
 
 
 class CLIUIMiddleware(EngineMiddleware):

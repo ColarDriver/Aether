@@ -1,4 +1,4 @@
-"""Unit tests for ``aether.runtime.skill_catalog``.
+"""Unit tests for ``aether.runtime.tools.skill_catalog``.
 
 Sprint 3.5 / PR-2 (PR 3.5.8).
 """
@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aether.runtime.skill_catalog import Skill, SkillCatalog
+from aether.runtime.tools.skill_catalog import Skill, SkillCatalog
 
 
 def _write(path: Path, body: str) -> Path:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 
 
 @dataclass(slots=True)

@@ -87,12 +87,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Sequence
 
 from aether.agents.core.phantom_tool import _normalize_name
-from aether.runtime.contracts import ToolCall, ToolResult
-from aether.runtime.tool_error_format import format_unknown_tool_error
+from aether.runtime.core.contracts import ToolCall, ToolResult
+from aether.runtime.tools.tool_error_format import format_unknown_tool_error
 
 if TYPE_CHECKING:        # pragma: no cover
     from aether.config.schema import EngineConfig
-    from aether.runtime.contracts import TurnContext
+    from aether.runtime.core.contracts import TurnContext
     from aether.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -525,7 +525,7 @@ def prepare_tool_calls(
         context.metadata[TURN_KEY_INVALID_TOOL_RETRIES] = retry_count
         max_retries = int(getattr(config, "invalid_tool_max_retries", 3))
         if retry_count >= max_retries:
-            from aether.runtime.contracts import ExitReason
+            from aether.runtime.core.contracts import ExitReason
 
             plan.exit_reason = ExitReason.INVALID_TOOL_REPEATED.value
 

@@ -23,7 +23,7 @@ from typing import Any, List
 from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     ExitReason,
     NormalizedResponse,

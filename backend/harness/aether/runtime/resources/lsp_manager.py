@@ -32,8 +32,8 @@ import threading
 from pathlib import Path
 from typing import Mapping, Optional
 
-from aether.runtime.lsp_client import LSPClient
-from aether.runtime.lsp_servers import language_for, resolve_server_for
+from aether.runtime.resources.lsp_client import LSPClient
+from aether.runtime.resources.lsp_servers import language_for, resolve_server_for
 
 logger = logging.getLogger(__name__)
 

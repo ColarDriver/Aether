@@ -25,14 +25,14 @@ from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.base import ModelProvider
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     NormalizedResponse,
     ToolCall,
     ToolResult,
 )
-from aether.runtime.session_runtime import (
+from aether.runtime.session.session_runtime import (
     TURN_KEY_EMPTY_RESPONSE_RETRIES,
     TURN_KEY_PROVIDER_ERROR_RETRIES,
     SessionRuntimeRegistry,

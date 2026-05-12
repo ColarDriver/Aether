@@ -14,7 +14,7 @@ from unittest.mock import patch
 import httpx
 
 from aether.config.schema import EngineConfig
-from aether.runtime.contracts import ToolCall, TurnContext
+from aether.runtime.core.contracts import ToolCall, TurnContext
 from aether.tools.builtins.web_fetch import WebFetchTool
 
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.task_cleanup import acquire_task_resource_for_executor
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.task_cleanup import acquire_task_resource_for_executor
 from aether.tools.base import ToolDescriptor, ToolExecutor, UnknownToolError
 
 
 # Sprint 3.5 / PR 3.5.7 — write-class tools that must be blocked while
 # the session is in plan mode.  ``EnterPlanModeTool`` flips
-# ``aether.runtime.session_state`` to ``"plan"``; ``ExitPlanModeTool``
+# ``aether.runtime.session.session_state`` to ``"plan"``; ``ExitPlanModeTool``
 # flips it back after user approval.  Read-only tools (read_file,
 # grep, glob, list_dir, web_fetch, web_search, skill, ask_user_question,
 # enter_plan_mode, exit_plan_mode, task_output) are intentionally NOT
@@ -37,7 +37,7 @@ def _check_plan_mode_block(name: str, context: TurnContext) -> str | None:
     blocked because the session is in plan mode.  Returns ``None`` to
     allow the call through (the common case)."""
     try:
-        from aether.runtime.session_state import get_mode, SessionMode
+        from aether.runtime.session.session_state import get_mode, SessionMode
     except Exception:
         return None
     session_id = getattr(context, "session_id", "") or ""

@@ -23,8 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.tool_result_storage import DEFAULT_SPILL_ROOT
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 

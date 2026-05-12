@@ -1,4 +1,4 @@
-"""Tests for ``aether.runtime.lsp_manager.LSPManager``.
+"""Tests for ``aether.runtime.resources.lsp_manager.LSPManager``.
 
 Sprint 3.5 / PR-3 (PR 3.5.9).
 
@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Optional
 from unittest import mock
 
-from aether.runtime import lsp_manager as lm
-from aether.runtime.lsp_manager import LSPManager
+from aether.runtime.resources import lsp_manager as lm
+from aether.runtime.resources.lsp_manager import LSPManager
 
 
 class _FakeClient:

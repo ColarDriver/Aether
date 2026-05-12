@@ -37,12 +37,12 @@ import unittest
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from aether.runtime.error_classifier import (
+from aether.runtime.recovery.error_classifier import (
     ClassifiedError,
     FailoverReason,
     classify_api_error,
 )
-from aether.runtime.provider_errors import (
+from aether.runtime.recovery.provider_errors import (
     ProviderInvocationError,
     ResponseInvalidError,
     StreamStallError,

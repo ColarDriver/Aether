@@ -1,13 +1,23 @@
-"""Memory provider abstraction placeholder."""
+"""Compatibility exports for the top-level :mod:`aether.memory` package."""
 
-from __future__ import annotations
+from aether.memory import (
+    MemoryBlock,
+    MemoryBundle,
+    MemoryKind,
+    MemoryMode,
+    MemoryProvider,
+    MemoryQuery,
+    MemoryScope,
+    NullMemoryProvider,
+)
 
-from abc import ABC, abstractmethod
-
-
-class MemoryProvider(ABC):
-    """Hook point for future memory integrations."""
-
-    @abstractmethod
-    def build_context(self, session_id: str) -> str:
-        raise NotImplementedError
+__all__ = [
+    "MemoryBlock",
+    "MemoryBundle",
+    "MemoryKind",
+    "MemoryMode",
+    "MemoryProvider",
+    "MemoryQuery",
+    "MemoryScope",
+    "NullMemoryProvider",
+]

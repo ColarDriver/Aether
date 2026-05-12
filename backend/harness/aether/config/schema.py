@@ -35,6 +35,21 @@ class EngineConfig:
     enable_todo_hydration: bool = False
     memory_nudge_interval: int = 0
     skill_nudge_interval: int = 0
+    # Sprint 8: memory subsystem defaults.  The default mode serves
+    # task/project agents, not personal-assistant user profiling.  Memory
+    # blocks are retrieved as transient provider-bound context only; later
+    # PRs wire the provider into the run loop.
+    memory_enabled: bool = True
+    memory_mode: str = "project"
+    memory_token_budget_pct: float = 0.08
+    memory_token_budget_max: int = 2_500
+    memory_block_token_max: int = 500
+    memory_retrieval_timeout_ms: int = 200
+    memory_project_store_enabled: bool = True
+    memory_user_profile_enabled: bool = False
+    memory_auto_write_enabled: bool = False
+    memory_llm_rerank_enabled: bool = False
+    memory_debug_log_content: bool = False
     # Sprint 1 / PR 1.1: emergency rollback switch for the new SSE streaming
     # path.  When False, the engine refuses to forward ``request.stream_callback``
     # to the provider, forcing the (older, well-tested) non-streaming path
@@ -352,7 +367,7 @@ class EngineConfig:
     tool_result_spill_enabled: bool = True
     # Sprint 3.5 / PR 3.5.1: override directory for spilled results.
     # When ``None`` (default) the helpers in
-    # :mod:`aether.runtime.tool_result_storage` use
+    # :mod:`aether.runtime.tools.tool_result_storage` use
     # ``~/.aether/tool_results/<session_id>/<call_id>.<ext>``.  Set to a
     # faster local disk on systems where ``$HOME`` is on slow networked
     # storage, or to a tmpfs path on ephemeral CI workers.

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.contracts import NormalizedResponse
-from aether.runtime.response_classification import (
+from aether.runtime.core.contracts import NormalizedResponse
+from aether.runtime.recovery.response_classification import (
     EmptyKind,
     is_legitimate_empty,
     strip_thinking_tags,

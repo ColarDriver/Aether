@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 

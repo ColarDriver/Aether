@@ -77,7 +77,7 @@ def build_default_tool_registry(
         When ``None`` the tools resolve relative paths against
         :func:`pathlib.Path.cwd` at call time.
     skill_catalog:
-        Optional :class:`~aether.runtime.skill_catalog.SkillCatalog`
+        Optional :class:`~aether.runtime.tools.skill_catalog.SkillCatalog`
         injected into :class:`SkillTool`.  When ``None`` the tool
         falls back to ``context.metadata['_skill_catalog']`` (set by
         the engine) or builds a lazy default from
@@ -88,11 +88,11 @@ def build_default_tool_registry(
         ``EngineRequest.approval_prompter`` via metadata, so passing
         ``None`` here is the common case.
     lsp_manager:
-        Optional :class:`~aether.runtime.lsp_manager.LSPManager`
+        Optional :class:`~aether.runtime.resources.lsp_manager.LSPManager`
         pre-bound onto :class:`LSPTool`.  When omitted the tool builds
         a lazy default the first time it runs.
     browser_manager:
-        Optional :class:`~aether.runtime.browser_manager.BrowserManager`
+        Optional :class:`~aether.runtime.resources.browser_manager.BrowserManager`
         pre-bound onto :class:`WebBrowserTool`.  When omitted the tool
         builds one on demand using ``EngineConfig`` settings.
     """

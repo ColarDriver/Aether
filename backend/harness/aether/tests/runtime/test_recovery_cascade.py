@@ -7,9 +7,10 @@ from aether import AgentEngine
 from aether.agents.core.agent import _WithholdingState
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, TurnContext
-from aether.runtime.fallback_chain import FallbackChain, ProviderSlot
-from aether.runtime.recovery import FailoverReason, RecoveryDecision
+from aether.runtime.core.contracts import NormalizedResponse, TurnContext
+from aether.runtime.recovery.error_classifier import FailoverReason
+from aether.runtime.recovery.fallback_chain import FallbackChain, ProviderSlot
+from aether.runtime.recovery.strategies import RecoveryDecision
 from aether.tools.base import ToolDescriptor
 
 

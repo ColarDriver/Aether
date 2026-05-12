@@ -22,7 +22,7 @@ import unittest
 from dataclasses import dataclass
 from typing import Any
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.autocompact import AutoCompactor
 from aether.services.compact.compactor import CompactionContext
 

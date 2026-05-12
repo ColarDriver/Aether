@@ -1,4 +1,4 @@
-"""Tests for ``aether.runtime.lsp_servers``.
+"""Tests for ``aether.runtime.resources.lsp_servers``.
 
 Sprint 3.5 / PR-3 (PR 3.5.9).
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from aether.runtime.lsp_servers import (
+from aether.runtime.resources.lsp_servers import (
     EXT_TO_LANG,
     LANGUAGE_SERVERS,
     language_for,

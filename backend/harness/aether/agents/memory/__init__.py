@@ -1,5 +1,23 @@
-"""Memory extension interfaces."""
+"""Compatibility exports for legacy ``aether.agents.memory`` imports."""
 
-from .base import MemoryProvider
+from aether.memory import (
+    MemoryBlock,
+    MemoryBundle,
+    MemoryKind,
+    MemoryMode,
+    MemoryProvider,
+    MemoryQuery,
+    MemoryScope,
+    NullMemoryProvider,
+)
 
-__all__ = ["MemoryProvider"]
+__all__ = [
+    "MemoryBlock",
+    "MemoryBundle",
+    "MemoryKind",
+    "MemoryMode",
+    "MemoryProvider",
+    "MemoryQuery",
+    "MemoryScope",
+    "NullMemoryProvider",
+]

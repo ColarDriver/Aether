@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from aether.runtime.reasoning import extract_last_reasoning
+from aether.runtime.observability.reasoning import extract_last_reasoning
 
 
 def convert_to_trajectory_format(

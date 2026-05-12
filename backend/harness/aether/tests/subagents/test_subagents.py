@@ -4,7 +4,7 @@ import unittest
 
 from aether import AgentEngine
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import EngineRequest, NormalizedResponse
+from aether.runtime.core.contracts import EngineRequest, NormalizedResponse
 from aether.subagents import SubagentManager, SubagentStatus, SubagentTask
 
 

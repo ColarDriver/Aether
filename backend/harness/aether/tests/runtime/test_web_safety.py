@@ -1,4 +1,4 @@
-"""Unit tests for ``aether.runtime.web_safety``.
+"""Unit tests for ``aether.runtime.resources.web_safety``.
 
 Sprint 3.5 / PR-2 (PR 3.5.5).
 """
@@ -9,7 +9,7 @@ import socket
 import unittest
 from unittest.mock import patch
 
-from aether.runtime.web_safety import (
+from aether.runtime.resources.web_safety import (
     PREAPPROVED_HOSTS,
     is_preapproved,
     is_url_safe,

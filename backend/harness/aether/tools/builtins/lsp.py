@@ -34,9 +34,9 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.lsp_manager import LSPManager
-from aether.runtime.lsp_servers import (
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.resources.lsp_manager import LSPManager
+from aether.runtime.resources.lsp_servers import (
     EXT_TO_LANG,
     LANGUAGE_SERVERS,
     language_for,

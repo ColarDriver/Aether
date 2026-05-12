@@ -23,14 +23,14 @@ from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.base import ModelProvider
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     NormalizedResponse,
     StreamDeltaCallback,
     ToolCall,
     TurnContext,
 )
-from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
 from aether.tools.base import ToolDescriptor
 
 
@@ -152,7 +152,7 @@ class UsageAccumulationTests(unittest.TestCase):
 
         # Simple noop tool so dispatch loop progresses.
         from aether.tools.base import ToolExecutor
-        from aether.runtime.contracts import ToolResult
+        from aether.runtime.core.contracts import ToolResult
 
         class _NoOpTool(ToolExecutor):
             @property
@@ -240,7 +240,7 @@ class MetadataSchemaTests(unittest.TestCase):
         # Construct a turn that ends with a tool message: budget=1, single
         # tool call, then engine hits MAX_ITERATIONS before producing text.
         from aether.tools.base import ToolExecutor
-        from aether.runtime.contracts import ToolResult
+        from aether.runtime.core.contracts import ToolResult
         from aether.tools.registry import ToolRegistry
 
         class _NoOpTool(ToolExecutor):

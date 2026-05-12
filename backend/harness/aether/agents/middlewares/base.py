@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aether.runtime.contracts import LoopState, NormalizedResponse, ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import LoopState, NormalizedResponse, ToolCall, ToolResult, TurnContext
 
 
 class EngineMiddleware:

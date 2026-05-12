@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from aether.agents.middlewares.base import EngineMiddleware
 from aether.agents.middlewares.common import RuntimeMiddlewareBase
-from aether.runtime.contracts import LoopState, ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import LoopState, ToolCall, ToolResult, TurnContext
 
 if TYPE_CHECKING:
     from aether.guardrails.provider import GuardrailProvider

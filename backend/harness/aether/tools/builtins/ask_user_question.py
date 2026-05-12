@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
 

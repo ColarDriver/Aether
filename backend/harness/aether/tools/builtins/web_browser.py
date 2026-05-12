@@ -29,10 +29,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from aether.runtime.browser_manager import BrowserManager, BrowserUnavailable
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.tool_result_storage import resolve_spill_dir
-from aether.runtime.web_safety import is_url_safe
+from aether.runtime.resources.browser_manager import BrowserManager, BrowserUnavailable
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.tool_result_storage import resolve_spill_dir
+from aether.runtime.resources.web_safety import is_url_safe
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 logger = logging.getLogger(__name__)

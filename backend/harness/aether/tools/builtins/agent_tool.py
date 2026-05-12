@@ -28,7 +28,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from aether.config.schema import ModelCallConfig
-from aether.runtime.contracts import EngineRequest, ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import EngineRequest, ToolCall, ToolResult, TurnContext
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 

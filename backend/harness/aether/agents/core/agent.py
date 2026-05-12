@@ -23,8 +23,23 @@ from aether.agents.core.phantom_tool import (
 from aether.agents.core.tool_hardening import ToolDispatchPlan, prepare_tool_calls
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
+from aether.memory import (
+    MemoryBundle,
+    MemoryMode,
+    MemoryProvider,
+    MemoryQuery,
+    append_memory_context,
+    default_memory_metadata,
+    estimate_text_tokens,
+    metadata_from_bundle,
+    normalize_memory_mode,
+    pack_memory_blocks,
+    render_memory_bundle,
+    resolve_memory_token_budget,
+    scopes_for_mode,
+)
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineResult,
     EngineStatus,
@@ -35,18 +50,18 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.error_classifier import FailoverReason
-from aether.runtime.exceptions import EngineInterrupted
-from aether.runtime.interrupt_messages import FETCH_INTERRUPTED_MESSAGE, select_interrupt_marker
-from aether.runtime.interrupt_signal import InterruptSignal
-from aether.runtime.fallback_chain import FallbackChain
-from aether.runtime.hooks import EngineHooks, HookOutcome
-from aether.runtime.image_shrink import shrink_image_parts_in_messages
-from aether.runtime.interrupts import InterruptController
-from aether.runtime.iteration_budget import IterationBudget
-from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
-from aether.runtime.rate_guard import RateGuard, RateGuardCheck
-from aether.runtime.recovery import (
+from aether.runtime.recovery.error_classifier import FailoverReason
+from aether.runtime.core.exceptions import EngineInterrupted
+from aether.runtime.control.interrupt_messages import FETCH_INTERRUPTED_MESSAGE, select_interrupt_marker
+from aether.runtime.control.interrupt_signal import InterruptSignal
+from aether.runtime.recovery.fallback_chain import FallbackChain
+from aether.runtime.core.hooks import EngineHooks, HookOutcome
+from aether.runtime.recovery.image_shrink import shrink_image_parts_in_messages
+from aether.runtime.control.interrupts import InterruptController
+from aether.runtime.core.iteration_budget import IterationBudget
+from aether.runtime.recovery.provider_errors import ProviderInvocationError, ResponseInvalidError
+from aether.runtime.recovery.rate_guard import RateGuard, RateGuardCheck
+from aether.runtime.recovery.strategies import (
     AttemptState,
     ClassifiedRecoveryStrategy,
     GenericBackoffStrategy,
@@ -54,16 +69,16 @@ from aether.runtime.recovery import (
     RecoveryStrategy,
     wait_interruptible,
 )
-from aether.runtime.response_classification import (
+from aether.runtime.recovery.response_classification import (
     EmptyKind,
     ResponseClassification,
     is_legitimate_empty,
     strip_thinking_tags,
 )
-from aether.runtime.reasoning import extract_last_reasoning
-from aether.runtime.request_dump import dump_api_request_debug
-from aether.runtime.services import EngineServices
-from aether.runtime.session_runtime import (
+from aether.runtime.observability.reasoning import extract_last_reasoning
+from aether.runtime.observability.request_dump import dump_api_request_debug
+from aether.runtime.core.services import EngineServices
+from aether.runtime.session.session_runtime import (
     TURN_KEY_CODEX_ACK_RETRIES,
     TURN_KEY_EMPTY_RESPONSE_RETRIES,
     TURN_KEY_EMPTY_RECOVERY_LAST_STEP,
@@ -79,26 +94,26 @@ from aether.runtime.session_runtime import (
     SessionRuntimeRegistry,
     SessionRuntimeState,
 )
-from aether.runtime.session_store import InMemorySessionStore, SessionStore
-from aether.runtime.schema_sanitizer import sanitize_tool_descriptors
-from aether.runtime.state_machine import EngineStateMachine
-from aether.runtime.steer import SteerInbox
-from aether.runtime.task_cleanup import normalize_task_cleanup_metadata, release_task_resources
-from aether.runtime.trajectory import build_trajectory_record, save_trajectory_record
-from aether.runtime.unicode_sanitizer import (
+from aether.runtime.session.session_store import InMemorySessionStore, SessionStore
+from aether.runtime.recovery.schema_sanitizer import sanitize_tool_descriptors
+from aether.runtime.core.state_machine import EngineStateMachine
+from aether.runtime.control.steer import SteerInbox
+from aether.runtime.tools.task_cleanup import normalize_task_cleanup_metadata, release_task_resources
+from aether.runtime.observability.trajectory import build_trajectory_record, save_trajectory_record
+from aether.runtime.observability.unicode_sanitizer import (
     sanitize_provider_credentials_non_ascii,
     sanitize_structure_non_ascii,
     sanitize_structure_surrogates,
     strip_surrogates,
 )
-from aether.runtime.usage import CanonicalUsage, normalize_usage
-from aether.runtime.tool_error_format import (
+from aether.runtime.observability.usage import CanonicalUsage, normalize_usage
+from aether.runtime.tools.tool_error_format import (
     FormattedToolError,
     format_invalid_tool_args_error,
     format_schema_error,
     format_unknown_tool_error,
 )
-from aether.runtime.tool_permissions import (
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionDecision,
     ToolPermissionDecisionType,
     ToolPermissionMode,
@@ -251,6 +266,7 @@ class AgentEngine:
         lsp_manager: "object | None" = None,
         browser_manager: "object | None" = None,
         steer_inbox: SteerInbox | None = None,
+        memory_provider: MemoryProvider | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -297,6 +313,7 @@ class AgentEngine:
             recovery_strategy=recovery_strategy,
             fallback_chain=fallback_chain,
             steer_inbox=steer_inbox,
+            memory_provider=memory_provider,
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger
@@ -507,6 +524,12 @@ class AgentEngine:
                     loop_messages = context.metadata.pop("_messages_override", None)
                     if isinstance(loop_messages, list):
                         messages = loop_messages
+
+                    hook_outcome = self._merge_memory_context_into_hook_outcome(
+                        messages,
+                        hook_outcome,
+                        context=context,
+                    )
 
                     outbound_messages = self._apply_hook_outcome_to_messages(
                         messages,
@@ -1382,6 +1405,10 @@ class AgentEngine:
                 "request_has_stream_callback": bool(request.stream_callback),
                 "active_provider_name": getattr(active_provider, "provider_name", "openai"),
                 "active_provider_api_mode": getattr(active_provider, "api_mode", "chat"),
+                "memory": default_memory_metadata(
+                    enabled=bool(getattr(self.config, "memory_enabled", False)),
+                    mode=str(getattr(self.config, "memory_mode", "off") or "off"),
+                ),
                 # Per-turn retry counters live on TurnContext.metadata so they
                 # cannot leak across concurrent sessions sharing this engine.
                 # Initialised to 0 here; mutated by the run-loop's empty-
@@ -1950,6 +1977,231 @@ class AgentEngine:
             type(outcome).__name__,
         )
         return HookOutcome()
+
+    def _merge_memory_context_into_hook_outcome(
+        self,
+        messages: List[Dict[str, Any]],
+        outcome: HookOutcome,
+        *,
+        context: TurnContext,
+    ) -> HookOutcome:
+        memory_context = self._build_memory_context_for_messages(
+            messages,
+            outcome=outcome,
+            context=context,
+        )
+        if not memory_context:
+            return outcome
+        return HookOutcome(
+            inject_user_context=append_memory_context(
+                outcome.inject_user_context,
+                memory_context,
+            ),
+            inject_system_addendum=outcome.inject_system_addendum,
+            short_circuit_response=outcome.short_circuit_response,
+        )
+
+    def _build_memory_context_for_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        outcome: HookOutcome,
+        context: TurnContext,
+    ) -> str:
+        mode_value = str(getattr(self.config, "memory_mode", "off") or "off")
+        enabled = bool(getattr(self.config, "memory_enabled", False))
+        default_stats = default_memory_metadata(enabled=enabled, mode=mode_value)
+
+        if not enabled:
+            context.metadata["memory"] = {**default_stats, "skipped_reason": "disabled"}
+            return ""
+
+        mode = normalize_memory_mode(mode_value, default=MemoryMode.OFF)
+        if mode is MemoryMode.OFF:
+            context.metadata["memory"] = {**default_stats, "skipped_reason": "mode_off"}
+            return ""
+
+        if outcome.short_circuit_response is not None:
+            context.metadata["memory"] = {
+                **default_stats,
+                "skipped_reason": "short_circuit",
+            }
+            return ""
+
+        user_message = self._latest_user_message_text(messages)
+        if not user_message.strip():
+            context.metadata["memory"] = {
+                **default_stats,
+                "skipped_reason": "no_query_signal",
+            }
+            return ""
+
+        estimated_prompt_tokens = estimate_messages_tokens(messages)
+        estimated_prompt_tokens += estimate_text_tokens(outcome.inject_user_context or "")
+        estimated_prompt_tokens += estimate_text_tokens(outcome.inject_system_addendum or "")
+        budget = resolve_memory_token_budget(
+            model_window=self._resolve_model_window(),
+            estimated_prompt_tokens=estimated_prompt_tokens,
+            memory_token_budget_pct=float(
+                getattr(self.config, "memory_token_budget_pct", 0.0) or 0.0
+            ),
+            memory_token_budget_max=int(
+                getattr(self.config, "memory_token_budget_max", 0) or 0
+            ),
+            compression_threshold_pct=float(
+                getattr(self.config, "compression_pre_llm_pct", 0.85) or 0.85
+            ),
+        )
+        if budget.skipped_reason:
+            context.metadata["memory"] = {
+                **default_stats,
+                "skipped_reason": budget.skipped_reason,
+            }
+            return ""
+
+        query = MemoryQuery(
+            session_id=context.session_id,
+            task_id=context.task_id,
+            user_message=user_message,
+            recent_messages=copy.deepcopy(messages[-8:]),
+            working_directory=str(Path.cwd()),
+            active_files=self._memory_active_files_from_metadata(context.metadata),
+            mode=mode,
+            token_budget=budget.effective_budget,
+            metadata={
+                "iteration": context.iteration,
+                "turn_id": context.turn_id,
+                "budget_base": budget.base_budget,
+            },
+        )
+
+        started = time.perf_counter()
+        try:
+            retrieved = self.services.memory_provider.retrieve(query)
+        except Exception as exc:  # noqa: BLE001 - memory is best-effort context
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self.services.logger.exception("Memory retrieval failed")
+            context.metadata["memory"] = metadata_from_bundle(
+                MemoryBundle.skipped(
+                    "provider_error",
+                    latency_ms=elapsed_ms,
+                    provider_errors=(type(exc).__name__,),
+                ),
+                enabled=enabled,
+                mode=mode.value,
+                injected_count=0,
+                injected_tokens=0,
+                skipped_reason="provider_error",
+                error=type(exc).__name__,
+            )
+            return ""
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        retrieved = MemoryBundle(
+            blocks=tuple(retrieved.blocks),
+            token_estimate=int(retrieved.token_estimate),
+            skipped_reason=retrieved.skipped_reason,
+            latency_ms=elapsed_ms,
+            provider_errors=tuple(retrieved.provider_errors),
+        )
+        if not retrieved.blocks:
+            context.metadata["memory"] = metadata_from_bundle(
+                retrieved,
+                enabled=enabled,
+                mode=mode.value,
+                injected_count=0,
+                injected_tokens=0,
+            )
+            return ""
+
+        include_user_scope = (
+            mode is MemoryMode.PERSONAL_ASSISTANT
+            and bool(getattr(self.config, "memory_user_profile_enabled", False))
+        )
+        allowed_scopes = set(
+            scopes_for_mode(
+                mode,
+                user_profile_enabled=include_user_scope,
+            )
+        )
+        allowed_blocks = tuple(
+            block for block in retrieved.blocks if block.scope in allowed_scopes
+        )
+        if not allowed_blocks:
+            context.metadata["memory"] = metadata_from_bundle(
+                MemoryBundle.skipped("no_relevant_blocks", latency_ms=elapsed_ms),
+                enabled=enabled,
+                mode=mode.value,
+                injected_count=0,
+                injected_tokens=0,
+                candidate_count=len(retrieved.blocks),
+                skipped_reason="no_relevant_blocks",
+            )
+            return ""
+
+        packed = pack_memory_blocks(
+            allowed_blocks,
+            token_budget=budget.effective_budget,
+            block_token_max=int(getattr(self.config, "memory_block_token_max", 500) or 500),
+        )
+        packed = MemoryBundle(
+            blocks=tuple(packed.blocks),
+            token_estimate=int(packed.token_estimate),
+            skipped_reason=packed.skipped_reason,
+            latency_ms=elapsed_ms,
+            provider_errors=retrieved.provider_errors,
+        )
+        rendered = render_memory_bundle(
+            packed,
+            include_user_scope=include_user_scope,
+        )
+        if not rendered:
+            skipped_reason = packed.skipped_reason or "no_relevant_blocks"
+            context.metadata["memory"] = metadata_from_bundle(
+                packed,
+                enabled=enabled,
+                mode=mode.value,
+                injected_count=0,
+                injected_tokens=0,
+                candidate_count=len(retrieved.blocks),
+                skipped_reason=skipped_reason,
+            )
+            return ""
+
+        context.metadata["memory"] = metadata_from_bundle(
+            packed,
+            enabled=enabled,
+            mode=mode.value,
+            candidate_count=len(retrieved.blocks),
+        )
+        return rendered
+
+    @staticmethod
+    def _latest_user_message_text(messages: List[Dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [
+                    str(block.get("text", ""))
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                return "\n".join(part for part in parts if part)
+            return str(content)
+        return ""
+
+    @staticmethod
+    def _memory_active_files_from_metadata(metadata: dict[str, Any]) -> tuple[str, ...]:
+        raw = metadata.get("active_files") or metadata.get("active_paths") or ()
+        if isinstance(raw, str):
+            return (raw,)
+        if isinstance(raw, (list, tuple, set)):
+            return tuple(str(item) for item in raw if item)
+        return ()
 
     def _apply_hook_outcome_to_messages(
         self,
@@ -4975,7 +5227,7 @@ class AgentEngine:
         accumulation is observability, not correctness-critical.
 
         Reads ``response.metadata["usage"]`` (the raw provider dict) and
-        normalises via ``aether.runtime.usage.normalize_usage`` using the
+        normalises via ``aether.runtime.observability.usage.normalize_usage`` using the
         provider's ``provider_name`` / ``api_mode`` class attributes.
         Writes the running ``CanonicalUsage`` to
         ``context.metadata["usage_accumulator"]`` and bumps
@@ -5355,6 +5607,13 @@ class AgentEngine:
                 context.metadata.get("tool_permissions")
                 or default_permission_stats(
                     enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
+                )
+            ),
+            "memory": dict(
+                context.metadata.get("memory")
+                or default_memory_metadata(
+                    enabled=bool(getattr(self.config, "memory_enabled", False)),
+                    mode=str(getattr(self.config, "memory_mode", "off") or "off"),
                 )
             ),
             "request_dump": context.metadata.get(

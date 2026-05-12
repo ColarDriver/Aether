@@ -68,17 +68,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
-from aether.runtime.error_classifier import (
+from aether.runtime.recovery.error_classifier import (
     ClassifiedError,
     FailoverReason,
     classify_api_error,
 )
-from aether.runtime.provider_errors import ProviderInvocationError, ResponseInvalidError
-from aether.runtime.interrupt_signal import InterruptSignal
+from aether.runtime.recovery.provider_errors import ProviderInvocationError, ResponseInvalidError
+from aether.runtime.control.interrupt_signal import InterruptSignal
 
 if TYPE_CHECKING:  # pragma: no cover
-    from aether.runtime.contracts import TurnContext
-    from aether.runtime.interrupts import InterruptController
+    from aether.runtime.core.contracts import TurnContext
+    from aether.runtime.control.interrupts import InterruptController
 
 
 # HTTP status codes the generic strategy will retry by default.  Mirrors the

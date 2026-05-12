@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 
 from aether.config.schema import EngineConfig
-from aether.runtime.contracts import ToolCall, TurnContext
+from aether.runtime.core.contracts import ToolCall, TurnContext
 from aether.tools.builtins import (
     GlobTool,
     GrepTool,

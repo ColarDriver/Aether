@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Protocol
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
 
 
 class UnknownToolError(KeyError):
@@ -121,7 +121,7 @@ def maybe_spill_for_tool(
 
     # Local imports keep the storage module's import cost off the cold
     # path for tools that never trigger spill.
-    from aether.runtime.tool_result_storage import (
+    from aether.runtime.tools.tool_result_storage import (
         build_truncation_notice,
         spill_to_disk,
     )

@@ -23,7 +23,7 @@ from rich.console import Console
 
 from aether.cli.app import AetherApp
 from aether.cli.ui import CLIUI
-from aether.runtime.tool_permissions import (
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionDecision,
     ToolPermissionDecisionType,
     ToolPermissionPreview,

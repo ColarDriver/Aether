@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from aether.runtime.contracts import ToolCall, ToolResult
+from aether.runtime.core.contracts import ToolCall, ToolResult
 
 
 class ToolPermissionMode(str, Enum):

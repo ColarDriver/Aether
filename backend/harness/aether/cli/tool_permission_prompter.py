@@ -6,7 +6,7 @@ import asyncio
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from typing import TYPE_CHECKING
 
-from aether.runtime.tool_permissions import (
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionDecision,
     ToolPermissionDecisionType,
     ToolPermissionRequest,

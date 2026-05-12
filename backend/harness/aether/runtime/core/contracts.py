@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List
 from aether.config.schema import ModelCallConfig
 
 if TYPE_CHECKING:
-    from aether.runtime.interrupt_signal import InterruptSignal
+    from aether.runtime.control.interrupt_signal import InterruptSignal
 
 
 class LoopState(str, Enum):
@@ -225,6 +225,10 @@ class EngineResult:
     * ``pending_steer`` — unconsumed async user guidance text, or ``None``.
       Sprint 5.2 populates this when `/steer` arrived but no tool result
       boundary existed to inject it safely.
+    * ``memory`` — ``{enabled, mode, retrieval_ms, candidate_count,
+      injected_count, injected_tokens, scopes, skipped_reason, write_count,
+      error}``.  Sprint 8 populates this for transient memory retrieval and
+      injection observability.  Memory content is not included here.
     * ``trajectory`` — ``{saved, path, error}``.  Sprint 5.5 populates
       this when optional trajectory persistence is enabled.
     * ``resource_cleanup`` — ``{completed, interrupted, acquired, released,

@@ -52,7 +52,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, List
 
-from aether.runtime.contracts import ToolCall
+from aether.runtime.core.contracts import ToolCall
 
 if TYPE_CHECKING:
     from aether.tools.registry import ToolRegistry

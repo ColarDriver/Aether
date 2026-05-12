@@ -25,8 +25,8 @@ from aether.models.provider.openai_compatible import (
     _parse_retry_after,
     _summarize_body,
 )
-from aether.runtime.contracts import TurnContext
-from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.core.contracts import TurnContext
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
 
 
 def _ctx() -> TurnContext:

@@ -33,7 +33,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.claude import ClaudeChatModel
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 
 
 def _make_context() -> TurnContext:

@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import NormalizedResponse, TurnContext
+from aether.runtime.core.contracts import NormalizedResponse, TurnContext
 
 
 # Signature for the optional callback that lets the summariser hand its

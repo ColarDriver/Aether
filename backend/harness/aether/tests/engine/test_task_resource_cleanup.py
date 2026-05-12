@@ -6,7 +6,7 @@ from typing import Any
 from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     ExitReason,
@@ -15,7 +15,7 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.hooks import EngineHooks
+from aether.runtime.core.hooks import EngineHooks
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 

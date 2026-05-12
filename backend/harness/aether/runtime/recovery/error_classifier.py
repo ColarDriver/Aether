@@ -71,7 +71,7 @@ Usage
 -----
 ::
 
-    from aether.runtime.error_classifier import classify_api_error
+    from aether.runtime.recovery.error_classifier import classify_api_error
 
     classified = classify_api_error(
         exc,
@@ -101,7 +101,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
-from aether.runtime.provider_errors import (
+from aether.runtime.recovery.provider_errors import (
     ProviderInvocationError,
     ResponseInvalidError,
     StreamStallError,

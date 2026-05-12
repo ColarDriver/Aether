@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
-from aether.runtime.contracts import EngineStatus
+from aether.runtime.core.contracts import EngineStatus
 from aether.subagents.builder import SubagentBuilder
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
 from aether.subagents.default_builder import DefaultSubagentBuilder

@@ -6,7 +6,7 @@ from aether import AgentEngine
 from aether.agents.middlewares.base import EngineMiddleware
 from aether.config.schema import EngineConfig
 from aether.models.provider.scripted import ScriptedProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     ExitReason,
     NormalizedResponse,
@@ -14,8 +14,8 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.session_state import SessionMode, clear_mode, set_mode
-from aether.runtime.tool_permissions import (
+from aether.runtime.session.session_state import SessionMode, clear_mode, set_mode
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionDecision,
     ToolPermissionDecisionType,
     ToolPermissionPreview,

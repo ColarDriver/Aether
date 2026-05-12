@@ -9,8 +9,8 @@ from typing import Any
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime import image_shrink as image_shrink_module
-from aether.runtime.contracts import (
+from aether.runtime.recovery import image_shrink as image_shrink_module
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     NormalizedResponse,
@@ -18,14 +18,14 @@ from aether.runtime.contracts import (
     StreamSilentCallback,
     TurnContext,
 )
-from aether.runtime.error_classifier import FailoverReason, classify_api_error
-from aether.runtime.image_shrink import (
+from aether.runtime.recovery.error_classifier import FailoverReason, classify_api_error
+from aether.runtime.recovery.image_shrink import (
     DEFAULT_MAX_BASE64_BYTES,
     DEFAULT_TARGET_BASE64_BYTES,
     shrink_image_parts_in_messages,
 )
-from aether.runtime.provider_errors import ProviderInvocationError
-from aether.runtime.recovery import AttemptState, ClassifiedRecoveryStrategy
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.strategies import AttemptState, ClassifiedRecoveryStrategy
 from aether.tools.base import ToolDescriptor
 
 try:

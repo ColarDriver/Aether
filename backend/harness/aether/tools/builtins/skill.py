@@ -26,8 +26,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from aether.runtime.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.skill_catalog import SkillCatalog
+from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.tools.skill_catalog import SkillCatalog
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 

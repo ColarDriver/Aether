@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 
-from aether.runtime.interrupt_signal import InterruptSignal
+from aether.runtime.control.interrupt_signal import InterruptSignal
 
 
 class InterruptSignalTests(unittest.TestCase):

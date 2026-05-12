@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from aether.agents.middlewares.base import EngineMiddleware
-from aether.runtime.contracts import LoopState, NormalizedResponse, ToolCall, ToolResult, TurnContext
+from aether.runtime.core.contracts import LoopState, NormalizedResponse, ToolCall, ToolResult, TurnContext
 
 
 @dataclass(slots=True)

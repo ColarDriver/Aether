@@ -4,8 +4,8 @@ import threading
 import time
 import unittest
 
-from aether.runtime.contracts import ToolCall, TurnContext
-from aether.runtime.interrupt_signal import InterruptSignal
+from aether.runtime.core.contracts import ToolCall, TurnContext
+from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.tools.builtins.shell import ShellTool
 
 

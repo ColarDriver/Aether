@@ -8,7 +8,7 @@ from typing import Any
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     NormalizedResponse,
@@ -18,10 +18,10 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.error_classifier import FailoverReason, classify_api_error
-from aether.runtime.provider_errors import ProviderInvocationError
-from aether.runtime.recovery import ClassifiedRecoveryStrategy
-from aether.runtime.schema_sanitizer import (
+from aether.runtime.recovery.error_classifier import FailoverReason, classify_api_error
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.strategies import ClassifiedRecoveryStrategy
+from aether.runtime.recovery.schema_sanitizer import (
     sanitize_tool_descriptors,
     strip_pattern_and_format,
     strip_pattern_and_format_with_count,

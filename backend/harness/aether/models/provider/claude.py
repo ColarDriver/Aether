@@ -21,7 +21,7 @@ from aether.models.credential_loader import (
     load_claude_code_credential,
 )
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
     StreamSilentCallback,

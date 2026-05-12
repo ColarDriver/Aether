@@ -90,7 +90,7 @@ from aether.cli.ui import (
     strip_all_command_fences,
     strip_tool_blocks,
 )
-from aether.runtime.tool_permissions import (
+from aether.runtime.tools.tool_permissions import (
     ToolPermissionDecision,
     ToolPermissionDecisionType,
     ToolPermissionRequest,

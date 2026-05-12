@@ -9,7 +9,7 @@ import httpx
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.openai_compatible import OpenAICompatibleModel
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 
 
 def _ctx() -> TurnContext:

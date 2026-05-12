@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.compactor import CompactionContext
 from aether.services.compact.llm_fork import LLMForkSummarizer
 

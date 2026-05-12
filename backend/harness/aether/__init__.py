@@ -6,7 +6,7 @@ from .config import load_aether_dotenv
 load_aether_dotenv()
 
 from .agents.core.agent import AgentEngine
-from .runtime.contracts import (
+from .runtime.core.contracts import (
     EngineRequest,
     EngineResult,
     EngineStatus,
@@ -15,8 +15,8 @@ from .runtime.contracts import (
     ToolResult,
     NormalizedResponse,
 )
-from .runtime.hooks import HookOutcome
-from .runtime.steer import SteerInbox
+from .runtime.core.hooks import HookOutcome
+from .runtime.control.steer import SteerInbox
 from .config.schema import EngineConfig, ModelCallConfig
 
 __all__ = [

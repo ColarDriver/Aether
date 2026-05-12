@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from aether.runtime.contracts import LoopState
-from aether.runtime.state_machine import EngineStateMachine, StateTransitionError
+from aether.runtime.core.contracts import LoopState
+from aether.runtime.core.state_machine import EngineStateMachine, StateTransitionError
 
 
 class StateMachineTests(unittest.TestCase):

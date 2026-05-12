@@ -31,7 +31,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from aether.runtime.contracts import TurnContext
+from aether.runtime.core.contracts import TurnContext
 from aether.services.compact.compactor import CompactionContext
 
 

@@ -23,7 +23,7 @@ from typing import Any, List
 from aether import AgentEngine
 from aether.config.schema import EngineConfig
 from aether.models.provider.base import ModelProvider
-from aether.runtime.contracts import (
+from aether.runtime.core.contracts import (
     EngineRequest,
     EngineStatus,
     ExitReason,
@@ -33,7 +33,7 @@ from aether.runtime.contracts import (
     ToolResult,
     TurnContext,
 )
-from aether.runtime.provider_errors import ProviderInvocationError
+from aether.runtime.recovery.provider_errors import ProviderInvocationError
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 
@@ -296,7 +296,7 @@ class GroupGGraceOneShot(unittest.TestCase):
         # We need access to the budget for this — ``_handle_max_iterations``
         # reads ``context.metadata['_iteration_budget_obj']`` so we craft a
         # context carrying an already-grace-consumed budget.
-        from aether.runtime.iteration_budget import IterationBudget
+        from aether.runtime.core.iteration_budget import IterationBudget
 
         spent_budget = IterationBudget(max_total=2, used=2)
         spent_budget.grace_call()  # consume the one-shot

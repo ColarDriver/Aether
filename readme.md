@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Aether" width="240" />
+  <img src="assets/logo-wide.png" alt="Aether" width="520" />
 </p>
 
 # Aether Harness

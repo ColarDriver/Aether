@@ -30,6 +30,12 @@ from .project_store import (
     project_memory_hash,
 )
 from .render import MEMORY_CONTEXT_POLICY, render_memory_bundle
+from .retrieval import (
+    QueryFeatures,
+    RetrievalMemoryProvider,
+    extract_query_features,
+    score_block,
+)
 from .sanitize import SecretScanResult, redact_secrets, scan_secrets
 from .task import TaskMemoryProvider, TaskMemorySnapshot, render_task_snapshot_text
 
@@ -64,6 +70,10 @@ __all__ = [
     "SecretScanResult",
     "redact_secrets",
     "scan_secrets",
+    "QueryFeatures",
+    "RetrievalMemoryProvider",
+    "extract_query_features",
+    "score_block",
     "TaskMemoryProvider",
     "TaskMemorySnapshot",
     "render_task_snapshot_text",

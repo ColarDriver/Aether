@@ -46,6 +46,13 @@ from aether.tools.builtins.glob import GlobTool
 from aether.tools.builtins.grep import GrepTool
 from aether.tools.builtins.list_dir import ListDirTool
 from aether.tools.builtins.lsp import LSPTool
+from aether.tools.builtins.memory import (
+    MemoryForgetTool,
+    MemoryListTool,
+    MemoryReadTool,
+    MemoryUpdateTool,
+    MemoryWriteTool,
+)
 from aether.tools.builtins.notebook_edit import NotebookEditTool
 from aether.tools.builtins.read_file import ReadFileTool
 from aether.tools.builtins.shell import ShellTool
@@ -120,6 +127,12 @@ def build_default_tool_registry(
     # Sprint 3.5 / PR-3.
     registry.register(LSPTool(manager=lsp_manager))
     registry.register(WebBrowserTool(manager=browser_manager))
+    # Sprint 8 / PR 8.6 — memory tools.
+    registry.register(MemoryReadTool())
+    registry.register(MemoryListTool())
+    registry.register(MemoryWriteTool())
+    registry.register(MemoryUpdateTool())
+    registry.register(MemoryForgetTool())
     return registry
 
 
@@ -143,6 +156,11 @@ __all__ = [
     "AskUserQuestionTool",
     "SkillTool",
     "LSPTool",
+    "MemoryForgetTool",
+    "MemoryListTool",
+    "MemoryReadTool",
+    "MemoryUpdateTool",
+    "MemoryWriteTool",
     "WebBrowserTool",
     "build_default_tool_registry",
 ]

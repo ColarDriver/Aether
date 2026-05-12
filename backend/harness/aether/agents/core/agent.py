@@ -28,6 +28,8 @@ from aether.memory import (
     MemoryMode,
     MemoryProvider,
     MemoryQuery,
+    ProjectMemoryStore,
+    RetrievalMemoryProvider,
     TaskMemoryProvider,
     append_memory_context,
     default_memory_metadata,
@@ -203,6 +205,7 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_schema_sanitizer_retry_attempted",
     "_image_shrink_retry_attempted",
     "_interrupt_signal",
+    "_project_memory_store",
 })
 
 
@@ -309,9 +312,20 @@ class AgentEngine:
         # provider_error_retries) live on ``TurnContext.metadata`` instead
         # of here, because their lifetime is exactly one turn.
         self._session_runtime = SessionRuntimeRegistry()
-        effective_memory_provider = memory_provider or TaskMemoryProvider(
-            session_runtime=self._session_runtime,
-        )
+        if memory_provider is not None:
+            effective_memory_provider = memory_provider
+            self._project_memory_store: ProjectMemoryStore | None = None
+        else:
+            project_store: ProjectMemoryStore | None = None
+            try:
+                project_store = ProjectMemoryStore(Path.cwd())
+            except Exception:
+                pass
+            self._project_memory_store = project_store
+            effective_memory_provider = RetrievalMemoryProvider(
+                session_runtime=self._session_runtime,
+                project_store=project_store,
+            )
 
         # When a fallback chain is supplied, defer to it for the
         # active provider — see ``EngineServices.provider``.  The
@@ -1478,6 +1492,7 @@ class AgentEngine:
         # sharing one warm subprocess pool.
         context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
         context.metadata["_browser_manager"] = getattr(self, "_browser_manager", None)
+        context.metadata["_project_memory_store"] = getattr(self, "_project_memory_store", None)
         context.metadata["empty_recovery"] = {}
         return state_machine, messages, context
 

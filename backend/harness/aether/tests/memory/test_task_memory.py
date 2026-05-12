@@ -5,7 +5,7 @@ from typing import Any
 
 from aether import AgentEngine
 from aether.config.schema import EngineConfig, ModelCallConfig
-from aether.memory import MemoryBundle, MemoryQuery, MemoryScope, TaskMemoryProvider
+from aether.memory import MemoryBundle, MemoryQuery, MemoryScope, RetrievalMemoryProvider, TaskMemoryProvider
 from aether.models.provider.base import ModelProvider
 from aether.runtime.core.contracts import EngineRequest, EngineStatus, NormalizedResponse, TurnContext
 from aether.tools.base import ToolDescriptor
@@ -207,8 +207,8 @@ def test_default_agent_task_memory_lives_in_session_runtime() -> None:
 
     engine._session_runtime.discard("runtime-backed-memory")
     provider = engine.services.memory_provider
-    assert isinstance(provider, TaskMemoryProvider)
-    assert provider.snapshot_for("runtime-backed-memory") is None
+    assert isinstance(provider, RetrievalMemoryProvider)
+    assert provider.task_provider.snapshot_for("runtime-backed-memory") is None
 
 
 def test_task_memory_observe_failure_does_not_fail_turn() -> None:

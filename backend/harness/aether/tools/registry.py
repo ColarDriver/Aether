@@ -28,6 +28,10 @@ WRITE_TOOLS_BLOCKED_IN_PLAN: frozenset[str] = frozenset(
         # mutate state on our behalf, defeating plan-mode's purpose.
         "task",
         "task_stop",
+        # Sprint 8 / PR 8.6 — write-class memory tools.
+        "memory_write",
+        "memory_update",
+        "memory_forget",
     }
 )
 

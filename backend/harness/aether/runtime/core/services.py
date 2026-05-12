@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
-from aether.memory import MemoryProvider, NullMemoryProvider
+from aether.memory import MemoryProvider, TaskMemoryProvider
 from aether.models.provider.base import ModelProvider
 from aether.runtime.recovery.fallback_chain import FallbackChain
 from aether.runtime.control.interrupts import InterruptController
@@ -80,7 +80,7 @@ class EngineServices:
         self.recovery_strategy = recovery_strategy
         self.fallback_chain = fallback_chain
         self.steer_inbox = steer_inbox or SteerInbox()
-        self.memory_provider = memory_provider or NullMemoryProvider()
+        self.memory_provider = memory_provider or TaskMemoryProvider()
 
     @property
     def provider(self) -> ModelProvider:

@@ -19,8 +19,19 @@ from .contracts import (
     scopes_for_mode,
 )
 from .injection import append_memory_context, default_memory_metadata, metadata_from_bundle
+from .frontmatter import FrontmatterDocument
 from .null import NullMemoryProvider
+from .project_store import (
+    ProjectMemoryEntry,
+    ProjectMemoryStore,
+    ProjectMemoryStoreError,
+    ProjectMemoryWriteResult,
+    canonical_workdir,
+    project_memory_hash,
+)
 from .render import MEMORY_CONTEXT_POLICY, render_memory_bundle
+from .sanitize import SecretScanResult, redact_secrets, scan_secrets
+from .task import TaskMemoryProvider, TaskMemorySnapshot, render_task_snapshot_text
 
 __all__ = [
     "MemoryBudget",
@@ -40,7 +51,20 @@ __all__ = [
     "append_memory_context",
     "default_memory_metadata",
     "metadata_from_bundle",
+    "FrontmatterDocument",
     "NullMemoryProvider",
+    "ProjectMemoryEntry",
+    "ProjectMemoryStore",
+    "ProjectMemoryStoreError",
+    "ProjectMemoryWriteResult",
+    "canonical_workdir",
+    "project_memory_hash",
     "MEMORY_CONTEXT_POLICY",
     "render_memory_bundle",
+    "SecretScanResult",
+    "redact_secrets",
+    "scan_secrets",
+    "TaskMemoryProvider",
+    "TaskMemorySnapshot",
+    "render_task_snapshot_text",
 ]

@@ -152,6 +152,13 @@ class SessionRuntimeState:
     # turns but must not leak into other sessions or persist to disk.
     tool_permission_rules: list[Any] = field(default_factory=list)
 
+    # Sprint 8 / PR 8.3: task/session memory snapshots.  The concrete
+    # ``TaskMemorySnapshot`` type lives in ``aether.memory.task``; this field
+    # stays typed as ``Any`` to keep the runtime package independent from the
+    # memory provider implementation.  Keys are task ids, plus ``"__session__"``
+    # for the session-level fallback snapshot.
+    task_memory_snapshots: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class SessionRuntimeRegistry:

@@ -28,6 +28,7 @@ from aether.memory import (
     MemoryMode,
     MemoryProvider,
     MemoryQuery,
+    TaskMemoryProvider,
     append_memory_context,
     default_memory_metadata,
     estimate_text_tokens,
@@ -296,6 +297,22 @@ class AgentEngine:
                 recovery_strategy = ClassifiedRecoveryStrategy()
             else:
                 recovery_strategy = GenericBackoffStrategy()
+
+        # Per-session state registry (cross-turn nudge counters, task memory,
+        # future cached system prompt for prefix-cache stability).  Storing
+        # these on a session-keyed registry instead of plain ``self._*``
+        # attributes is what makes a single ``AgentEngine`` instance safe to
+        # share across many concurrent sessions — see
+        # ``runtime/session_runtime.py`` for the rationale.
+        #
+        # Note: per-turn retry counters (empty_response_retries,
+        # provider_error_retries) live on ``TurnContext.metadata`` instead
+        # of here, because their lifetime is exactly one turn.
+        self._session_runtime = SessionRuntimeRegistry()
+        effective_memory_provider = memory_provider or TaskMemoryProvider(
+            session_runtime=self._session_runtime,
+        )
+
         # When a fallback chain is supplied, defer to it for the
         # active provider — see ``EngineServices.provider``.  The
         # constructor-time ``provider`` argument is then only used as
@@ -313,7 +330,7 @@ class AgentEngine:
             recovery_strategy=recovery_strategy,
             fallback_chain=fallback_chain,
             steer_inbox=steer_inbox,
-            memory_provider=memory_provider,
+            memory_provider=effective_memory_provider,
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger
@@ -342,18 +359,6 @@ class AgentEngine:
         self._active_children_lock = RLock()
         self._session_store = session_store or InMemorySessionStore()
         self._hooks = hooks or EngineHooks()
-
-        # Per-session state registry (cross-turn nudge counters, future
-        # cached system prompt for prefix-cache stability).  Storing these
-        # on a session-keyed registry instead of plain ``self._*`` attributes
-        # is what makes a single ``AgentEngine`` instance safe to share
-        # across many concurrent sessions — see ``runtime/session_runtime.py``
-        # for the rationale.
-        #
-        # Note: per-turn retry counters (empty_response_retries,
-        # provider_error_retries) live on ``TurnContext.metadata`` instead
-        # of here, because their lifetime is exactly one turn.
-        self._session_runtime = SessionRuntimeRegistry()
 
     @property
     def delegate_depth(self) -> int:
@@ -1187,6 +1192,8 @@ class AgentEngine:
             if pending_steer:
                 context.metadata["pending_steer"] = pending_steer
 
+            self._observe_memory_turn(messages, context)
+
             result = self._build_result(
                 request,
                 messages,
@@ -1333,6 +1340,8 @@ class AgentEngine:
         """Run the compaction pipeline when compression is enabled."""
         if not getattr(self.config, "compression_enabled", False):
             return None
+
+        self._memory_before_compaction(messages, context)
 
         provider = self.services.provider
         model = str(getattr(provider, "model", "") or "unknown")
@@ -1977,6 +1986,59 @@ class AgentEngine:
             type(outcome).__name__,
         )
         return HookOutcome()
+
+    def _memory_runtime_enabled(self) -> bool:
+        if not bool(getattr(self.config, "memory_enabled", False)):
+            return False
+        mode = normalize_memory_mode(
+            getattr(self.config, "memory_mode", "off"),
+            default=MemoryMode.OFF,
+        )
+        return mode is not MemoryMode.OFF
+
+    def _observe_memory_turn(
+        self,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> None:
+        if not self._memory_runtime_enabled():
+            return
+        try:
+            self.services.memory_provider.observe_turn(
+                session_id=context.session_id,
+                task_id=context.task_id,
+                messages=copy.deepcopy(messages),
+                metadata=dict(context.metadata),
+            )
+        except Exception as exc:  # noqa: BLE001 - memory observation is best effort
+            self.services.logger.exception("Memory observe_turn failed")
+            memory_meta = dict(context.metadata.get("memory") or {})
+            memory_meta["error"] = type(exc).__name__
+            if not memory_meta.get("skipped_reason"):
+                memory_meta["skipped_reason"] = "observe_error"
+            context.metadata["memory"] = memory_meta
+
+    def _memory_before_compaction(
+        self,
+        messages: List[Dict[str, Any]],
+        context: TurnContext,
+    ) -> None:
+        if not self._memory_runtime_enabled():
+            return
+        try:
+            self.services.memory_provider.before_compaction(
+                session_id=context.session_id,
+                task_id=context.task_id,
+                messages=copy.deepcopy(messages),
+                metadata=dict(context.metadata),
+            )
+        except Exception as exc:  # noqa: BLE001 - compaction must not depend on memory
+            self.services.logger.exception("Memory before_compaction failed")
+            memory_meta = dict(context.metadata.get("memory") or {})
+            memory_meta["error"] = type(exc).__name__
+            if not memory_meta.get("skipped_reason"):
+                memory_meta["skipped_reason"] = "before_compaction_error"
+            context.metadata["memory"] = memory_meta
 
     def _merge_memory_context_into_hook_outcome(
         self,

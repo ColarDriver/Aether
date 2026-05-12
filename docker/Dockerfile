@@ -4,12 +4,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /workspace/backend/harness
+WORKDIR /workspace
 
 # Copy and install Aether harness package
-COPY backend/harness/aether /workspace/backend/harness/aether
+COPY pyproject.toml /workspace/pyproject.toml
+COPY aether /workspace/aether
 RUN pip install --upgrade pip \
-    && pip install -e /workspace/backend/harness/aether
+    && pip install -e /workspace
 
 # Default command keeps container alive for interactive usage
 CMD ["tail", "-f", "/dev/null"]

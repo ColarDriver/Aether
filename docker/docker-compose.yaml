@@ -5,12 +5,12 @@ services:
       dockerfile: docker/Dockerfile
     image: aether-harness:latest
     container_name: aether-harness
-    working_dir: /workspace/backend/harness
+    working_dir: /workspace
     env_file:
-      - ../backend/harness/aether/.env
+      - ../.env
     environment:
       PYTHONUNBUFFERED: "1"
-      PYTHONPATH: /workspace/backend/harness
+      PYTHONPATH: /workspace
     volumes:
       - ../:/workspace
     command: ["tail", "-f", "/dev/null"]
@@ -27,12 +27,12 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     profiles: ["tests"]
-    working_dir: /workspace/backend/harness
+    working_dir: /workspace
     env_file:
-      - ../backend/harness/aether/.env
+      - ../.env
     environment:
       PYTHONUNBUFFERED: "1"
-      PYTHONPATH: /workspace/backend/harness
+      PYTHONPATH: /workspace
     volumes:
       - ../:/workspace
     command: >

@@ -29,7 +29,6 @@ venv/
 env/
 ENV/
 .env
-.env.*
 *.local
 
 # Logs and runtime artifacts

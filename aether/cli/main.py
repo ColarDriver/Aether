@@ -35,9 +35,9 @@ try:
     try:
         AETHER_VERSION = _pkg_version("aether-harness")
     except PackageNotFoundError:
-        AETHER_VERSION = "0.1.0"
+        AETHER_VERSION = "1.0.0"
 except Exception:  # pragma: no cover - paranoia
-    AETHER_VERSION = "0.1.0"
+    AETHER_VERSION = "1.0.0"
 
 
 # ---------------------------------------------------------------------------

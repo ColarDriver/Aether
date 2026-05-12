@@ -97,7 +97,7 @@ def run_repl(
     session_id: str | None = None,
     verbose: bool = False,
     base_url: str | None = None,
-    version: str = "0.1.0",
+    version: str = "1.0.0",
     show_banner: bool = True,
     resume_record: SessionRecord | None = None,
 ) -> None:

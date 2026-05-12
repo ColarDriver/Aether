@@ -8,31 +8,32 @@ Aether Harness is a lightweight agent runtime framework focused on provider abst
 
 ## Project Layout
 
-- `backend/harness/aether`: core runtime, providers, middleware, tools, and tests
+- `aether`: core runtime, providers, middleware, tools, and tests
 - `docs/agent-engine`: design notes and enhancement docs
 - `docker`: container deployment files
 
 ## Quick Start (Local)
 
-1. Create and activate a Python 3.12 virtual environment.
-2. Install the package in editable mode.
-3. Configure environment variables.
+1. Configure environment variables.
+2. Sync the local environment.
+3. Start the harness CLI.
 
 ```bash
-cd backend/harness/aether
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
+cd /path/to/Aether
 cp .env.example .env
+uv sync
+uv run aether
 ```
 
 ## Environment Variables (Example)
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
-- `OPENAI_MODEL_NAME`
+- `AETHER_MODEL`
 - `ANTHROPIC_API_KEY`
+- `CODEX_ACCESS_TOKEN`
+
+The local `.env` file is loaded automatically when the Aether package starts.
 
 ## Docker Compose
 

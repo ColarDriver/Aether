@@ -10,8 +10,8 @@ Tests are grouped by the subsystem they primarily exercise:
 - `subagents/` - subagent manager behavior.
 - `tools/` - built-in tool executors and tool-adjacent managers.
 
-Run all tests from `backend/harness/aether` with:
+Run all tests from the repository root with:
 
 ```bash
-uv run pytest tests -q
+uv run pytest aether/tests -q
 ```

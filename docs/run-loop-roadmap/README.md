@@ -26,6 +26,7 @@
 | [05_p3_advanced_features.md](./05_p3_advanced_features.md) | P3 高级功能 | Sprint 6+ 的输入 |
 | [06_aether_structural_issues.md](./06_aether_structural_issues.md) | Aether 现状的结构性问题 | 在动手之前必须先修的"地基"问题 |
 | [07_sprint_execution_plan.md](./07_sprint_execution_plan.md) | 6 个 Sprint 的执行计划 | 排期 + 文件改动清单 + 验收标准 |
+| [08_memory_implementation_comparison.md](./08_memory_implementation_comparison.md) | Hermes 与 open-claude-code 的 Memory 实现对比 | P3 MemoryProvider 设计取舍参考 |
 
 ## 三、关键结论速览
 

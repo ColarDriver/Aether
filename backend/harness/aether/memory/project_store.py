@@ -80,13 +80,16 @@ class ProjectMemoryStore:
         self.working_directory = canonical_workdir(working_directory)
         self.project_hash = project_memory_hash(self.working_directory)
         self._explicit_root = store_root is not None
-        self._project_root = self.working_directory / ".aether" / "memory"
         self._home_root = (
             Path(home_root).expanduser()
             if home_root is not None
-            else Path.home() / ".aether" / "memory" / "projects"
+            else Path.home() / ".aether" / "projects" / "memory"
         )
-        self.root = Path(store_root).expanduser() if store_root is not None else self._project_root
+        self.root = (
+            Path(store_root).expanduser()
+            if store_root is not None
+            else self._home_root / self.project_hash
+        )
         self.topics = tuple(_normalise_topic(topic) for topic in topics)
         self._lock = threading.RLock()
 
@@ -106,16 +109,10 @@ class ProjectMemoryStore:
         return self.topics_dir / f"{_normalise_topic(topic)}.md"
 
     def initialize(self) -> Path:
-        """Create the store layout, falling back to home storage if needed."""
+        """Create the store layout on disk."""
 
         with self._lock:
-            try:
-                self._ensure_layout(self.root)
-            except OSError:
-                if self._explicit_root or self.root == self._fallback_root:
-                    raise
-                self.root = self._fallback_root
-                self._ensure_layout(self.root)
+            self._ensure_layout(self.root)
             return self.root
 
     def write_entry(
@@ -256,10 +253,6 @@ class ProjectMemoryStore:
                 _write_text_atomic(path, f"# {title}\n\n")
         if not (root / "index.json").exists():
             _write_text_atomic(root / "index.json", _json_dumps(_empty_index()))
-
-    @property
-    def _fallback_root(self) -> Path:
-        return self._home_root / self.project_hash
 
     @contextmanager
     def _store_file_lock(self) -> Iterator[None]:

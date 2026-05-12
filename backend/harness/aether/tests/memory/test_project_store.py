@@ -79,8 +79,8 @@ def test_project_hash_is_stable_for_same_workdir(tmp_path: Path) -> None:
     assert len(h1) == 16
 
 
-def test_store_falls_back_to_home_when_project_not_writable(tmp_path: Path) -> None:
-    project_dir = tmp_path / "readonly_project"
+def test_store_defaults_to_home_directory_not_project(tmp_path: Path) -> None:
+    project_dir = tmp_path / "my_project"
     project_dir.mkdir()
     home_dir = tmp_path / "fake_home"
 
@@ -88,18 +88,10 @@ def test_store_falls_back_to_home_when_project_not_writable(tmp_path: Path) -> N
         project_dir,
         home_root=home_dir,
     )
-
-    original_ensure = store._ensure_layout
-
-    def _fail_on_project(root: Path) -> None:
-        if root == store._project_root:
-            raise OSError("read-only filesystem")
-        original_ensure(root)
-
-    with mock.patch.object(store, "_ensure_layout", side_effect=_fail_on_project):
-        root = store.initialize()
+    root = store.initialize()
 
     assert str(home_dir) in str(root)
+    assert str(project_dir / ".aether") not in str(root)
     assert (root / "MEMORY.md").exists()
 
 

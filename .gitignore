@@ -43,6 +43,9 @@ ENV/
 *.swp
 *.swo
 
+# Aether runtime data
+.aether/
+
 # OS files
 .DS_Store
 Thumbs.db

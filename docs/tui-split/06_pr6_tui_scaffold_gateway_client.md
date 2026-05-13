@@ -2,13 +2,13 @@
 
 ## 摘要
 
-新建 `aether-tui/` 工程：Ink + React 19 + nanostores + Vitest。实现 `GatewayClient`：负责拉起 `aether-gateway` 子进程、按行解析 JSON、维护 pending request map、缓冲事件、捕获 stderr 与日志。本 PR 之后，可以从 Node 端连通 gateway 并跑通 `gateway.ping` / `commands.catalog` / `agent.run`，但还没有可视 UI（只是 minimal 文本输出）。
+新建 `tui/` 工程：Ink + React 19 + nanostores + Vitest。实现 `GatewayClient`：负责拉起 `aether-gateway` 子进程、按行解析 JSON、维护 pending request map、缓冲事件、捕获 stderr 与日志。本 PR 之后，可以从 Node 端连通 gateway 并跑通 `gateway.ping` / `commands.catalog` / `agent.run`，但还没有可视 UI（只是 minimal 文本输出）。
 
 ## Scope
 
 In scope:
 
-- 新建 `aether-tui/` 顶级目录（位于 repo 根，与 `aether/` 同级）
+- 新建 `tui/` 顶级目录（位于 repo 根，与 `aether/` 同级）
 - `package.json`、`tsconfig.json`、`tsconfig.build.json`、`vitest.config.ts`、`eslint.config.mjs`、`.prettierrc`
 - `src/entry.tsx`（最小化：检查 TTY → 起 GatewayClient → 打印 `gateway.ready` 后退出，便于 smoke）
 - `src/gatewayClient.ts`：子进程编排
@@ -27,7 +27,7 @@ Out of scope:
 ### Directory layout
 
 ```
-aether-tui/
+tui/
 ├── package.json
 ├── tsconfig.json
 ├── tsconfig.build.json
@@ -52,7 +52,7 @@ aether-tui/
 
 ```json
 {
-  "name": "aether-tui",
+  "name": "tui",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -171,7 +171,7 @@ export type PermissionRequestParams = { ... }
 
 ## 设计要点
 
-**为什么放在 `aether-tui/`（与 `aether/` 同级）而不是 `aether/tui/`。** TS 工程要有独立的 `package.json`、构建产物、依赖树，放在 Python 包内会让 `setuptools` / `uv` 误把 `node_modules` 当成 package data。Hermes 也用 `ui-tui/` 同级。
+**为什么放在 `tui/`（与 `aether/` 同级）而不是 `aether/tui/`。** TS 工程要有独立的 `package.json`、构建产物、依赖树，放在 Python 包内会让 `setuptools` / `uv` 误把 `node_modules` 当成 package data。Hermes 也用 `ui-tui/` 同级。
 
 **为什么用 Ink 6 + React 19。** 这是 Hermes 实际跑过的组合，React 19 的 compiler 让组件性能更好。`tsx` 当 dev runner，`tsc` build。
 
@@ -191,16 +191,16 @@ export type PermissionRequestParams = { ... }
 
 ## Files touched
 
-- new: 整个 `aether-tui/` 目录（按上面 layout）
-- modified: 仓库根 `.gitignore`（追加 `aether-tui/node_modules`, `aether-tui/dist`）
+- new: 整个 `tui/` 目录（按上面 layout）
+- modified: 仓库根 `.gitignore`（追加 `tui/node_modules`, `tui/dist`）
 
 ## Dependencies
 
-PR 1 ~ 5 已合并：`aether-tui` 启动后会立刻调 `gateway.ping`，期望 `commands.catalog` / `agent.run` 在 PR 7 之前已经可用以便 smoke。
+PR 1 ~ 5 已合并：`tui` 启动后会立刻调 `gateway.ping`，期望 `commands.catalog` / `agent.run` 在 PR 7 之前已经可用以便 smoke。
 
 ## Acceptance criteria
 
-- `cd aether-tui && npm install && npm run type-check` 通过。
+- `cd tui && npm install && npm run type-check` 通过。
 - `npm test` 通过；至少 12 个单测覆盖 GatewayClient（启动、解析、超时、断流、未知 id、并发、stderr 捕获、协议错误、stop 优雅退出、subscribe 回放、environment vars override、Python 解析器优先级）。
 - `npm start` 启动后能看到 `gateway.ready` 一行，进程不退出；按 Ctrl+C 后 Python 子进程在 2s 内退出且无 zombie。
 - `GatewayClient.request("gateway.ping")` 返回 `{pong: true}`。
@@ -211,7 +211,7 @@ PR 1 ~ 5 已合并：`aether-tui` 启动后会立刻调 `gateway.ping`，期望 
 ## Manual verification
 
 ```bash
-cd aether-tui
+cd tui
 npm install
 AETHER_PYTHON_SRC_ROOT="$PWD/.." npm start
 

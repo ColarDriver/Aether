@@ -74,9 +74,11 @@ _HANDLER_CAPABILITIES: tuple[str, ...] = (
     "providers",
     "commands",
     "agent",
+    "approvals",
+    "permissions",
 )
 
-GATEWAY_VERSION = "0.4.0"  # bump per PR; PR 4 adds agent run streaming.
+GATEWAY_VERSION = "0.5.0"  # bump per PR; PR 5 adds approval/permission bridge.
 
 
 _DEFAULT_SHUTDOWN_GRACE_S = 1.0

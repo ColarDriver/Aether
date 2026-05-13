@@ -7,6 +7,7 @@ client as JSON-RPC ``event`` notifications on the same transport.
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from typing import Any
@@ -38,6 +39,11 @@ from aether.gateway.protocol import (
     TokenUsage,
     ToolCall as ToolCallEvent,
     ToolResult as ToolResultEvent,
+)
+from aether.gateway.handlers.prompter_bridge import (
+    GatewayPromptDisconnected,
+    GatewayPrompter,
+    GatewayToolPermissionPrompter,
 )
 from aether.gateway.handlers.state import set_current_session
 from aether.gateway.run_handle import RunHandle, running_runs
@@ -281,7 +287,15 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
     try:
         provider = _build_provider_for_record(record)
         config = _build_engine_config(run_params.get("max_iterations"))
+        # ``disable_builtin_tools`` is a per-call override (mirrors Python
+        # ``aether --no-builtin-tools``). Applied here instead of inside
+        # ``_build_engine_config`` so existing test mocks of that builder
+        # keep their single-arg signature.
+        if run_params.get("disable_builtin_tools") is True:
+            config.use_builtin_tools = False
         tool_registry = _build_tool_registry()
+        approval_prompter = GatewayPrompter(session_id=session_id, run_id=run_id)
+        permission_prompter = GatewayToolPermissionPrompter(run_id=run_id)
         engine = AgentEngine(
             provider,
             tool_registry=tool_registry,
@@ -300,10 +314,13 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
             stream_callback=sink.text_delta,
             stream_silent_callback=sink.silent_delta,
             messages=list(record.messages),
-            model_config=ModelCallConfig(temperature=run_params["temperature"]),
+            model_config=ModelCallConfig(
+                temperature=run_params["temperature"],
+                max_tokens=run_params["max_tokens"],
+            ),
             metadata={"run_id": run_id, "_loop_state_callback": sink.loop_state},
-            approval_prompter=None,
-            tool_permission_prompter=None,
+            approval_prompter=approval_prompter,
+            tool_permission_prompter=permission_prompter,
             interrupt_signal=handle.interrupt_signal,
         )
         result = engine.run_loop(request)
@@ -314,6 +331,9 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
             sink.usage(usage)
         _emit_terminal_event(sink, result, response)
         return response
+    except GatewayPromptDisconnected as exc:
+        sink.error(str(exc) or "peer disconnected")
+        return _error_response(RuntimeError(str(exc) or "peer disconnected"))
     except GatewayError:
         raise
     except Exception as exc:  # noqa: BLE001 - surface as run result, not worker crash
@@ -349,6 +369,21 @@ def _parse_run_params(params: dict[str, Any] | None) -> dict[str, Any]:
             code=ERROR_INVALID_PARAMS,
         )
 
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None:
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise GatewayError(
+                "agent.run requires positive integer 'max_tokens'",
+                code=ERROR_INVALID_PARAMS,
+            )
+
+    disable_builtin_tools = body.get("disable_builtin_tools")
+    if disable_builtin_tools is not None and not isinstance(disable_builtin_tools, bool):
+        raise GatewayError(
+            "agent.run requires boolean 'disable_builtin_tools'",
+            code=ERROR_INVALID_PARAMS,
+        )
+
     system_override = body.get("system_override")
     if system_override is not None and not isinstance(system_override, str):
         raise GatewayError(
@@ -361,6 +396,8 @@ def _parse_run_params(params: dict[str, Any] | None) -> dict[str, Any]:
         "user_message": user_message,
         "max_iterations": max_iterations,
         "temperature": float(temperature) if temperature is not None else None,
+        "max_tokens": max_tokens,
+        "disable_builtin_tools": bool(disable_builtin_tools) if disable_builtin_tools is not None else None,
         "system_override": system_override,
     }
 
@@ -402,6 +439,7 @@ def _build_provider_for_record(record: SessionRecord) -> ModelProvider:
     return build_provider(
         record.provider,
         model=record.model,
+        api_key=os.getenv("AETHER_API_KEY"),
         base_url=record.base_url,
     )
 
@@ -410,6 +448,7 @@ def _build_engine_config(max_iterations: Any) -> EngineConfig:
     config = EngineConfig()
     if isinstance(max_iterations, int):
         config.max_iterations = max_iterations
+    config.tool_permissions_enabled = True
     return config
 
 

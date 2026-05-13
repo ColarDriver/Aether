@@ -8,6 +8,8 @@ import unittest
 from pydantic import ValidationError
 
 from aether.gateway.protocol import (
+    ApprovalQuestion,
+    ApprovalRequest,
     ERROR_APPLICATION,
     ERROR_CANCELLED,
     ERROR_INTERNAL,
@@ -26,6 +28,9 @@ from aether.gateway.protocol import (
     IterationStart,
     JSONRPC_VERSION,
     LoopStateChanged,
+    PermissionPreview,
+    PermissionRequest,
+    PermissionToolRequest,
     Status,
     TextDelta,
     TokenUsage,
@@ -223,6 +228,42 @@ class EventModels(unittest.TestCase):
             self.assertEqual(dumped["session_id"], "s")
             self.assertEqual(dumped["run_id"], "r")
             self.assertIn("type", dumped)
+
+    def test_approval_and_permission_request_models(self) -> None:
+        approval = ApprovalRequest(
+            kind="questions",
+            session_id="s",
+            run_id="r",
+            questions=[
+                ApprovalQuestion(
+                    id="q1",
+                    text="Choose",
+                    kind="select",
+                    options=["a", "b"],
+                )
+            ],
+            deadline_ms=60_000,
+        )
+        dumped_approval = approval.model_dump(mode="json", exclude_none=False)
+        self.assertEqual(dumped_approval["tool_call_id"], None)
+        self.assertEqual(dumped_approval["questions"][0]["options"], ["a", "b"])
+
+        permission = PermissionRequest(
+            session_id="s",
+            run_id="r",
+            request=PermissionToolRequest(
+                tool_call_id="tc",
+                tool_name="file_edit",
+                arguments={"path": "a.py"},
+                category="write",
+                risk="medium",
+                preview=PermissionPreview(title="Edit file", path="a.py"),
+            ),
+            deadline_ms=120_000,
+        )
+        dumped_permission = permission.model_dump(mode="json", exclude_none=False)
+        self.assertEqual(dumped_permission["request"]["tool_name"], "file_edit")
+        self.assertEqual(dumped_permission["request"]["preview"]["path"], "a.py")
 
 
 class JsonRoundTrip(unittest.TestCase):

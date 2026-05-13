@@ -1,0 +1,37 @@
+{
+  "name": "tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --watch src/entry.tsx",
+    "start": "tsx src/entry.tsx",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/entry.js",
+    "type-check": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}'",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@nanostores/react": "^1.0.0",
+    "cli-highlight": "^2.1.11",
+    "ink": "^6.0.0",
+    "ink-text-input": "^6.0.0",
+    "marked": "^18.0.3",
+    "nanostores": "^1.0.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.0.0",
+    "ink-testing-library": "^4.0.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.0.0"
+  }
+}

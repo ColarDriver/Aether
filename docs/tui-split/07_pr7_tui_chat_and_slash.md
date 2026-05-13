@@ -8,18 +8,18 @@
 
 In scope:
 
-- `aether-tui/src/app.tsx`：顶层组件
-- `aether-tui/src/components/Banner.tsx`
-- `aether-tui/src/components/ChatTranscript.tsx`
-- `aether-tui/src/components/ChatMessage.tsx`（含 streaming markdown）
-- `aether-tui/src/components/Composer.tsx`（输入框 + 多行 + 历史）
-- `aether-tui/src/components/StatusLine.tsx`（迷你状态条；完整 activity bar 在 PR 8）
-- `aether-tui/src/store/chatStore.ts`（nanostores）
-- `aether-tui/src/store/composerStore.ts`
-- `aether-tui/src/store/sessionStore.ts`
-- `aether-tui/src/hooks/useGatewayEvents.ts`：把 `GatewayClient` 事件汇入 stores
-- `aether-tui/src/slash/dispatcher.ts`：slash 命令解析与路由
-- `aether-tui/src/slash/commands/*.ts`：每个 slash 命令一个文件
+- `tui/src/app.tsx`：顶层组件
+- `tui/src/components/Banner.tsx`
+- `tui/src/components/ChatTranscript.tsx`
+- `tui/src/components/ChatMessage.tsx`（含 streaming markdown）
+- `tui/src/components/Composer.tsx`（输入框 + 多行 + 历史）
+- `tui/src/components/StatusLine.tsx`（迷你状态条；完整 activity bar 在 PR 8）
+- `tui/src/store/chatStore.ts`（nanostores）
+- `tui/src/store/composerStore.ts`
+- `tui/src/store/sessionStore.ts`
+- `tui/src/hooks/useGatewayEvents.ts`：把 `GatewayClient` 事件汇入 stores
+- `tui/src/slash/dispatcher.ts`：slash 命令解析与路由
+- `tui/src/slash/commands/*.ts`：每个 slash 命令一个文件
 - 单元测试：reducer 覆盖、slash 分发、composer 编辑路径
 
 Out of scope:
@@ -67,7 +67,7 @@ function mapEvent(ev: GatewayEvent): Action[] {
 ### Streaming markdown 策略
 
 - 不引入完整 markdown 渲染（复杂、Ink 不友好）。
-- 处理：粗体 `**...**` → `chalk.bold`；行内 code `` `...` `` → `chalk.gray`；fence `` ``` `` → 单独 box 渲染。
+- 处理：粗体 `**...**` → Ink bold；行内 code `` `...` `` → gray text；fence `` ``` `` → 单独 box 渲染。
 - 列表、表格、链接保持原样（终端文本）。
 - 关键约束：increment-only。streaming 期间不重排版面，只在 buffer 后面 append。完成态再做一次"漂亮化"重渲。
 
@@ -133,15 +133,15 @@ PR 7 实现的命令清单（与 server 的 `commands.catalog` 一致）：
 
 ## Files touched
 
-- new: `aether-tui/src/app.tsx`
-- new: `aether-tui/src/components/{Banner,ChatTranscript,ChatMessage,Composer,StatusLine}.tsx`
-- new: `aether-tui/src/store/{chatStore,composerStore,sessionStore}.ts`
-- new: `aether-tui/src/hooks/useGatewayEvents.ts`
-- new: `aether-tui/src/slash/dispatcher.ts`
-- new: `aether-tui/src/slash/commands/*.ts`
-- new: `aether-tui/src/lib/markdownLite.ts`
-- modified: `aether-tui/src/entry.tsx`（接入 App）
-- new: `aether-tui/src/__tests__/{chatStore,slashDispatcher,markdownLite,composer}.test.tsx`
+- new: `tui/src/app.tsx`
+- new: `tui/src/components/{Banner,ChatTranscript,ChatMessage,Composer,StatusLine}.tsx`
+- new: `tui/src/store/{chatStore,composerStore,sessionStore}.ts`
+- new: `tui/src/hooks/useGatewayEvents.ts`
+- new: `tui/src/slash/dispatcher.ts`
+- new: `tui/src/slash/commands/*.ts`
+- new: `tui/src/lib/markdownLite.ts`
+- modified: `tui/src/entry.tsx`（接入 App）
+- new: `tui/src/__tests__/{chatStore,slashDispatcher,markdownLite,composer}.test.ts`
 
 ## Dependencies
 
@@ -162,7 +162,7 @@ PR 3（slash 命令对应的 RPC 方法），PR 4（agent.run 流式事件 + age
 ## Manual verification
 
 ```bash
-cd aether-tui
+cd tui
 npm start
 
 # 在 TUI 里：

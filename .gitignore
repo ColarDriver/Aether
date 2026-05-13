@@ -51,3 +51,7 @@ Thumbs.db
 
 # tmp
 tmp/
+
+# TUI
+tui/node_modules/
+tui/dist/

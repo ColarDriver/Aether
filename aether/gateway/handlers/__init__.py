@@ -19,7 +19,9 @@ from aether.gateway.handlers import (
     commands_methods,
     prefs_methods,
     providers_methods,
+    response_methods,
     session_methods,
+    tools_methods,
 )
 
 
@@ -35,6 +37,8 @@ def register_handler_methods() -> None:
     providers_methods.register()
     commands_methods.register()
     agent_methods.register()
+    response_methods.register()
+    tools_methods.register()
 
 
 __all__ = [
@@ -43,5 +47,7 @@ __all__ = [
     "prefs_methods",
     "providers_methods",
     "register_handler_methods",
+    "response_methods",
     "session_methods",
+    "tools_methods",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -248,6 +249,23 @@ def _spawn_gateway(env_overrides: dict[str, str] | None = None) -> _GatewayProc:
     )
 
 
+def _wait_for_ready(gw: _GatewayProc, timeout: float = 5.0) -> None:
+    """Block until the subprocess has installed handlers and emitted ready."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = max(0.0, deadline - time.monotonic())
+        readable, _, _ = select.select([gw.stdout], [], [], remaining)
+        if not readable:
+            continue
+        line = gw.stdout.readline()
+        if not line:
+            break
+        frame = json.loads(line.decode("utf-8", errors="replace"))
+        if frame.get("method") == "gateway.ready":
+            return
+    raise AssertionError("gateway did not emit gateway.ready before timeout")
+
+
 @unittest.skipIf(os.name == "nt", "POSIX signal semantics; Windows test deferred")
 class GatewayBootSubprocess(unittest.TestCase):
     """Spawn the real `python -m aether.gateway` and verify lifecycle."""
@@ -353,7 +371,7 @@ class GatewayBootSubprocess(unittest.TestCase):
     def test_sigterm_triggers_clean_exit_within_grace(self) -> None:
         gw = _spawn_gateway({"AETHER_HOME": self._aether_home})
         try:
-            time.sleep(0.3)
+            _wait_for_ready(gw)
             self.assertIsNone(gw.poll())
 
             gw.send_signal(signal.SIGTERM)
@@ -367,7 +385,7 @@ class GatewayBootSubprocess(unittest.TestCase):
     def test_sigint_triggers_clean_exit(self) -> None:
         gw = _spawn_gateway({"AETHER_HOME": self._aether_home})
         try:
-            time.sleep(0.3)
+            _wait_for_ready(gw)
             self.assertIsNone(gw.poll())
 
             gw.send_signal(signal.SIGINT)
@@ -390,7 +408,7 @@ class GatewayBootSubprocess(unittest.TestCase):
         """
         gw = _spawn_gateway({"AETHER_HOME": self._aether_home})
         try:
-            time.sleep(0.2)
+            _wait_for_ready(gw)
             gw.stdout.close()  # closes our end; gateway writes would EPIPE
             time.sleep(0.3)
             self.assertIsNone(

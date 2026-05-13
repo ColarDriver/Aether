@@ -75,3 +75,39 @@ pytest aether/tests/sessions aether/tests/providers
 - Python 端只剩 launcher，纯 UI 代码全部删除，`prompt_toolkit` 不在 runtime deps。
 - `aether/gateway/` 包通过 `Transport` 抽象为未来 web UI 留好接口。
 - 文档 `docs/tui-split/` 12 个文件齐全，可作为 sprint 完成存档。
+
+## 与 Python TUI 已知偏差
+
+后续 parity 工作 (`/workspace/Aether/tui/src/components/Banner.tsx` 等)
+落地之后，TS TUI 几乎与 Python prompt_toolkit TUI 一致，唯一保留的
+架构偏差：
+
+| 偏差 | 原因 |
+|---|---|
+| 无固定式 streaming 预览帧 | Python 用 Rich Live 在 composer 上方 pin 一个 tail-crop 的 assistant 缓冲区；Ink 自上而下的 reconciliation 没有等价的 "pinned below transcript" 容器。改成把流式 delta 直接追加到 transcript，用 `streaming: true` 标记区分。功能等价，视觉不同。 |
+| Reasoning 摘要不在 activity bar 下方 | Python 把 `<thinking>` 内容渲染在 activity bar 下方；TS 用独立的 `ReasoningLine` 组件以保留焦点管理简单性。 |
+| 中文/CJK 字符的 shimmer 索引按 code point | Python 同样按 code point；视觉宽度近似但不对齐，对 ASCII 动词无影响。 |
+
+## 新增的 CLI 启动器旗标
+
+PR 9 的 launcher 文档列了 6 个旗标。Parity 工作把全部 14 个 Python
+`aether/cli/main.py` 旗标都接通了，通过 `aether.cli.launcher` 模块转译
+成 env vars 交给 TS subprocess。完整对照表：
+
+| Python 旗标 | 对应 env var | TS 消费点 |
+|---|---|---|
+| `--provider X` | `AETHER_PROVIDER` | `sessionStore.provider` 初始值 |
+| `--model X` | `AETHER_MODEL` | `sessionStore.model` 初始值 |
+| `--api-key X` | `AETHER_API_KEY` | (gateway 端 provider 构造) |
+| `--base-url X` | `AETHER_BASE_URL` | `sessionStore.baseUrl` → `session.create.base_url` |
+| `--system X` | `AETHER_SYSTEM` | `sessionStore.systemOverride` |
+| `--system-file PATH` | `AETHER_SYSTEM_FILE` | 启动时 `readFileSync` → systemOverride |
+| `--session ID` | `AETHER_SESSION_ID` | 启动后自动 `session.resume` |
+| `--resume [ID]` | `AETHER_RESUME` | 启动后 picker 或 `session.resume` |
+| `--max-iterations N` | `AETHER_MAX_ITERATIONS` | `agent.run.max_iterations` 透传 |
+| `--temperature T` | `AETHER_TEMPERATURE` | `agent.run.temperature` 透传 |
+| `--max-tokens M` | `AETHER_MAX_TOKENS` | `agent.run.max_tokens` 透传 |
+| `--verbose` | `AETHER_VERBOSE` | 启动时 `chatActions.toggleVerbose` |
+| `--no-banner` | `AETHER_NO_BANNER` | `Banner` 走 `BootLine` 路径 |
+| `--no-builtin-tools` | `AETHER_NO_BUILTIN_TOOLS` | `agent.run.disable_builtin_tools` 透传 |
+| `--log-level X` | `AETHER_LOG_LEVEL` | gateway env，影响 Python logging |

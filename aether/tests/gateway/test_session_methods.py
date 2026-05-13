@@ -138,6 +138,30 @@ class CreateSession(_SessionMethodsCase):
         current = self._result("session.current")
         self.assertEqual(current["session_id"], result["session_id"])
 
+    def test_accepts_requested_session_id(self) -> None:
+        result = self._result(
+            "session.create",
+            {
+                "session_id": "ses_custom",
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+            },
+        )
+        self.assertEqual(result["session_id"], "ses_custom")
+        self.assertIsNotNone(load_session("ses_custom"))
+
+    def test_rejects_empty_requested_session_id(self) -> None:
+        resp = self._call(
+            "session.create",
+            {
+                "session_id": " ",
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+            },
+        )
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_INVALID_PARAMS)
+
     def test_optional_system_prompt(self) -> None:
         result = self._result(
             "session.create",
@@ -212,6 +236,30 @@ class ResumeSession(_SessionMethodsCase):
         current = self._result("session.current")
         self.assertEqual(current["session_id"], "ses_current_via_resume")
 
+    def test_accepts_unique_prefix(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_prefix_target",
+            provider="claude",
+            model="claude-sonnet-4-6",
+        )
+        save_session(record)
+        result = self._result("session.resume", {"session_id": "ses_prefix"})
+        self.assertEqual(result["info"]["session_id"], "ses_prefix_target")
+
+    def test_ambiguous_prefix_raises_application_error(self) -> None:
+        for session_id in ("ses_same_1", "ses_same_2"):
+            save_session(
+                SessionRecord.new(
+                    session_id=session_id,
+                    provider="claude",
+                    model="claude-sonnet-4-6",
+                )
+            )
+        resp = self._call("session.resume", {"session_id": "ses_same"})
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_APPLICATION)
+        self.assertIn("ambiguous", resp.error.message)
+
     def test_tolerates_unknown_roles(self) -> None:
         record = SessionRecord.new(
             session_id="ses_weird_role",
@@ -223,6 +271,51 @@ class ResumeSession(_SessionMethodsCase):
         result = self._result("session.resume", {"session_id": "ses_weird_role"})
         # Unknown role coerced to ``user`` per the schema-tolerance contract.
         self.assertEqual(result["messages"][0]["role"], "user")
+
+
+class UpdateSession(_SessionMethodsCase):
+    def test_updates_model_without_clearing_messages(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_model_switch",
+            provider="openai",
+            model="old-model",
+        )
+        record.messages = [{"role": "user", "content": "keep this"}]
+        save_session(record)
+
+        result = self._result(
+            "session.update",
+            {
+                "session_id": "ses_model_switch",
+                "provider": "openai",
+                "model": "new-model",
+            },
+        )
+        self.assertEqual(result["info"]["model"], "new-model")
+        on_disk = load_session("ses_model_switch")
+        self.assertIsNotNone(on_disk)
+        assert on_disk is not None
+        self.assertEqual(on_disk.model, "new-model")
+        self.assertEqual(on_disk.messages[0]["content"], "keep this")
+
+    def test_unknown_session_raises_application_error(self) -> None:
+        resp = self._call("session.update", {"session_id": "missing", "model": "x"})
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_APPLICATION)
+
+    def test_rejects_empty_model(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_bad_update",
+            provider="openai",
+            model="old-model",
+        )
+        save_session(record)
+        resp = self._call(
+            "session.update",
+            {"session_id": "ses_bad_update", "model": " "},
+        )
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_INVALID_PARAMS)
 
 
 class DeleteSession(_SessionMethodsCase):

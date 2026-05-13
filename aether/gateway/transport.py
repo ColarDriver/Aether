@@ -94,19 +94,25 @@ class StdioTransport:
                 stream.write(line)
                 stream.flush()
         except (BrokenPipeError, ConnectionResetError):
-            self._closed = True
+            self._mark_closed(OSError("peer disconnected"))
         except OSError as exc:
             if exc.errno in _PEER_GONE_ERRNOS:
-                self._closed = True
+                self._mark_closed(exc)
                 return
             raise
 
     def close(self) -> None:
-        self._closed = True
+        self._mark_closed(OSError("peer disconnected"))
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def _mark_closed(self, reason: BaseException | None = None) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        _notify_peer_gone(reason or OSError("peer disconnected"))
 
 
 _current: contextvars.ContextVar[Optional[Transport]] = contextvars.ContextVar(
@@ -116,6 +122,8 @@ _current: contextvars.ContextVar[Optional[Transport]] = contextvars.ContextVar(
 
 _fallback_lock = threading.Lock()
 _fallback: Optional[Transport] = None
+_peer_gone_lock = threading.Lock()
+_peer_gone_callbacks: list[Callable[[BaseException], None]] = []
 
 
 def _get_fallback() -> Transport:
@@ -158,3 +166,28 @@ def reset_transport_for_tests() -> None:
     global _fallback
     with _fallback_lock:
         _fallback = None
+
+
+def add_peer_gone_callback(callback: Callable[[BaseException], None]) -> None:
+    """Register a process-local callback for transport disconnects."""
+    with _peer_gone_lock:
+        if callback not in _peer_gone_callbacks:
+            _peer_gone_callbacks.append(callback)
+
+
+def remove_peer_gone_callback(callback: Callable[[BaseException], None]) -> None:
+    """Remove a callback previously registered by ``add_peer_gone_callback``."""
+    with _peer_gone_lock:
+        _peer_gone_callbacks[:] = [
+            existing for existing in _peer_gone_callbacks if existing is not callback
+        ]
+
+
+def _notify_peer_gone(reason: BaseException) -> None:
+    with _peer_gone_lock:
+        callbacks = list(_peer_gone_callbacks)
+    for callback in callbacks:
+        try:
+            callback(reason)
+        except Exception:
+            logger.exception("transport peer-gone callback failed")

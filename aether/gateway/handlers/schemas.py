@@ -30,6 +30,7 @@ class SessionInfo(BaseModel):
     updated_at: float
     provider: str
     model: str
+    base_url: str | None = None
     system_prompt: str | None = None
     message_count: int = 0
     summary: str | None = None

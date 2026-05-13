@@ -54,6 +54,7 @@ from aether.gateway.protocol import (
     ERROR_METHOD_NOT_FOUND,
     ERROR_PARSE,
     GatewayError,
+    JSONRPC_VERSION,
     RpcNotification,
     RpcRequest,
     RpcResponse,
@@ -217,6 +218,11 @@ def parse_frame(line: str) -> tuple[RpcRequest | RpcNotification | None, RpcResp
             "envelope must be a JSON object",
         )
 
+    if ("result" in obj or "error" in obj) and "method" not in obj:
+        response_request, response_error = _parse_reverse_response(obj)
+        if response_request is not None or response_error is not None:
+            return response_request, response_error
+
     has_id = "id" in obj
 
     # Pydantic validates jsonrpc/method/params + extra=forbid.
@@ -232,6 +238,59 @@ def parse_frame(line: str) -> tuple[RpcRequest | RpcNotification | None, RpcResp
             request_id,
             ERROR_INVALID_REQUEST,
             "envelope validation failed",
+            data={"reason": _short_validation_message(exc)},
+        )
+
+
+def _parse_reverse_response(obj: dict[str, Any]) -> tuple[RpcRequest | None, RpcResponse | None]:
+    """Map client responses to server-initiated requests back into handlers."""
+
+    request_id = obj.get("id")
+    if not isinstance(request_id, str):
+        return None, make_error_response(
+            request_id if isinstance(request_id, int) else None,
+            ERROR_INVALID_REQUEST,
+            "reverse response id must be a string",
+        )
+    if request_id.startswith("srv_app_"):
+        method_name = "approval.response"
+    elif request_id.startswith("srv_perm_"):
+        method_name = "permission.response"
+    else:
+        return None, make_error_response(
+            request_id,
+            ERROR_INVALID_REQUEST,
+            "unknown server-initiated response id prefix",
+        )
+
+    if obj.get("jsonrpc") != JSONRPC_VERSION:
+        return None, make_error_response(
+            request_id,
+            ERROR_INVALID_REQUEST,
+            "jsonrpc version must be 2.0",
+        )
+
+    has_result = "result" in obj
+    has_error = "error" in obj
+    if has_result == has_error:
+        return None, make_error_response(
+            request_id,
+            ERROR_INVALID_REQUEST,
+            "reverse response must have exactly one of result/error",
+        )
+
+    payload = obj.get("result") if has_result else {"error": obj.get("error")}
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+    try:
+        return RpcRequest(id=request_id, method=method_name, params=payload), None
+    except Exception as exc:
+        return None, make_error_response(
+            request_id,
+            ERROR_INVALID_REQUEST,
+            "reverse response validation failed",
             data={"reason": _short_validation_message(exc)},
         )
 

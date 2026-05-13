@@ -12,6 +12,7 @@ Returns the selected value, or ``None`` if the user cancels (Esc/Ctrl-C).
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from dataclasses import dataclass
 from typing import Sequence
@@ -256,4 +257,12 @@ def pick(
         mouse_support=False,
     )
 
-    return app.run()
+    return app.run(in_thread=_inside_running_event_loop())
+
+
+def _inside_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True

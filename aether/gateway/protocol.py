@@ -268,6 +268,71 @@ class Error(AgentEventBase):
     message: str
 
 
+class ApprovalQuestion(BaseModel):
+    """Question item sent by ``approval.request`` reverse RPC."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str
+    kind: Literal["open", "select"] = "open"
+    options: list[str] = Field(default_factory=list)
+
+
+class ApprovalRequest(BaseModel):
+    """Params for server-initiated ``approval.request``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["plan", "questions"]
+    session_id: str
+    run_id: str
+    tool_call_id: str | None = None
+    plan_text: str | None = None
+    questions: list[ApprovalQuestion] = Field(default_factory=list)
+    deadline_ms: int
+
+
+class PermissionPreview(BaseModel):
+    """Wire mirror of ``ToolPermissionPreview``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    subtitle: str | None = None
+    body: str | None = None
+    diff: str | None = None
+    path: str | None = None
+    command: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PermissionToolRequest(BaseModel):
+    """Wire mirror of ``ToolPermissionRequest``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    category: str
+    risk: str
+    preview: PermissionPreview | None = None
+    reason: str | None = None
+    allow_session: bool = True
+
+
+class PermissionRequest(BaseModel):
+    """Params for server-initiated ``permission.request``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    run_id: str
+    request: PermissionToolRequest
+    deadline_ms: int
+
+
 # ── Helpers used by the dispatcher ───────────────────────────────────
 
 
@@ -291,6 +356,8 @@ def make_success_response(request_id: _RpcId, result: Any) -> RpcResponse:
 
 __all__ = [
     "AgentEventBase",
+    "ApprovalQuestion",
+    "ApprovalRequest",
     "Cancelled",
     "Done",
     "ERROR_APPLICATION",
@@ -310,6 +377,9 @@ __all__ = [
     "IterationStart",
     "JSONRPC_VERSION",
     "LoopStateChanged",
+    "PermissionPreview",
+    "PermissionRequest",
+    "PermissionToolRequest",
     "Reasoning",
     "RpcError",
     "RpcNotification",

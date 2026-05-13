@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .contracts import MemoryBundle
+
+
+_MEMORY_CONTEXT_RE = re.compile(
+    r"\n*<memory_context>.*?</memory_context>\n*",
+    re.DOTALL,
+)
 
 
 def default_memory_metadata(*, enabled: bool, mode: str) -> dict[str, Any]:
@@ -65,3 +72,45 @@ def append_memory_context(existing_user_context: str | None, memory_context: str
     if not existing_user_context or not existing_user_context.strip():
         return cleaned
     return f"{existing_user_context.rstrip()}\n\n{cleaned}"
+
+
+def strip_memory_context_text(text: str) -> str:
+    """Return ``text`` with all ``<memory_context>`` blocks removed."""
+
+    if "<memory_context>" not in text:
+        return text
+    return _MEMORY_CONTEXT_RE.sub("\n", text).strip("\n")
+
+
+def strip_memory_context_from_messages(messages: list[dict[str, Any]]) -> bool:
+    """Mutate ``messages`` in place to remove ``<memory_context>`` blocks.
+
+    Used by the engine's recovery compaction path so the summariser
+    never sees retrieved memory (PR 8.2 boundary).  Handles both plain
+    ``str`` contents and structured multimodal lists.  Returns ``True``
+    if any block was stripped — useful for the caller to decide
+    whether to refresh metadata.
+    """
+
+    changed = False
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            if "<memory_context>" not in content:
+                continue
+            new = strip_memory_context_text(content)
+            if new != content:
+                msg["content"] = new
+                changed = True
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if not isinstance(text, str) or "<memory_context>" not in text:
+                    continue
+                new = strip_memory_context_text(text)
+                if new != text:
+                    block["text"] = new
+                    changed = True
+    return changed

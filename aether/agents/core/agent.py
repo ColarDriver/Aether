@@ -40,6 +40,7 @@ from aether.memory import (
     render_memory_bundle,
     resolve_memory_token_budget,
     scopes_for_mode,
+    strip_memory_context_from_messages,
 )
 from aether.models.provider.base import ModelProvider
 from aether.runtime.core.contracts import (
@@ -3582,6 +3583,23 @@ class AgentEngine:
         if not getattr(self.config, "compression_enabled", False):
             self._pin_compression_terminal(reason, compressed_but_exhausted=False, context=context)
             return False
+
+        # PR 8.2 — Memory boundary: recovery compaction must not see
+        # retrieved memory.  Strip any ``<memory_context>`` blocks
+        # before forking the summariser so the canonical/outbound split
+        # holds even on the recovery path.  The retry within this
+        # ``_invoke_provider_with_recovery`` uses the stripped (and
+        # compacted) messages; a fresh memory injection only happens
+        # on a subsequent outer-loop iteration, where the budget is
+        # recomputed against the now-smaller prompt.
+        if strip_memory_context_from_messages(messages):
+            memory_meta = dict(context.metadata.get("memory") or {})
+            memory_meta["injected_count"] = 0
+            memory_meta["injected_tokens"] = 0
+            if not memory_meta.get("skipped_reason"):
+                memory_meta["skipped_reason"] = "recovery_compaction_stripped"
+            context.metadata["memory"] = memory_meta
+
         trigger_reason = (
             "payload_too_large"
             if reason == FailoverReason.payload_too_large.value

@@ -18,7 +18,13 @@ from .contracts import (
     normalize_memory_mode,
     scopes_for_mode,
 )
-from .injection import append_memory_context, default_memory_metadata, metadata_from_bundle
+from .injection import (
+    append_memory_context,
+    default_memory_metadata,
+    metadata_from_bundle,
+    strip_memory_context_from_messages,
+    strip_memory_context_text,
+)
 from .frontmatter import FrontmatterDocument
 from .null import NullMemoryProvider
 from .project_store import (
@@ -57,6 +63,8 @@ __all__ = [
     "append_memory_context",
     "default_memory_metadata",
     "metadata_from_bundle",
+    "strip_memory_context_from_messages",
+    "strip_memory_context_text",
     "FrontmatterDocument",
     "NullMemoryProvider",
     "ProjectMemoryEntry",

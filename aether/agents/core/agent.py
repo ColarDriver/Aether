@@ -205,6 +205,7 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "_schema_sanitizer_retry_attempted",
     "_image_shrink_retry_attempted",
     "_interrupt_signal",
+    "_loop_state_callback",
     "_project_memory_store",
 })
 
@@ -1399,7 +1400,6 @@ class AgentEngine:
         self,
         request: EngineRequest,
     ) -> tuple[EngineStateMachine, List[Dict[str, Any]], TurnContext]:
-        state_machine = EngineStateMachine()
         messages = self._sanitize_messages(copy.deepcopy(request.messages))
 
         if request.user_message is not None:
@@ -1411,6 +1411,10 @@ class AgentEngine:
         turn_id = str(uuid.uuid4())
 
         metadata = dict(request.metadata)
+        loop_state_callback = metadata.get("_loop_state_callback")
+        state_machine = EngineStateMachine(
+            on_transition=loop_state_callback if callable(loop_state_callback) else None
+        )
         turn_start_idx = len(messages)
         # Sprint 3 / PR 3.1: stamp the active provider's identity onto the
         # turn so middleware (TokenUsageMiddleware) and downstream tools can

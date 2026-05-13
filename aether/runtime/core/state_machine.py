@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet
+from typing import Callable, Dict, FrozenSet
 
 from .contracts import LoopState
 
@@ -33,12 +33,18 @@ class EngineStateMachine:
     """Minimal explicit state machine used by AgentEngine."""
 
     state: LoopState = LoopState.INIT
+    on_transition: Callable[[LoopState], None] | None = None
 
     def transition(self, next_state: LoopState) -> None:
         allowed = _TRANSITIONS[self.state]
         if next_state not in allowed:
             raise StateTransitionError(f"Invalid transition: {self.state} -> {next_state}")
         self.state = next_state
+        if self.on_transition is not None:
+            try:
+                self.on_transition(next_state)
+            except Exception:
+                pass
 
     @property
     def terminal(self) -> bool:

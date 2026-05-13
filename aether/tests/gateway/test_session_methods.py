@@ -1,0 +1,284 @@
+"""Tests for the ``session.*`` gateway methods (PR 3)."""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+from aether.cli.sessions import (
+    SessionRecord,
+    delete_session,
+    load_session,
+    save_session,
+)
+from aether.gateway.dispatcher import (
+    _LONG_METHODS,
+    dispatch_request,
+    register_builtins,
+    reset_dispatcher_for_tests,
+)
+from aether.gateway.handlers import register_handler_methods
+from aether.gateway.handlers.state import reset_state_for_tests
+from aether.gateway.protocol import (
+    ERROR_APPLICATION,
+    ERROR_INVALID_PARAMS,
+    RpcRequest,
+    RpcResponse,
+)
+from aether.gateway.transport import (
+    StdioTransport,
+    bind_transport,
+    reset_transport,
+    reset_transport_for_tests,
+)
+
+
+class _SessionMethodsCase(unittest.TestCase):
+    """Each test isolates ``AETHER_HOME`` so session files don't leak."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._env_patch = mock.patch.dict(
+            os.environ, {"AETHER_HOME": self._tmp.name}
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
+        reset_dispatcher_for_tests()
+        reset_transport_for_tests()
+        reset_state_for_tests()
+        register_builtins()
+        register_handler_methods()
+
+        # Bind a captured-stdout transport so long handlers (which
+        # write their response asynchronously from the worker pool)
+        # can be observed by ``_call`` below.
+        self._buf = io.StringIO()
+        self._sink = StdioTransport(lambda: self._buf)
+        self._token = bind_transport(self._sink)
+        self.addCleanup(reset_transport, self._token)
+
+    def _call(self, name: str, params: dict | None = None) -> RpcResponse:
+        # Reset buffer so each call inspects only its own response.
+        self._buf.seek(0)
+        self._buf.truncate(0)
+
+        request = RpcRequest(id=name, method=name, params=params)
+        resp = dispatch_request(request, transport=self._sink)
+        if resp is not None:
+            return resp
+
+        # Long handler — response comes from the worker pool.
+        if name not in _LONG_METHODS:
+            self.fail(
+                f"{name} returned None but is not marked long=True; "
+                "the dispatcher contract was violated"
+            )
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if self._buf.getvalue().strip():
+                break
+            time.sleep(0.01)
+        line = self._buf.getvalue().strip()
+        if not line:
+            self.fail(
+                f"{name} (long) did not produce a response within 2s"
+            )
+        parsed = json.loads(line)
+        return RpcResponse.model_validate(parsed)
+
+    def _result(self, name: str, params: dict | None = None) -> dict:
+        resp = self._call(name, params)
+        if resp.error is not None:
+            self.fail(
+                f"{name} returned error: code={resp.error.code} "
+                f"message={resp.error.message}"
+            )
+        assert resp.result is not None
+        return resp.result
+
+
+class CreateSession(_SessionMethodsCase):
+    def test_creates_and_persists(self) -> None:
+        result = self._result(
+            "session.create",
+            {"provider": "claude", "model": "claude-sonnet-4-6"},
+        )
+        session_id = result["session_id"]
+        self.assertEqual(len(session_id), 36)  # uuid
+        info = result["info"]
+        self.assertEqual(info["session_id"], session_id)
+        self.assertEqual(info["provider"], "claude")
+        self.assertEqual(info["model"], "claude-sonnet-4-6")
+        self.assertEqual(info["message_count"], 0)
+        self.assertGreater(info["created_at"], 0)
+
+        on_disk = load_session(session_id)
+        self.assertIsNotNone(on_disk)
+        assert on_disk is not None
+        self.assertEqual(on_disk.provider, "claude")
+
+    def test_requires_provider_and_model(self) -> None:
+        for params in (None, {}, {"provider": "claude"}, {"model": "x"}):
+            resp = self._call("session.create", params)
+            assert resp.error is not None
+            self.assertEqual(resp.error.code, ERROR_INVALID_PARAMS)
+
+    def test_sets_current_session(self) -> None:
+        result = self._result(
+            "session.create",
+            {"provider": "claude", "model": "claude-sonnet-4-6"},
+        )
+        current = self._result("session.current")
+        self.assertEqual(current["session_id"], result["session_id"])
+
+    def test_optional_system_prompt(self) -> None:
+        result = self._result(
+            "session.create",
+            {
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+                "system": "you are helpful",
+            },
+        )
+        self.assertEqual(result["info"]["system_prompt"], "you are helpful")
+
+
+class ListSessions(_SessionMethodsCase):
+    def test_empty_initial_state(self) -> None:
+        result = self._result("session.list")
+        self.assertEqual(result["sessions"], [])
+
+    def test_lists_persisted_sessions(self) -> None:
+        for i in range(3):
+            self._result(
+                "session.create",
+                {"provider": "claude", "model": f"claude-test-{i}"},
+            )
+        result = self._result("session.list")
+        self.assertEqual(len(result["sessions"]), 3)
+
+    def test_limit_param_respected(self) -> None:
+        for i in range(5):
+            self._result(
+                "session.create",
+                {"provider": "claude", "model": f"claude-test-{i}"},
+            )
+        result = self._result("session.list", {"limit": 2})
+        self.assertEqual(len(result["sessions"]), 2)
+
+
+class ResumeSession(_SessionMethodsCase):
+    def test_returns_info_and_messages(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_resume_1",
+            provider="claude",
+            model="claude-sonnet-4-6",
+        )
+        record.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        record.first_user_message = "hello"
+        save_session(record)
+
+        result = self._result("session.resume", {"session_id": "ses_resume_1"})
+        self.assertEqual(result["info"]["session_id"], "ses_resume_1")
+        self.assertEqual(len(result["messages"]), 2)
+        self.assertEqual(result["messages"][0]["role"], "user")
+        self.assertEqual(result["messages"][0]["text"], "hello")
+        self.assertEqual(result["messages"][1]["role"], "assistant")
+
+    def test_unknown_session_raises_application_error(self) -> None:
+        resp = self._call("session.resume", {"session_id": "does-not-exist"})
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_APPLICATION)
+        self.assertIn("does-not-exist", resp.error.message)
+
+    def test_updates_current_session(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_current_via_resume",
+            provider="claude",
+            model="claude-sonnet-4-6",
+        )
+        save_session(record)
+        self._result("session.resume", {"session_id": "ses_current_via_resume"})
+        current = self._result("session.current")
+        self.assertEqual(current["session_id"], "ses_current_via_resume")
+
+    def test_tolerates_unknown_roles(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_weird_role",
+            provider="claude",
+            model="claude-sonnet-4-6",
+        )
+        record.messages = [{"role": "developer", "content": "system-ish"}]
+        save_session(record)
+        result = self._result("session.resume", {"session_id": "ses_weird_role"})
+        # Unknown role coerced to ``user`` per the schema-tolerance contract.
+        self.assertEqual(result["messages"][0]["role"], "user")
+
+
+class DeleteSession(_SessionMethodsCase):
+    def test_deletes_existing(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_to_delete",
+            provider="claude",
+            model="x",
+        )
+        save_session(record)
+        result = self._result("session.delete", {"session_id": "ses_to_delete"})
+        self.assertTrue(result["deleted"])
+        self.assertIsNone(load_session("ses_to_delete"))
+
+    def test_unknown_returns_false_not_error(self) -> None:
+        result = self._result("session.delete", {"session_id": "phantom"})
+        self.assertFalse(result["deleted"])
+
+    def test_deleting_current_clears_current(self) -> None:
+        created = self._result(
+            "session.create",
+            {"provider": "claude", "model": "claude-sonnet-4-6"},
+        )
+        sid = created["session_id"]
+        self._result("session.delete", {"session_id": sid})
+        current = self._result("session.current")
+        self.assertIsNone(current["session_id"])
+
+
+class CurrentSession(_SessionMethodsCase):
+    def test_null_when_nothing_bound(self) -> None:
+        result = self._result("session.current")
+        self.assertIsNone(result["session_id"])
+        self.assertNotIn("info", result)
+
+    def test_returns_info_when_bound(self) -> None:
+        created = self._result(
+            "session.create",
+            {"provider": "claude", "model": "claude-sonnet-4-6"},
+        )
+        current = self._result("session.current")
+        self.assertEqual(current["session_id"], created["session_id"])
+        self.assertEqual(current["info"]["provider"], "claude")
+
+    def test_clears_stale_pointer(self) -> None:
+        """If the on-disk session is deleted out of band, current must null out."""
+        created = self._result(
+            "session.create",
+            {"provider": "claude", "model": "claude-sonnet-4-6"},
+        )
+        sid = created["session_id"]
+        # Delete the file directly — bypasses our delete handler.
+        delete_session(sid)
+        result = self._result("session.current")
+        self.assertIsNone(result["session_id"])
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

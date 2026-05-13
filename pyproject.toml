@@ -28,6 +28,7 @@ dependencies = [
 
 [project.scripts]
 aether = "aether.cli.main:main"
+aether-gateway = "aether.gateway.entry:main"
 
 [project.optional-dependencies]
 pymupdf = ["pymupdf4llm>=0.0.17"]

@@ -98,3 +98,8 @@ def build_provider(
 
 def list_providers() -> list[str]:
     return list(_DEFAULTS.keys())
+
+
+def get_provider_defaults(name: str) -> dict[str, Any]:
+    """Return a copy of provider defaults for display and diagnostics."""
+    return dict(_DEFAULTS.get(resolve_provider_name(name), {}))

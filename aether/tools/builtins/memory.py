@@ -1,4 +1,4 @@
-"""Built-in memory tools — Sprint 8 / PR 8.6.
+"""Built-in memory tools.
 
 Five tools that let the model explicitly read and write durable project
 memory via the ``ProjectMemoryStore``.

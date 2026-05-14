@@ -1,7 +1,5 @@
 """Minimal LSP client over stdio.
 
-Sprint 3.5 / PR-3 (PR 3.5.9).
-
 A single :class:`LSPClient` instance owns one ``subprocess.Popen``
 running a Language Server Protocol (LSP) server.  It speaks the
 JSON-RPC 2.0 envelope LSP defines:

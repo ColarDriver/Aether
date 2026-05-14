@@ -1,10 +1,9 @@
-"""Built-in ``todo_write`` tool — Sprint 3.5 / PR 3.5.3.
+"""Built-in ``todo_write`` tool.
 
-Lets the model maintain a session-scoped task checklist.  Closes the
-loop opened by Sprint 3 / PR 3.2 \u2014 ``EngineConfig.cheap_tool_names``
-already lists ``todo_write`` / ``update_todo`` as cheap-refundable
-names, so a turn whose only tool call is ``todo_write`` no longer
-consumes an iteration slot.
+Lets the model maintain a session-scoped task checklist.
+``EngineConfig.cheap_tool_names`` already lists ``todo_write`` /
+``update_todo`` as cheap-refundable names, so a turn whose only tool
+call is ``todo_write`` does not consume an iteration slot.
 
 State model
 -----------
@@ -20,8 +19,8 @@ implicitly signals "nothing left to track" by sending an all-done
 list, and we don't want stale done items lingering across turns.
 
 The current process-local dict is intentionally simple; a future
-sprint can swap it for a persistent ``SessionStore`` integration
-without touching the tool surface.
+``SessionStore`` integration can replace it without touching the tool
+surface.
 """
 
 from __future__ import annotations

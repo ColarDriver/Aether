@@ -150,21 +150,21 @@ if TYPE_CHECKING:
     from aether.subagents.manager import SubagentManager
 
 
-# Sprint 3 / PR 3.1: keys that live on context.metadata as runtime helpers
+# keys that live on context.metadata as runtime helpers
 # but should NOT leak into the JSON-serialisable ``EngineResult.metadata['turn']``
 # snapshot.  Their normalised, public-facing form lives at the metadata top
 # level (e.g. ``usage_accumulator`` → ``metadata['usage']``).  Add new
-# internal-only keys here whenever a future PR introduces one.
+# internal-only keys here whenever a future feature introduces one.
 _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     "usage_accumulator",
-    # Sprint 3 / PR 3.2: live ``IterationBudget`` instance — kept on
+    # live ``IterationBudget`` instance — kept on
     # ``context.metadata`` so ``_handle_max_iterations`` can find it
     # without threading another argument through every recovery path.
     # The JSON-friendly snapshot lives at ``metadata['iteration_budget']``
     # (also on ``context.metadata``) and is mirrored into
     # ``EngineResult.metadata['iteration_budget']`` by ``_build_result``.
     "_iteration_budget_obj",
-    # Sprint 3.5 / PR 3.5.1: live ``EngineConfig`` reference — tools
+    # live ``EngineConfig`` reference — tools
     # consult it via ``maybe_spill_for_tool`` to read the per-tool
     # spill master switch and override directory.  Storing the live
     # object (not a snapshot) keeps tools picking up config changes
@@ -172,24 +172,24 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # is that we MUST exclude it from the JSON-serialised
     # ``EngineResult.metadata['turn']`` snapshot.
     "_engine_config",
-    # Sprint 3.5 / PR 3.5.6 — live references for the subagent /
-    # interaction tool family.  Stored as objects, never as JSON.
+    # Live references for the subagent and interaction tool family.
+    # Stored as objects, never as JSON.
     "_parent_agent",
     "_subagent_manager",
-    # Sprint 3.5 / PR 3.5.7 — interactive prompter forwarded from
+    # interactive prompter forwarded from
     # ``EngineRequest.approval_prompter`` to ``ExitPlanModeTool`` and
     # ``AskUserQuestionTool``.  Excluded for the same reason as the
     # other live-object keys above.
     "_approval_prompter",
-    # Sprint 3.5 / PR 3.5.8 — live SkillCatalog reference used by
+    # live SkillCatalog reference used by
     # ``SkillTool`` when no catalog was injected via constructor.
     "_skill_catalog",
-    # Sprint 3.5 / PR 3.5.9 — live LSPManager reference for
+    # live LSPManager reference for
     # :class:`LSPTool`.  Same rationale as the other live-object
     # keys above: must never leak into the JSON-serialised
     # ``EngineResult.metadata['turn']`` snapshot.
     "_lsp_manager",
-    # Sprint 3.5 / PR 3.5.10 — live BrowserManager reference for
+    # live BrowserManager reference for
     # :class:`WebBrowserTool`.
     "_browser_manager",
     "_tool_permission_prompter",
@@ -286,7 +286,7 @@ class AgentEngine:
                 tool_registry = build_default_tool_registry()
             else:
                 tool_registry = ToolRegistry()
-        # Sprint 2 / PR 2.2 — pick the default recovery strategy:
+        # pick the default recovery strategy:
         # * If the caller injected one, honour it untouched (test
         #   determinism / scripted-provider compat).
         # * If ``classified_recovery_enabled`` is True (default),
@@ -294,7 +294,7 @@ class AgentEngine:
         #   413 / response-invalid / context-overflow / thinking-
         #   signature failures get the right recovery shape with no
         #   call-site changes.
-        # * Otherwise fall back to the Sprint 0 generic backoff —
+        # * Otherwise fall back to the generic backoff path —
         #   single emergency rollback knob if the classifier ever
         #   misbehaves.
         if recovery_strategy is None:
@@ -355,13 +355,13 @@ class AgentEngine:
         self._subagent_id = subagent_id
         self._parent_subagent_id = parent_subagent_id
         self._subagent_manager = subagent_manager
-        # Sprint 3.5 / PR 3.5.8 — optional shared skill catalog.  When
+        # Optional shared skill catalog.  When
         # set the SkillTool will look here if it was registered without
         # an explicit catalog.  Stored on the engine so subagents can
         # inherit (see DefaultSubagentBuilder).
         self._skill_catalog = skill_catalog
-        # Sprint 3.5 / PR 3.5.9 / 3.5.10 — optional shared LSP /
-        # browser managers.  Both default to ``None`` so callers that
+        # Optional shared LSP and browser managers. Both default to
+        # ``None`` so callers that
         # never use the corresponding tool pay zero cost (no LSP
         # binary lookup, no Playwright import).  When set, they're
         # forwarded into ``TurnContext.metadata`` for tools to pick up.
@@ -479,22 +479,16 @@ class AgentEngine:
             else:
                 state_machine.transition(LoopState.PRE_LLM)
 
-                # Sprint 3 / PR 3.2: structured iteration budget replaces
-                # the legacy ``iterations < max_iterations`` guard.  The
-                # live dataclass goes on ``context.metadata`` so
-                # ``_handle_max_iterations`` (and any future per-turn
-                # observability hooks) can read it without a new
-                # argument-threading hop.
+                # Track the live iteration budget on ``context.metadata``
+                # so ``_handle_max_iterations`` and other observability
+                # hooks can inspect it without extra argument plumbing.
                 #
                 # ``iterations`` stays a **monotonic** loop-body counter
-                # so ``context.iteration`` (used by middleware, hooks,
-                # and CLI footer) keeps its pre-PR-3.2 1-indexed
-                # contract — cheap-tool refunds may make
-                # ``iterations`` exceed ``max_iterations``, which is
-                # exactly the desired "extra headroom" the refund
-                # was designed to grant.  ``budget.used`` is the
-                # canonical budget accounting; ``iterations`` is the
-                # observability counter.
+                # and ``context.iteration`` stays a 1-indexed
+                # observability value for middleware, hooks, and CLI
+                # output. Cheap-tool refunds only affect
+                # ``budget.used``; they do not rewrite the exposed
+                # iteration count.
                 budget = IterationBudget(max_total=self.config.max_iterations)
                 context.metadata["_iteration_budget_obj"] = budget
                 context.metadata["iteration_budget"] = budget.to_dict()
@@ -503,14 +497,11 @@ class AgentEngine:
                 # ``iterations`` is bumped AFTER a successful LLM round
                 # (see the ``iterations += 1`` further down) so failed
                 # turns surface the same iteration count to
-                # ``_build_result`` as before this PR.  ``context.iteration``
-                # is the 1-indexed "we are about to issue round N" view
-                # middleware consumes — kept identical to the pre-PR-3.2
-                # ``iterations + 1`` formula so phantom-tool ID prefixes
-                # and middleware that key off a strictly monotonic
-                # iteration counter remain stable across cheap-tool
-                # refunds (refund affects ``budget.used``, not this
-                # observability counter).
+                # ``_build_result``.  ``context.iteration`` is the
+                # 1-indexed "we are about to issue round N" value used
+                # by middleware and phantom-tool ID prefixes. Cheap-tool
+                # refunds affect ``budget.used``, not this observability
+                # counter.
                 while budget.consume():
                     context.iteration = iterations + 1
 
@@ -538,7 +529,7 @@ class AgentEngine:
                     )
 
                     # PRE_LLM middleware stage: rewrite/enrich outbound message list.
-                    # PR 1.2 continuation path can override the message list
+                    #  continuation path can override the message list
                     # for exactly one next iteration (partial assistant +
                     # continuation user instruction).  Pop it here so retries
                     # do not accidentally keep reusing a stale override.
@@ -567,7 +558,7 @@ class AgentEngine:
                         state_machine.transition(LoopState.FAILED)
                         break
 
-                    # Sprint 3 / PR 3.7 — projection-view application.
+                    # projection-view application.
                     # Tier 4 (``ContextCollapseTier``) writes a
                     # ``CollapseStore`` onto ``context.metadata`` but
                     # never mutates the local ``messages`` list (so
@@ -587,11 +578,11 @@ class AgentEngine:
                     if response is None:
                         response = self._pop_context_response(context, "llm_pre_response")
                     if response is None:
-                        # ProviderInvocationError → engine-side recovery strategy
-                        # decides whether to retry; any other Exception bypasses
-                        # the strategy and goes straight to the middleware
-                        # on_error path (preserving pre-Sprint-0 behaviour for
-                        # bugs / programming errors / scripted-test providers).
+                        # ProviderInvocationError goes through the engine
+                        # recovery strategy. Any other Exception bypasses
+                        # that strategy and goes straight to middleware
+                        # ``on_error`` so programming errors and scripted
+                        # test provider failures stay visible.
                         invoke_outcome = self._invoke_provider_with_recovery(
                             request=request,
                             canonical_messages=messages,
@@ -616,12 +607,12 @@ class AgentEngine:
                             recovered_response = self._pop_context_response(context, "llm_error_response")
                             if recovered_response is None:
                                 error_text = str(exc)
-                                # Sprint 2 / PR 2.2: the recovery strategy
+                                # the recovery strategy
                                 # may have pinned a more specific terminal
                                 # (RATE_LIMITED / CONTEXT_EXHAUSTED /
                                 # PAYLOAD_TOO_LARGE / FALLBACK_EXHAUSTED)
                                 # via context.metadata.  Honour that hint
-                                # before falling back to the legacy
+                                # before falling back to the default
                                 # PROVIDER_ERROR / RESPONSE_INVALID picks
                                 # so observability surfaces the precise
                                 # cause of the give-up.
@@ -646,7 +637,7 @@ class AgentEngine:
                         state_machine.transition(LoopState.FAILED)
                         break
 
-                    # Sprint 3 / PR 3.1: accumulate token usage per LLM call.
+                    # accumulate token usage per LLM call.
                     # We do this AFTER the after_llm middleware pipeline so any
                     # response-level normalisation it performed is reflected in
                     # the raw ``metadata["usage"]`` dict we read here.  The
@@ -667,10 +658,11 @@ class AgentEngine:
                     if response.finish_reason == "length" and (
                         response.tool_calls or length_text
                     ):
-                        # Sprint 1 / PR 1.3: ``finish_reason="length"`` +
+                        # ``finish_reason="length"`` +
                         # tool_calls is a structurally different failure
                         # from prose-truncation.  The continuation prompt
-                        # used by PR 1.2 cannot finish a half-emitted JSON
+                        # used by ordinary length continuation cannot
+                        # finish a half-emitted JSON
                         # tool argument, so we route this case through a
                         # dedicated retry-once-then-refuse handler instead
                         # of the regular length-continuation path.
@@ -707,7 +699,7 @@ class AgentEngine:
                             break
 
                     if response.tool_calls:
-                        # Sprint 1 / PR 1.3 — gate the dispatcher on
+                        # gate the dispatcher on
                         # tool-call argument validation.  The validator
                         # normalises argument types in place, decides
                         # whether the response is truncated (and we
@@ -776,11 +768,11 @@ class AgentEngine:
                         self._append_assistant_tool_message(messages, response)
                         tool_result_start_idx = len(messages)
 
-                        # Sprint 2 / PR 2.3 — sanitise the call batch
+                        # sanitise the call batch
                         # before dispatch:
-                        #   * fuzzy-repair tool names (P0-5)
-                        #   * cap delegate-class fan-out per turn (P0-6)
-                        #   * dedup identical calls (P0-6)
+                        #   * fuzzy-repair tool names
+                        #   * cap delegate-class fan-out per turn
+                        #   * dedup identical calls
                         # Returns a plan whose entries either dispatch
                         # normally or carry a synthetic ToolResult that
                         # the engine appends in lieu of dispatching.
@@ -913,7 +905,7 @@ class AgentEngine:
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
                                 except UnknownToolError:
-                                    # Sprint 2 / PR 2.3 — repair already
+                                    # repair already
                                     # ran and produced no match; this
                                     # branch is now hit only if the
                                     # registry mutated mid-turn (rare).
@@ -1007,7 +999,7 @@ class AgentEngine:
                             context=context,
                         )
 
-                        # Sprint 2 / PR 2.3 — when the per-turn
+                        # when the per-turn
                         # invalid-tool retry budget is exhausted the
                         # sanitiser pinned ``dispatch_plan.exit_reason``.
                         # Synthetic ToolResults for each unrepairable
@@ -1029,7 +1021,7 @@ class AgentEngine:
                             state_machine.transition(LoopState.FINALIZE)
                             break
 
-                        # Sprint 3 / PR 3.2 — cheap-tool refund.  When
+                        # cheap-tool refund.  When
                         # the model's tool_calls for this round are
                         # *entirely* drawn from the cheap-tool
                         # whitelist (todo bookkeeping, memory writes,
@@ -1177,7 +1169,7 @@ class AgentEngine:
                 if budget.exhausted:
                     exit_reason = ExitReason.MAX_ITERATIONS
 
-            # Sprint 3 / PR 3.2 — max-iterations summary fallback.
+            # max-iterations summary fallback.
             # Triggered ONCE per turn (guarded by ``IterationBudget.grace_call``)
             # when the loop terminated because the iteration budget
             # was exhausted.  Generates a one-shot non-tool LLM
@@ -1257,7 +1249,7 @@ class AgentEngine:
             self._compaction_pipeline is None
             or self._compaction_pipeline_provider is not provider
         ):
-            # Sprint 3 / PR 3.4-3.7 — both Tier 4 (collapse) and
+            # both Tier 4 (collapse) and
             # Tier 5 (autocompact) need an LLM-fork summariser.  We
             # construct a single shared instance and let both tiers
             # share it: same provider, same usage-bridge, identical
@@ -1268,7 +1260,7 @@ class AgentEngine:
                 provider=provider,
                 config=self.config,
                 logger=self.services.logger,
-                # Sprint 3 / PR 3.4 — bridge fork-call usage back
+                # bridge fork-call usage back
                 # into the parent turn's accumulator so the cost of
                 # compaction is *not* silently excluded from
                 # ``metadata['usage']`` / ``api_calls``.
@@ -1276,7 +1268,7 @@ class AgentEngine:
             )
             self._compaction_pipeline = CompactionPipeline(
                 tiers=[
-                    # Sprint 3 / PR 3.6 — Tier 2 redundancy snipper.
+                    # Tier 2 redundancy snipper.
                     # Cheap, local, no LLM round-trip; deletes
                     # repeated read_file/list_dir/glob/grep calls,
                     # superseded failed pairs, and empty assistant
@@ -1287,7 +1279,7 @@ class AgentEngine:
                         config=self.config,
                         logger=self.services.logger,
                     ),
-                    # Sprint 3 / PR 3.5 — Tier 3 lives between snip
+                    # Tier 3 lives between snip
                     # (Tier 2) and collapse (Tier 4).  Cheap and local;
                     # consults ``_aether_meta.timestamp`` stamped on
                     # every assistant message we emit.
@@ -1295,7 +1287,7 @@ class AgentEngine:
                         config=self.config,
                         logger=self.services.logger,
                     ),
-                    # Sprint 3 / PR 3.7 — Tier 4 projection-based
+                    # Tier 4 projection-based
                     # collapse.  Default disabled
                     # (``context_collapse_enabled=False``); when on,
                     # owns the headroom flag that Tier 5 respects so
@@ -1326,7 +1318,7 @@ class AgentEngine:
     ) -> List[Dict[str, Any]]:
         """Return ``CollapseStore.as_view(messages)`` if a store is live.
 
-        Sprint 3 / PR 3.7 — applied right before each
+        applied right before each
         ``provider.generate`` call so every provider invocation in
         this turn sees the same projection.  Returns ``messages``
         unchanged when:
@@ -1417,11 +1409,11 @@ class AgentEngine:
             on_transition=loop_state_callback if callable(loop_state_callback) else None
         )
         turn_start_idx = len(messages)
-        # Sprint 3 / PR 3.1: stamp the active provider's identity onto the
+        # stamp the active provider's identity onto the
         # turn so middleware (TokenUsageMiddleware) and downstream tools can
         # pick the right ``normalize_usage`` parser without dragging
         # ``EngineServices`` into the middleware contract.  Re-read from
-        # ``self.services.provider`` each turn so PR 3.4's fallback chain
+        # ``self.services.provider`` each turn so the fallback chain
         # (which swaps the active provider mid-session) gets a fresh value.
         active_provider = self.services.provider
         metadata.update(
@@ -1465,7 +1457,7 @@ class AgentEngine:
             turn_id=turn_id,
             interrupt_signal=interrupt_signal,
         )
-        # Sprint 3.5 / PR 3.5.1: inject the live ``EngineConfig`` so
+        # inject the live ``EngineConfig`` so
         # tools can consult per-tool feature switches (currently
         # ``tool_result_spill_enabled`` / ``tool_result_spill_dir``)
         # without us threading a config argument through every
@@ -1473,7 +1465,7 @@ class AgentEngine:
         # ``_METADATA_INTERNAL_KEYS`` so the live dataclass never
         # leaks into the JSON-serialised EngineResult.metadata['turn'].
         context.metadata["_engine_config"] = self.config
-        # Sprint 3.5 / PR 3.5.6+7+8: expose the parent agent, the
+        # expose the parent agent, the
         # subagent manager, the optional approval prompter and the
         # optional skill catalog to tools.  Same rationale as
         # ``_engine_config`` above — every key is in
@@ -1491,8 +1483,8 @@ class AgentEngine:
             enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
         )
         context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
-        # Sprint 3.5 / PR 3.5.9 / 3.5.10 — LSP + browser manager
-        # references.  Tools fetch them lazily; passing the live
+        # LSP and browser manager references. Tools fetch them lazily;
+        # passing the live
         # objects (not config snapshots) keeps subagents and parent
         # sharing one warm subprocess pool.
         context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
@@ -1522,7 +1514,7 @@ class AgentEngine:
         requested_prompt = self._sanitize_text(request.system_message) if request.system_message else None
         selected_prompt = requested_prompt or stored_prompt
 
-        # Sprint 1.5 / P0-9: augment the prompt with a registry-derived
+        # Augment the prompt with a registry-derived
         # <tool_use_contract> block before injecting it into messages.
         # We deliberately do NOT mutate ``selected_prompt`` itself —
         # storage / metadata / EngineResult should reflect what the
@@ -1735,7 +1727,7 @@ class AgentEngine:
         # Reset the empty-response counter — this iteration produced
         # *content*, just in the wrong shape.  Carrying the
         # empty-response budget over would cause spurious 9-step
-        # degradation kicks (P0-8) when phantom recovery is doing
+        # degradation kicks in when phantom recovery is doing
         # the right thing.
         context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
         try:
@@ -1893,7 +1885,7 @@ class AgentEngine:
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
         callback = request.stream_callback
 
-        # Sprint 1 / PR 1.1 emergency rollback: if the operator has flipped
+        # Emergency rollback: if the operator has flipped
         # ``EngineConfig.streaming_enabled`` off (e.g. because a gateway is
         # serving broken SSE), pretend the request had no callback at all.
         # The provider then takes the non-streaming path and the user
@@ -1913,7 +1905,7 @@ class AgentEngine:
             if not isinstance(delta, str) or not delta:
                 return
 
-            # Sprint 6 / PR 6.2 — fast-path interrupt check.  Polled at
+            # fast-path interrupt check.  Polled at
             # the *top* of every delta so the latency between the user
             # pressing ESC and the stream actually stopping is bounded
             # by one chunk arrival (typically <50 ms for any modern
@@ -1951,7 +1943,7 @@ class AgentEngine:
     def _build_stream_silent_callback(self, request: EngineRequest, context: TurnContext):
         """Wrap :attr:`EngineRequest.stream_silent_callback` for provider use.
 
-        Sprint 3 / PR 3.1 — the silent counterpart of
+        the silent counterpart of
         :meth:`_build_stream_callback`.  Providers forward count-only
         chunks (tool-arg JSON, signatures) here; the wrapped callback
         bumps a separate ``stream_silent_callback_calls`` metadata
@@ -2843,26 +2835,27 @@ class AgentEngine:
     ) -> ExitReason:
         """Map a recovery-strategy hint string (or fallback exc) to ``ExitReason``.
 
-        Sprint 2 / PR 2.2 — the recovery strategy can pin a precise
+        the recovery strategy can pin a precise
         terminal cause via ``context.metadata['recovery_terminal_exit_reason']``
         (using the ``ExitReason.<NAME>.value`` string, NOT the enum
         instance, so the metadata bag stays JSON-serialisable).  This
         helper consumes that hint with safe fallbacks:
 
         * Recognised hint string → matching ``ExitReason``.
-        * Hint missing / unrecognised → fall back to Sprint 1's
+        * Hint missing or unrecognised -> fall back to the default
+          length-based mapping.
           rule: ``ResponseInvalidError`` → ``RESPONSE_INVALID``,
           else ``PROVIDER_ERROR``.
 
-        The defensive fallback keeps the legacy contract intact for
-        callers that haven't migrated to the new strategy yet (e.g.
-        the test suite's bespoke recovery strategies).
+        The defensive fallback preserves the existing contract for
+        callers that have not migrated to the newer strategy shape
+        yet (e.g. bespoke recovery strategies in tests).
         """
         if isinstance(terminal_hint, str) and terminal_hint:
             try:
                 return ExitReason(terminal_hint)
             except ValueError:
-                # Unknown hint — fall through to legacy mapping rather
+                # Unknown hint — fall through to the default mapping rather
                 # than fail the turn.  Logged at the call site if
                 # needed; here we stay defensive.
                 pass
@@ -2885,7 +2878,7 @@ class AgentEngine:
         self.services.middleware_pipeline.run_on_error(error, state, context)
 
     # ------------------------------------------------------------------
-    # Provider invocation with engine-side recovery (Sprint 0 / PR 0.3)
+    # Provider invocation with engine-side recovery
     # ------------------------------------------------------------------
 
     @dataclass(slots=True)
@@ -2913,7 +2906,7 @@ class AgentEngine:
     ) -> "_ProviderInvocationOutcome":
         """Issue ``provider.generate`` and apply the recovery strategy on failure.
 
-        Loop semantics (Sprint 0 base + Sprint 2 extensions):
+        Loop semantics ( base +  extensions):
 
         * On success → returns ``_ProviderInvocationOutcome(response=...)``.
         * On ``ProviderInvocationError`` → bumps the per-turn provider-error
@@ -2930,8 +2923,8 @@ class AgentEngine:
              decision as a give-up tagged ``FALLBACK_EXHAUSTED`` so
              observers can tell "we tried everyone" apart from "the
              single provider blew up".
-          2. ``decision.compress_context`` — Sprint 2 stop-gap: we
-             have no compressor yet (Sprint 3 lands it), so we
+          2. ``decision.compress_context`` —  stop-gap: we
+             have no compressor yet ( lands it), so we
              surface this as an early give-up tagged
              ``CONTEXT_EXHAUSTED`` / ``PAYLOAD_TOO_LARGE`` rather
              than silently retrying the same oversized payload.
@@ -2950,7 +2943,7 @@ class AgentEngine:
         ``context.metadata['recovery_decisions']`` as a list of
         ``{"reason": ..., "wait_seconds": ..., "attempt": ...}`` dicts so
         callers and tests can inspect what the strategy did without parsing
-        logs.  Sprint 2 added the ``classified_reason`` /
+        logs.   added the ``classified_reason`` /
         ``activate_fallback`` / ``compress_context`` keys to that schema —
         see ``RecoveryDecision`` for the full shape.
         """
@@ -2981,7 +2974,7 @@ class AgentEngine:
                 call_config = request.model_config
                 ephemeral_max_output_tokens = context.metadata.pop("_ephemeral_max_output_tokens", None)
                 if isinstance(ephemeral_max_output_tokens, int) and ephemeral_max_output_tokens > 0:
-                    # PR 1.2 length continuation temporarily raises the output
+                    #  length continuation temporarily raises the output
                     # budget without mutating EngineRequest.model_config in-place.
                     call_config = ModelCallConfig(
                         temperature=request.model_config.temperature,
@@ -3037,7 +3030,7 @@ class AgentEngine:
                         stream_callback=stream_callback,
                         stream_silent_callback=stream_silent_callback,
                     )
-                    # Sprint 1 / PR 1.1: post-LLM response-shape validation.
+                    # post-LLM response-shape validation.
                     # ``validate_response`` is non-mutating; if it returns False
                     # we lift the structured failure into the recovery loop so
                     # the existing retry / give-up machinery handles it.  The
@@ -3079,7 +3072,7 @@ class AgentEngine:
                     )
                 return AgentEngine._ProviderInvocationOutcome(response=response)
             except EngineInterrupted as exc:
-                # Sprint 6 / PR 6.2 — the stream callback observed a
+                # the stream callback observed a
                 # user-interrupt mid-stream and raised through the
                 # provider stack.  Package it into the existing
                 # ``interrupted=True`` channel so ``run_loop`` does not
@@ -3155,7 +3148,7 @@ class AgentEngine:
                         "reason": decision.reason,
                         "status_code": exc.status_code,
                         "is_network_error": exc.is_network_error,
-                        # Sprint 2 / PR 2.2 — surface the classifier
+                        # surface the classifier
                         # verdict + new dispatch hints in the trail
                         # so observers (and tests) can reason about
                         # the chain of decisions without re-parsing.
@@ -3166,10 +3159,10 @@ class AgentEngine:
                     }
                 )
 
-                # ── Strip-thinking hint (Sprint 5 will consume) ───
+                # ── Strip-thinking hint ( will consume) ───
                 # Surface the breadcrumb now so observability sees
                 # the request even though the message-builder rewrite
-                # lands in Sprint 5.
+                # lands in .
                 if decision.strip_thinking:
                     context.metadata["recovery_strip_thinking_requested"] = True
 
@@ -3584,7 +3577,7 @@ class AgentEngine:
             self._pin_compression_terminal(reason, compressed_but_exhausted=False, context=context)
             return False
 
-        # PR 8.2 — Memory boundary: recovery compaction must not see
+        # Memory boundary: recovery compaction must not see
         # retrieved memory.  Strip any ``<memory_context>`` blocks
         # before forking the summariser so the canonical/outbound split
         # holds even on the recovery path.  The retry within this
@@ -3782,23 +3775,23 @@ class AgentEngine:
     ) -> "_LengthHandlingOutcome":
         """Handle ``finish_reason == "length"`` before normal tool/text split.
 
-        Sprint 1 / PR 1.2 introduces the first half of Hermes' length-handling
-        behaviour:
+        This covers the text-response side of length handling:
 
-        1. **Thinking-budget exhaustion** — if the model used its output budget
-           entirely on hidden reasoning-like text (``<think>`` / ``<reasoning>``)
-           and produced no visible answer, stop politely instead of returning an
-           empty response.
-        2. **Continuation retry** — append the partial assistant message plus a
-           user continuation instruction, raise an ephemeral max token budget,
-           and re-enter PRE_LLM up to ``max_length_continue_retries`` times.
-        3. **Rollback / partial return** — once retries are exhausted, drop the
-           continuation scaffolding and return the best visible prefix we have,
-           marking the turn as ``LENGTH_EXHAUSTED``.
+        1. **Thinking-budget exhaustion** — if the model spent its
+           output budget entirely on hidden reasoning-like text
+           (``<think>`` / ``<reasoning>``) and produced no visible
+           answer, stop politely instead of returning an empty response.
+        2. **Continuation retry** — append the partial assistant
+           message plus a user continuation instruction, raise the
+           retry token budget, and re-enter PRE_LLM up to
+           ``max_length_continue_retries`` times.
+        3. **Partial return** — once retries are exhausted, drop the
+           continuation scaffolding and return the best visible prefix
+           we have, marking the turn as ``LENGTH_EXHAUSTED``.
 
-        P0-4's truncated tool-call detection is intentionally NOT implemented
-        here yet; tool-call + length currently falls into the same continuation
-        path and will be tightened in PR 1.3.
+        Tool-call truncation is handled separately by
+        :meth:`_handle_length_with_tool_calls` and
+        :meth:`_validate_tool_call_arguments`.
         """
         if not getattr(self.config, "length_continuation_enabled", True):
             merged = list(messages)
@@ -3943,16 +3936,15 @@ class AgentEngine:
         return "<think>" in lowered or "<reasoning>" in lowered
 
     # ------------------------------------------------------------------
-    # Truncated tool-call detection (Sprint 1 / PR 1.3, P0-4)
+    # Truncated tool-call detection
     # ------------------------------------------------------------------
 
     @staticmethod
     def _detect_truncated_tool_call(tool_calls: List[Any]) -> bool:
         """Heuristic for "the model ran out of tokens while emitting tool args".
 
-        Sprint 1 / PR 1.3 — mirrors the hermes-agent detector at
-        ``run_agent.py`` lines 13362-13366.  We look at each tool_call's
-        ``arguments`` payload after stripping trailing whitespace.  A
+        We look at each tool_call's ``arguments`` payload after
+        stripping trailing whitespace. A
         well-formed JSON object/array always ends with ``}`` or ``]``; if
         we see anything else the args were almost certainly cut mid-stream.
 
@@ -3989,7 +3981,7 @@ class AgentEngine:
     ) -> "AgentEngine._ToolCallValidationOutcome":
         """Normalise tool_call args, detect truncation, decide retry vs dispatch.
 
-        Sprint 1 / PR 1.3 — implements P0-4 entirely:
+        Implements the full validation path:
 
         1. **Type normalisation.**  ``arguments`` arrives as ``str`` 99% of
            the time, but providers occasionally hand us a pre-parsed
@@ -4011,15 +4003,13 @@ class AgentEngine:
            handler — the heuristic catches that case.
         4. **Pure-syntax JSON error.**  When the args don't look truncated
            but still don't parse, we fall back to silently re-issuing the
-           call up to ``max_invalid_json_retries`` times.  After that we
+           call up to ``max_invalid_json_retries`` times. After that we
            give up the silent path and ask the model to fix it: we append
            the assistant tool_calls message followed by one ``role=tool``
-           error stub per failing call.  Hermes shows that this is the
-           single most reliable recovery for cheap JSON formatting bugs;
-           it doesn't poison the conversation because the assistant
-           message is the *real* one the model just emitted (just badly
-           formatted).  Compatible callers that want to opt out of this
-           injection set ``invalid_json_recovery_enabled=False``.
+           error stub per failing call. This keeps the original model
+           output in history while nudging it to resend valid JSON.
+           Callers that want to opt out of this injection can set
+           ``invalid_json_recovery_enabled=False``.
 
         The method **mutates** ``response.tool_calls[*].arguments`` in
         place to install the normalised representation so downstream
@@ -4171,7 +4161,7 @@ class AgentEngine:
                         "For tools with no required parameters, use an empty object: {}. "
                         "Please retry with valid JSON."
                     )
-                    error_category = "json_syntax_legacy"
+                    error_category = "json_syntax_plain"
                 self._record_tool_error(context, c.name, error_category)
                 injection.append(
                     {
@@ -4352,8 +4342,7 @@ class AgentEngine:
     ) -> "AgentEngine._LengthHandlingOutcome":
         """``finish_reason="length"`` AND ``tool_calls`` non-empty.
 
-        Sprint 1 / PR 1.3 — mirrors hermes-agent ``run_agent.py``
-        11793-11819.  When a model exhausts its output budget *while*
+        When a model exhausts its output budget *while*
         producing tool_calls, the canonical recovery is **not** to
         continue (the next chunk would be more tool args, not prose) but
         rather to give the model a single chance to produce complete
@@ -4402,8 +4391,9 @@ class AgentEngine:
     def _get_messages_up_to_last_assistant(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Return a copy of ``messages`` with trailing continuation scaffolding removed.
 
-        We only want to roll back the artificial continuation user prompts /
-        partial assistant fragments introduced by PR 1.2.  The last fully-
+        We only want to roll back the artificial continuation user prompts
+        and partial assistant fragments introduced by the
+        length-continuation path. The last fully-
         committed assistant turn from the *original* conversation should stay.
         """
         trimmed = list(messages)
@@ -4430,7 +4420,7 @@ class AgentEngine:
     def _assistant_aether_meta() -> Dict[str, Any]:
         """Per-message metadata stamped on every assistant message we emit.
 
-        Sprint 3 / PR 3.5 — populates ``_aether_meta.timestamp`` so
+        Populates ``_aether_meta.timestamp`` so
         :class:`TimeBasedMicrocompactor` can compute the gap since the
         last assistant message and decide whether the prompt cache is
         cold enough to clear stale ``tool_result`` payloads.
@@ -5321,7 +5311,7 @@ class AgentEngine:
     def _accumulate_usage(self, response: NormalizedResponse, context: TurnContext) -> None:
         """Add this LLM call's usage to the per-turn accumulator.
 
-        Sprint 3 / PR 3.1.  Tolerant by design: any failure to extract /
+        Tolerant by design: any failure to extract or
         normalise usage degrades to a no-op rather than crashing the turn —
         accumulation is observability, not correctness-critical.
 
@@ -5351,16 +5341,13 @@ class AgentEngine:
     def _is_cheap_tool(self, tool_name: str) -> bool:
         """Whether ``tool_name`` is in the cheap-tool refund whitelist.
 
-        Sprint 3 / PR 3.2.  Names are compared with the same
-        normalisation the tool-repair path uses (case-fold +
-        dash↔underscore + namespace strip via
-        :func:`aether.agents.core.phantom_tool._normalize_name`),
-        so ``UpdateTodo``, ``update-todo`` and
+        Names are compared with the same normalisation the tool-repair
+        path uses (case-fold + dash↔underscore + namespace strip via
+        :func:`aether.agents.core.phantom_tool._normalize_name`), so
+        ``UpdateTodo``, ``update-todo`` and
         ``mcp__router__update_todo`` all match the configured
-        ``update_todo`` entry.  Empty / missing config disables the
-        whitelist (returns ``False`` for everything) and reduces
-        the engine to pre-PR-3.2 "every tool call costs a slot"
-        behaviour without further code changes.
+        ``update_todo`` entry. Empty or missing config disables the
+        whitelist and makes every tool call consume iteration budget.
         """
         cheap_names = getattr(self.config, "cheap_tool_names", ())
         if not cheap_names:
@@ -5438,29 +5425,18 @@ class AgentEngine:
     ) -> str | None:
         """Generate a summary when the iteration budget is exhausted.
 
-        Sprint 3 / PR 3.2.  Called by ``run_loop`` after a break with
-        ``exit_reason = MAX_ITERATIONS`` (any of the seven exit
-        sites).  Steps:
+        Called by ``run_loop`` after a break with
+        ``exit_reason = MAX_ITERATIONS``. The method:
 
-        1. Bail when ``EngineConfig.summary_on_budget_exhausted`` is
-           ``False`` (rollback switch — restores pre-PR-3.2
-           silent-break behaviour for benchmarks where empty
-           ``final_response`` is part of the test contract).
-        2. Bail when the budget's grace round has already been
-           consumed (defensive — the engine should only call this
-           method once per turn, but multiple call sites converge on
-           the same ``exit_reason`` so we guard anyway).
-        3. Build a one-shot prompt that copies the current message
-           history and appends a bracketed system-style nudge asking
-           the model to summarise what got done / what remains.
-        4. Call ``provider.generate(tools=[], stream_callback=None)``
-           — no tools so the model has no choice but plain text, no
-           streaming so we don't poison the CLI footer mid-summary.
-        5. On any failure (provider raised, returned empty text,
-           ...): log at WARNING level and return ``None`` so the
-           caller falls back to the pre-PR-3.2 empty
-           ``final_response``.  Summary is best-effort observability,
-           never blocking.
+        1. Returns ``None`` when
+           ``EngineConfig.summary_on_budget_exhausted`` is ``False``.
+        2. Returns ``None`` when the budget's grace round was already
+           consumed.
+        3. Builds a one-shot prompt from the current message history
+           asking the model to summarize progress and remaining work.
+        4. Calls ``provider.generate`` with tools disabled and
+           streaming turned off.
+        5. Logs a warning and returns ``None`` on any failure.
         """
         if not getattr(self.config, "summary_on_budget_exhausted", True):
             return None
@@ -5540,44 +5516,41 @@ class AgentEngine:
             ExitReason.TOOL_ERROR,
             ExitReason.MIDDLEWARE_ERROR,
             ExitReason.UNKNOWN_TOOL,
-            # Sprint 1 / PR 1.1: response-shape validation failure after
+            # response-shape validation failure after
             # all retries.  Same terminal class as PROVIDER_ERROR but with
             # a distinct ExitReason so observers can branch.
             ExitReason.RESPONSE_INVALID,
-            # Sprint 1 / PR 1.2: the model repeatedly hit its output budget
+            # the model repeatedly hit its output budget
             # and we had to stop with a partial / rolled-back answer.
             ExitReason.LENGTH_EXHAUSTED,
-            # Sprint 1 / PR 1.3: tool_call arguments were cut off
+            # tool_call arguments were cut off
             # mid-stream and we refused to dispatch them.  Treat as
             # FAILED so callers can branch (the alternative — COMPLETED —
             # would silently look like success, hiding a real recovery
             # failure).
             ExitReason.TOOL_CALL_TRUNCATED,
-            # Sprint 1.5 / phantom-tool recovery: model wrote tool
+            # Phantom-tool recovery: model wrote tool
             # invocations as prose for the entire retry budget.  The
             # turn produced text but no actual work was done — the
             # user explicitly asked for action and got narration.
-            # Classifying as FAILED ensures the green checkmark in
-            # the CLI footer flips to a warning state by default,
-            # so users notice without needing ``-v``.
+            # Classifying this as FAILED ensures the CLI footer flips
+            # to a warning state by default, even when the engine
+            # produced diagnostic text instead of a normal reply.
             ExitReason.PHANTOM_TOOL_INTENT,
-            # Sprint 2 / PR 2.2 — recovery-strategy-pinned terminals.
-            # All four are FAILED-class (the engine could not produce
-            # an assistant response this turn).  The exit reason
-            # itself carries enough signal for the UI / observability
-            # to render a precise "throttled" / "context exhausted"
-            # / "fallback chain exhausted" footer; we don't need
-            # bespoke EngineStatus values for them.
+            # These are also FAILED-class because the engine could not
+            # produce a usable assistant response for the turn. The
+            # exit reason itself carries enough signal for the UI and
+            # observability layer to render a precise footer.
             ExitReason.EMPTY_RESPONSE,
             ExitReason.RATE_LIMITED,
             ExitReason.CONTEXT_EXHAUSTED,
             ExitReason.PAYLOAD_TOO_LARGE,
             ExitReason.COMPRESSION_EXHAUSTED,
             ExitReason.FALLBACK_EXHAUSTED,
-            # Sprint 2 / PR 2.3 — model emitted unrepairable tool
-            # names for the entire retry budget.  Same status class as
-            # PHANTOM_TOOL_INTENT (the model "tried" but produced no
-            # actual work) so the CLI footer reads consistently.
+            # The model emitted unrepairable tool names for the entire
+            # retry budget. Keep the same status class as
+            # ``PHANTOM_TOOL_INTENT`` so the CLI footer reads
+            # consistently.
             ExitReason.INVALID_TOOL_REPEATED,
         }:
             status = EngineStatus.FAILED
@@ -5585,16 +5558,15 @@ class AgentEngine:
             status = EngineStatus.COMPLETED
 
         # The ``runtime`` block here is a flat snapshot of the per-turn retry
-        # counters that Sprint-1+ paths use to drive recovery.  We read them
-        # straight from ``context.metadata`` (their authoritative home, since
-        # Sprint 0) instead of from ``self.*`` — the latter would re-introduce
-        # the multi-session leak this PR was supposed to fix.
+        # counters that turn-scoped recovery paths use to drive
+        # recovery. We read them straight from ``context.metadata``
+        # instead of from ``self.*`` — the latter would re-introduce
+        # the multi-session leak this change was supposed to fix.
         #
-        # Sprint 3 / PR 3.1 (P1-4 + P1-11): the top-level keys ``usage`` /
-        # ``api_calls`` / ``iteration_budget`` / ``exit`` / ``reasoning`` /
-        # ``compaction`` form the **stable v1 metadata schema** documented in
-        # ``EngineResult`` — additive only after this PR.  See that docstring
-        # for consumer guarantees.
+        # The top-level keys ``usage`` / ``api_calls`` /
+        # ``iteration_budget`` / ``exit`` / ``reasoning`` /
+        # ``compaction`` form the stable metadata schema documented in
+        # ``EngineResult``. See that docstring for consumer guarantees.
         usage_acc = context.metadata.get("usage_accumulator")
         if not isinstance(usage_acc, CanonicalUsage):
             usage_acc = CanonicalUsage()
@@ -5616,7 +5588,7 @@ class AgentEngine:
             and exit_reason in {ExitReason.MAX_ITERATIONS, ExitReason.EMPTY_RESPONSE}
         )
 
-        # PR 3.1: ``turn`` is a flat snapshot of context.metadata for
+        # ``turn`` is a flat snapshot of context.metadata for
         # downstream observability.  We exclude internal accumulator objects
         # (CanonicalUsage instances etc.) that are not JSON-serializable —
         # their normalised dict form is exposed at the top level under ``usage``.
@@ -5660,7 +5632,7 @@ class AgentEngine:
                 "provider_error_retries": int(
                     context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)
                 ),
-                # Sprint 1 / PR 1.3 — exposed so observability dashboards
+                # exposed so observability dashboards
                 # and tests can confirm the truncated-tool-call detector
                 # actually fired.  Both reset to 0 at turn entry.
                 "truncated_tool_call_retries": int(
@@ -5678,7 +5650,7 @@ class AgentEngine:
                 "post_tool_empty_retried": bool(
                     context.metadata.get(TURN_KEY_POST_TOOL_EMPTY_RETRIED, False)
                 ),
-                # Sprint 1.5 / P0-9 — count of synthesized phantom
+                # Count of synthesized phantom
                 # ``ToolCall``s dispatched this turn (prose intents
                 # that mapped cleanly to registered tools).  ``0``
                 # for a normal turn; non-zero whenever the engine
@@ -5687,8 +5659,8 @@ class AgentEngine:
                 "phantom_tool_synthesized": int(
                     context.metadata.get(TURN_KEY_PHANTOM_TOOL_SYNTHESIZED, 0)
                 ),
-                # Sprint 1.5 / phantom-tool recovery — counts how
-                # many corrective ``role=user`` nudges this turn sent
+                # Phantom-tool recovery counter: how many corrective
+                # ``role=user`` nudges this turn sent
                 # before the model produced a structured ``tool_calls``
                 # (or PHANTOM_TOOL_INTENT exited).  ``0`` means the
                 # turn never triggered the detector.
@@ -5696,7 +5668,7 @@ class AgentEngine:
                     context.metadata.get(TURN_KEY_PHANTOM_TOOL_RETRIES, 0)
                 ),
             },
-            # ----------------- Sprint 3 / PR 3.1: stable v1 ----------------- #
+            # ----------------- stable v1 ----------------- #
             # Aggregated token usage across every LLM call this turn.
             # Always present (zero-valued on turns with no LLM call).
             "usage": usage_acc.to_dict(),
@@ -5723,7 +5695,7 @@ class AgentEngine:
                 "trajectory",
                 {"saved": False, "path": None, "error": None},
             ),
-            # Sprint 6 / PR 6.2 — populated when the turn ended via a
+            # Populated when the turn ended via a
             # user-interrupt that was observed inside the stream
             # callback / tool path.  Schema:
             #   {"reason": str,
@@ -5733,7 +5705,7 @@ class AgentEngine:
             # ``None`` on every non-interrupted turn so consumers can
             # branch on truthiness instead of catching KeyErrors.
             "interrupt": context.metadata.get("interrupt"),
-            # Sprint 3 / PR 3.2 — structured iteration budget snapshot.
+            # structured iteration budget snapshot.
             # Filled by the live ``IterationBudget`` instance the loop
             # carries on ``context.metadata['_iteration_budget_obj']``.
             # Falls back to a synthesized snapshot keyed off
@@ -5798,15 +5770,15 @@ class AgentEngine:
                 ),
             },
             "tool_errors": dict(tool_errors_metadata),
-            # Reasoning block (Sprint 5 will populate ``last_reasoning``
-            # from provider-emitted thinking blocks; Sprint 3 just reserves
-            # the shape so consumers can rely on its presence).
+            # Reasoning block. Provider-emitted thinking extraction
+            # populates ``last_reasoning``; the schema stays present so
+            # consumers can rely on its shape.
             "reasoning": {
                 "last_reasoning": context.metadata.get("last_reasoning_text"),
             },
-            # Compaction counters (PR 3.4..3.7 will increment these as the
-            # five-tier pipeline fires; PR 3.1 reserves the shape so
-            # downstream consumers can already render zero-valued footers).
+            # Compaction counters. The five-tier pipeline increments
+            # these as it fires; the schema stays present so downstream
+            # consumers can already render zero-valued footers.
             "compaction": {
                 "tier1_spilled_count": int(
                     context.metadata.get("tier1_spilled_count", 0)

@@ -1,7 +1,7 @@
 """Web tool safety helpers.
 
-Sprint 3.5 / PR 3.5.5.  Shared by ``WebFetchTool``, ``WebSearchTool``
-and (PR 3) ``WebBrowserTool``.
+Shared by ``WebFetchTool``, ``WebSearchTool``, and
+``WebBrowserTool``.
 
 Provides:
 * :func:`is_url_safe` — SSRF guard.  Rejects loopback, private IPs,

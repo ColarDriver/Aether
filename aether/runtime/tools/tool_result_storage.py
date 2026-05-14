@@ -1,4 +1,4 @@
-"""Disk-spill helpers for large tool results — Sprint 3.5 / PR 3.5.1.
+"""Disk-spill helpers for large tool results.
 
 Each built-in (and future) tool decides its own threshold and IF/WHEN
 to spill — this module just provides the shared file-naming, path

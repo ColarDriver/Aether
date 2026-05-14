@@ -1,6 +1,6 @@
 """Skill discovery and lookup.
 
-Sprint 3.5 / PR 3.5.8 — backs the new ``SkillTool`` (``tools/builtins/skill.py``).
+Backs ``SkillTool`` (``tools/builtins/skill.py``).
 
 A *skill* is a ``SKILL.md`` file under one of the configured search
 paths.  It may begin with a YAML frontmatter block delimited by ``---``

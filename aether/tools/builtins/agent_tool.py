@@ -1,11 +1,11 @@
-"""Built-in ``task`` (subagent dispatch) tool — Sprint 3.5 / PR 3.5.6.
+"""Built-in ``task`` (subagent dispatch) tool.
 
 Synchronously dispatches a subagent task via the parent agent's
-:class:`SubagentManager`.  v1 is intentionally **synchronous** — the
-caller blocks until the child returns its summary.  Async fan-out
-(claude-code-style ``TaskOutputTool`` polling) is left for a future
-sprint; today's :class:`TaskOutputTool` returns a clear "not supported
-in sync mode" message.
+:class:`SubagentManager`. The implementation is intentionally
+**synchronous** — the caller blocks until the child returns its
+summary. Async fan-out (``TaskOutputTool`` polling) is left for a
+future implementation; the current :class:`TaskOutputTool` returns a
+clear "not supported in sync mode" message.
 
 Resolution order for the parent agent reference:
 

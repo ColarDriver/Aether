@@ -3,19 +3,15 @@
 Output format mirrors Cursor / claude-code: ``     12| line content`` so
 the model can reference specific line ranges in subsequent edits.
 
-Sprint 3.5 / PR 3.5.1 changes
------------------------------
-* The pre-3.5 hard ``256 KB`` cap (which raised ``is_error=True``) is
-  retired.  Files larger than ``MAX_RESULT_CHARS`` (60 KB rendered) now
-  flow through the shared spill path: full numbered output goes to
-  disk under ``~/.aether/tool_results``, ``ToolResult.content`` keeps
-  the inline preview plus the standard ``[output truncated ... saved
-  to ...]`` notice.  The model retrieves the rest by reading the
-  spilled file back \u2014 which is what the notice tells it to do.
-* **Recursion guard**: if the requested ``path`` lives under the spill
-  directory itself, we deliberately skip the spill check.  Without this
-  guard, the model's "follow the notice" call would re-spill its own
-  spill file on every read, exhausting disk and breaking the contract.
+Large files flow through the shared spill path: full numbered output
+goes to disk under ``~/.aether/tool_results``, ``ToolResult.content``
+keeps the inline preview plus the standard ``[output truncated ...
+saved to ...]`` notice, and the model can retrieve the rest by
+reading the spilled file back.
+
+If the requested ``path`` already lives under the spill directory, the
+tool deliberately skips the spill check. That recursion guard prevents
+a follow-up read from re-spilling its own spill file on every call.
 """
 
 from __future__ import annotations
@@ -29,9 +25,9 @@ from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_LIMIT = 2000
-# Sprint 3.5 / PR 3.5.1 \u2014 see module docstring.  60 KB \u2248 1500 numbered
-# lines, intentionally generous because users explicitly asked to read
-# the file (vs. shell whose output was incidental).
+# See module docstring. 60 KB is roughly 1500 numbered lines, which is
+# intentionally generous because users explicitly asked to read the
+# file rather than receiving incidental shell output.
 _MAX_RESULT_CHARS = 60_000
 
 
@@ -143,7 +139,7 @@ class ReadFileTool(ToolExecutor):
         body = "\n".join(rendered_lines) if rendered_lines else "(no lines in range)"
         full_output = "\n".join(header_lines) + "\n" + body
 
-        # Sprint 3.5 / PR 3.5.1 \u2014 recursion guard for the spill path.
+        # Recursion guard for the spill path.
         # When the model follows a previous truncation notice and reads
         # back a spilled file, we MUST NOT re-spill it: the file lives
         # under the configured spill root, so detecting that and

@@ -1,8 +1,10 @@
 import { Box, Text } from 'ink'
 import type { ReactElement } from 'react'
 
-import { hintForCall } from '../lib/toolCategory.js'
+import { categoryFor, hintForCall } from '../lib/toolCategory.js'
 import type { ChatItem } from '../store/chatStore.js'
+
+import { ShellResultFooter } from './ShellResultFooter.js'
 
 const COLLAPSED_PREVIEW_LIMIT = 100
 const EXPANDED_RESULT_LIMIT = 1600
@@ -24,6 +26,9 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
   const collapsedHint = truncate(hint, COLLAPSED_PREVIEW_LIMIT)
   const isError = item.result?.isError ?? false
   const headerColor = isError ? 'red' : focused ? 'cyan' : 'yellow'
+  const isShellCategory = categoryFor(item.toolName) === 'bash'
+  const shellMetadata =
+    isShellCategory && item.result?.metadata ? item.result.metadata : null
 
   if (!expanded) {
     return (
@@ -43,6 +48,7 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
           )}
           {isError ? <Text color="red"> · error</Text> : null}
         </Box>
+        {shellMetadata ? <ShellResultFooter metadata={shellMetadata} /> : null}
         {item.result ? <InlineResultPreview text={item.result.text} isError={isError} /> : null}
       </Box>
     )
@@ -59,6 +65,7 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
         )}
         {isError ? <Text color="red"> · error</Text> : null}
       </Box>
+      {shellMetadata ? <ShellResultFooter metadata={shellMetadata} /> : null}
       <Box marginLeft={2} flexDirection="column">
         <Text dimColor>arguments:</Text>
         <Text>{truncate(jsonPretty(item.args), EXPANDED_ARGS_LIMIT)}</Text>

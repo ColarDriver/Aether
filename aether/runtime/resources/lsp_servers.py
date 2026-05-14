@@ -1,8 +1,8 @@
 """LSP server resolution table.
 
-Sprint 3.5 / PR-3 (PR 3.5.9).  Maps file extensions to languages and
-languages to a launch command.  Keeping the data in one place makes
-it trivial to extend without touching the manager / client / tool.
+Maps file extensions to languages and languages to launch commands.
+Keeping the data in one place makes it easy to extend support without
+touching the manager, client, or tool layers.
 
 Operators that want to ship a custom server can override
 :func:`resolve_server_for` indirectly through

@@ -30,7 +30,7 @@ MAX_RETRIES = 3
 class CodexChatModel(ModelProvider):
     """ModelProvider backed by ChatGPT Codex Responses API."""
 
-    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the Codex / Responses
+    # Routes ``normalize_usage`` to the Codex / Responses
     # parser — input_tokens already excludes cached_tokens (unlike OpenAI
     # Chat Completions), and reasoning lives in output_tokens_details.
     provider_name: str = "codex"

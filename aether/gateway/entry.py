@@ -78,7 +78,7 @@ _HANDLER_CAPABILITIES: tuple[str, ...] = (
     "permissions",
 )
 
-GATEWAY_VERSION = "0.5.0"  # bump per PR; PR 5 adds approval/permission bridge.
+GATEWAY_VERSION = "0.5.0"
 
 
 _DEFAULT_SHUTDOWN_GRACE_S = 1.0
@@ -223,9 +223,8 @@ def _drain_background_threads(grace_seconds: float) -> None:
 def _capabilities() -> list[str]:
     """Capability tags advertised in the ``gateway.ready`` event.
 
-    PR 2 advertised only ``ping``; PR 3 adds the four handler groups
-    that landed in this PR.  PR 4+ will extend this list as more
-    feature areas come online.
+    Advertises the built-in and handler capability groups supported by
+    this gateway process.
     """
     return list(_BUILTIN_CAPABILITIES) + list(_HANDLER_CAPABILITIES)
 

@@ -1,4 +1,4 @@
-"""Built-in ``exit_plan_mode`` tool — Sprint 3.5 / PR 3.5.7.
+"""Built-in ``exit_plan_mode`` tool.
 
 Renders the model's proposed plan to the user via the configured
 :class:`aether.cli.approval_prompter.Prompter` and switches the session

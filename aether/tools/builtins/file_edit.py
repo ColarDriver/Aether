@@ -1,4 +1,4 @@
-"""Built-in ``file_edit`` tool — Sprint 3.5 / PR 3.5.2.
+"""Built-in ``file_edit`` tool.
 
 Local search/replace editing on a file with claude-code-style
 ``unique-match`` semantics: ``old_string`` must appear exactly once
@@ -130,15 +130,30 @@ class FileEditTool(ToolExecutor):
         if isinstance(plan, ToolResult):
             return plan
         context.metadata.setdefault("_tool_permission_preview_plans", {})[call.id] = plan
+        diff_text = self._build_diff(
+            path=plan.path,
+            original=plan.original,
+            modified=plan.modified,
+        )
+        # Defense in depth: plan_edit already refuses old==new, but if
+        # difflib still produces an empty diff (e.g., whitespace-only
+        # tweak collapsed by n=2 context), fall back to a body line so
+        # the modal does not dump raw JSON.
+        body: str | None = None
+        if not diff_text:
+            plural = "s" if plan.change_count != 1 else ""
+            body = (
+                f"Edit {plan.path}\n"
+                f"{plan.change_count} change{plural} · "
+                f"{len(plan.original.encode('utf-8'))} -> "
+                f"{len(plan.modified.encode('utf-8'))} bytes"
+            )
         return ToolPermissionPreview(
             title="Edit file",
             subtitle=str(plan.path),
             path=str(plan.path),
-            diff=self._build_diff(
-                path=plan.path,
-                original=plan.original,
-                modified=plan.modified,
-            ),
+            diff=diff_text or None,
+            body=body,
             metadata={
                 "change_count": plan.change_count,
                 "replace_all": plan.replace_all,
@@ -183,18 +198,29 @@ class FileEditTool(ToolExecutor):
             modified=plan.modified,
             change_count=plan.change_count,
         )
+        diff_text, lines_added, lines_removed, hunks = self._build_diff_with_stats(
+            path=plan.path,
+            original=plan.original,
+            modified=plan.modified,
+        )
+        result_metadata: dict[str, Any] = {
+            "path": str(plan.path),
+            "change_count": plan.change_count,
+            "replace_all": plan.replace_all,
+            "bytes_before": len(plan.original.encode("utf-8")),
+            "bytes_after": len(plan.modified.encode("utf-8")),
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+            "hunks": hunks,
+        }
+        if diff_text and len(diff_text) < 4096:
+            result_metadata["diff"] = diff_text
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
             content=summary,
             is_error=False,
-            metadata={
-                "path": str(plan.path),
-                "change_count": plan.change_count,
-                "replace_all": plan.replace_all,
-                "bytes_before": len(plan.original.encode("utf-8")),
-                "bytes_after": len(plan.modified.encode("utf-8")),
-            },
+            metadata=result_metadata,
         )
 
     def plan_edit(self, call: ToolCall) -> FileEditPlan | ToolResult:
@@ -335,7 +361,21 @@ class FileEditTool(ToolExecutor):
         original: str,
         modified: str,
     ) -> str:
-        diff_lines = list(
+        text, _added, _removed, _hunks = FileEditTool._build_diff_with_stats(
+            path=path,
+            original=original,
+            modified=modified,
+        )
+        return text
+
+    @staticmethod
+    def _build_diff_with_stats(
+        *,
+        path: Path,
+        original: str,
+        modified: str,
+    ) -> tuple[str, int, int, int]:
+        raw_lines = list(
             difflib.unified_diff(
                 original.splitlines(keepends=True),
                 modified.splitlines(keepends=True),
@@ -344,12 +384,19 @@ class FileEditTool(ToolExecutor):
                 n=2,
             )
         )
-        if len(diff_lines) > _DIFF_PREVIEW_LINES:
-            elided = len(diff_lines) - _DIFF_PREVIEW_LINES
-            diff_lines = diff_lines[:_DIFF_PREVIEW_LINES] + [
+        added = sum(
+            1 for line in raw_lines if line.startswith("+") and not line.startswith("+++")
+        )
+        removed = sum(
+            1 for line in raw_lines if line.startswith("-") and not line.startswith("---")
+        )
+        hunks = sum(1 for line in raw_lines if line.startswith("@@"))
+        if len(raw_lines) > _DIFF_PREVIEW_LINES:
+            elided = len(raw_lines) - _DIFF_PREVIEW_LINES
+            raw_lines = raw_lines[:_DIFF_PREVIEW_LINES] + [
                 f"\n... ({elided} more diff lines elided) ...\n"
             ]
-        return "".join(diff_lines)
+        return "".join(raw_lines), added, removed, hunks
 
     @classmethod
     def _build_diff_summary(

@@ -76,6 +76,7 @@ const NAME_TO_CATEGORY: Record<string, ToolCategory> = {
   save_file: 'write',
   // edit
   edit_file: 'edit',
+  file_edit: 'edit',
   Edit: 'edit',
   EditFile: 'edit',
   patch: 'edit',
@@ -84,6 +85,7 @@ const NAME_TO_CATEGORY: Record<string, ToolCategory> = {
   DeleteFile: 'edit',
   str_replace: 'edit',
   StrReplace: 'edit',
+  notebook_edit: 'edit',
   // bash
   run_bash: 'bash',
   Bash: 'bash',

@@ -272,6 +272,128 @@ class ResumeSession(_SessionMethodsCase):
         # Unknown role coerced to ``user`` per the schema-tolerance contract.
         self.assertEqual(result["messages"][0]["role"], "user")
 
+    def test_assistant_tool_calls_normalised_into_wire_shape(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_tool_calls",
+            provider="openai",
+            model="gpt-x",
+        )
+        record.messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tool_a",
+                        "type": "function",
+                        "function": {
+                            "name": "list_dir",
+                            "arguments": {"path": "/x"},
+                        },
+                    },
+                    {
+                        "id": "tool_b",
+                        "type": "function",
+                        # Providers sometimes ship arguments as a JSON
+                        # string — round-trip must parse it.
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "/y"}',
+                        },
+                    },
+                ],
+            },
+        ]
+        save_session(record)
+        result = self._result(
+            "session.resume", {"session_id": "ses_tool_calls"}
+        )
+        assistant = result["messages"][1]
+        self.assertEqual(assistant["role"], "assistant")
+        tool_calls = assistant.get("tool_calls")
+        assert isinstance(tool_calls, list)
+        self.assertEqual(len(tool_calls), 2)
+        self.assertEqual(tool_calls[0]["id"], "tool_a")
+        self.assertEqual(tool_calls[0]["name"], "list_dir")
+        self.assertEqual(tool_calls[0]["arguments"], {"path": "/x"})
+        self.assertEqual(tool_calls[1]["id"], "tool_b")
+        self.assertEqual(tool_calls[1]["name"], "read_file")
+        self.assertEqual(tool_calls[1]["arguments"], {"path": "/y"})
+
+    def test_tool_role_forwards_is_error_and_metadata(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_tool_result",
+            provider="openai",
+            model="gpt-x",
+        )
+        record.messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "tool_a",
+                "name": "file_edit",
+                "content": "edited /x",
+                "is_error": False,
+                "metadata": {
+                    "path": "/x",
+                    "lines_added": 5,
+                    "lines_removed": 2,
+                },
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "tool_b",
+                "name": "shell",
+                "content": "boom",
+                "is_error": True,
+                "metadata": {"exit_code": 2},
+            },
+        ]
+        save_session(record)
+        result = self._result(
+            "session.resume", {"session_id": "ses_tool_result"}
+        )
+        ok = result["messages"][0]
+        self.assertEqual(ok["role"], "tool")
+        self.assertEqual(ok["tool_call_id"], "tool_a")
+        self.assertEqual(ok["is_error"], False)
+        self.assertEqual(ok["metadata"]["lines_added"], 5)
+        bad = result["messages"][1]
+        self.assertEqual(bad["is_error"], True)
+        self.assertEqual(bad["metadata"]["exit_code"], 2)
+
+    def test_malformed_tool_call_arguments_round_trip(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_bad_args",
+            provider="openai",
+            model="gpt-x",
+        )
+        record.messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tool_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "shell",
+                            # Malformed JSON — must not crash; surfaced
+                            # to the TUI under __raw__.
+                            "arguments": "{not json",
+                        },
+                    }
+                ],
+            }
+        ]
+        save_session(record)
+        result = self._result(
+            "session.resume", {"session_id": "ses_bad_args"}
+        )
+        tool_calls = result["messages"][0]["tool_calls"]
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["arguments"], {"__raw__": "{not json"})
+
 
 class UpdateSession(_SessionMethodsCase):
     def test_updates_model_without_clearing_messages(self) -> None:

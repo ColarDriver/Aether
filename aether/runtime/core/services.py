@@ -22,8 +22,8 @@ class EngineServices:
     intent is that ``EngineServices`` enumerates every collaborator that
     can be swapped out for testing or alternative deployments.
 
-    Sprint 2 / PR 2.2 introduces ``fallback_chain`` as an optional
-    field.  When present it replaces the constructor-time provider
+    ``fallback_chain`` is an optional field. When present it replaces
+    the constructor-time provider
     as the source of truth for "which provider serves the next call":
 
     * ``services.provider`` (the *currently active* provider) is the
@@ -32,9 +32,9 @@ class EngineServices:
       ``fallback_chain.current_provider`` so a recovery strategy that
       calls ``fallback_chain.activate_next()`` immediately rotates the
       next ``provider.generate`` call without any extra plumbing.
-    * When no chain is configured, the original Sprint 0 behaviour
-      stands — ``services.provider`` is a fixed reference assigned at
-      construction time and never changes during the engine's life.
+    * When no chain is configured, ``services.provider`` is a fixed
+      reference assigned at construction time and never changes during
+      the engine's life.
 
     The single point of indirection means existing tests that pass a
     bare provider (no chain) keep working unchanged, while the new

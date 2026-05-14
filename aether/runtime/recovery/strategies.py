@@ -2,12 +2,12 @@
 
 Background
 ----------
-Until Sprint 0, retry/backoff logic for the LLM provider lived inside
-``OpenAICompatibleModel.generate`` itself (a hand-rolled loop with blocking
-``time.sleep``).  PR 0.2 collapsed that into a *single-shot* provider that
-raises a structured ``ProviderInvocationError``.  This module is the
-engine-layer counterpart that decides what to do when such an error
-escapes the provider.
+Retry and backoff logic used to live inside
+``OpenAICompatibleModel.generate`` itself as a hand-rolled loop with
+blocking ``time.sleep`` calls. The provider layer is now single-shot
+and raises structured ``ProviderInvocationError`` instances instead.
+This module is the engine-layer counterpart that decides what to do
+when such an error escapes the provider.
 
 Design
 ------
@@ -25,7 +25,7 @@ The wait is **interrupt-aware**: if the session is interrupted while the
 strategy is sleeping, ``wait_interruptible`` returns ``False`` and the
 engine treats this as a normal interruption (no further retries).
 
-Sprint 0 only ships:
+Built-in strategies:
 
 * ``NoRetryStrategy``       — strategy that always gives up (used for
                               tests / scripted providers / when retries
@@ -39,9 +39,8 @@ Sprint 0 only ships:
                               with the previous in-provider retry loop
                               is preserved.
 
-Future PRs will add fallback-provider routing, context compression,
-credential rotation, etc., as additional ``RecoveryStrategy``
-implementations composed via ``CompositeRecoveryStrategy``.
+The strategy surface also supports fallback-provider routing, context
+compression, credential rotation, and similar recovery hints.
 
 Why not just bring back the old in-provider retry?
 --------------------------------------------------
@@ -82,7 +81,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 # HTTP status codes the generic strategy will retry by default.  Mirrors the
-# pre-Sprint-0 ``OpenAICompatibleModel`` set so behaviour parity is preserved.
+# previous ``OpenAICompatibleModel`` set so behavior stays aligned.
 DEFAULT_RETRIABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504, 529})
 
 # Hard upper bound on a single wait — even if the server asks for 10 minutes
@@ -125,14 +124,14 @@ class AttemptState:
 class RecoveryDecision:
     """Engine-actionable verdict from a ``RecoveryStrategy``.
 
-    Core control flow (Sprint 0):
+    Core control flow:
 
     * ``retry=True``  → engine sleeps for ``wait_seconds`` (interruptible),
                         then re-issues ``provider.generate``.
     * ``retry=False`` → engine stops trying and falls through to the
                         middleware ``on_error`` pipeline.
 
-    Sprint 2 / PR 2.2 extensions (orthogonal flags):
+    Additional orthogonal flags:
 
     * ``activate_fallback`` — if ``True`` AND the engine has a
       ``FallbackChain`` with a remaining slot AND
@@ -142,15 +141,13 @@ class RecoveryDecision:
       base ``retry`` / give-up behaviour.
     * ``compress_context`` — informational hint that the next attempt
       should run after the engine compresses the prompt history.
-      Sprint 3 introduces the compressor; for now Sprint 2 strategies
-      surface this hint and the engine maps it to
+      Strategies surface this hint and the engine maps it to
       ``ExitReason.CONTEXT_EXHAUSTED`` / ``PAYLOAD_TOO_LARGE`` when
       no compressor is available.
     * ``strip_thinking`` — informational hint for the
       ``thinking_signature`` recovery path: the next attempt should
       drop ``reasoning_details`` from the assistant message stream.
-      Sprint 5's ``MessageBuilder`` will consume this hint; for now
-      Sprint 2 surfaces it as a breadcrumb in
+      The engine records this hint in
       ``context.metadata['recovery_decisions']``.
     * ``classified_reason`` — the ``FailoverReason.value`` string that
       led to this decision.  Always set when the decision originated
@@ -258,7 +255,7 @@ class NoRetryStrategy(RecoveryStrategy):
 class GenericBackoffStrategy(RecoveryStrategy):
     """Exponential backoff for retriable HTTP status codes / network errors.
 
-    Matches the pre-Sprint-0 in-provider retry semantics:
+    Matches the provider retry semantics the engine expects by default:
     * Retriable on ``429``, ``500``, ``502``, ``503``, ``504``, ``529`` and
       any ``is_network_error=True`` failure.
     * Up to ``max_attempts`` total tries (so ``max_attempts - 1`` retries).
@@ -303,19 +300,16 @@ class GenericBackoffStrategy(RecoveryStrategy):
     def _is_retriable(self, error: ProviderInvocationError) -> bool:
         if error.is_network_error:
             return True
-        # Sprint 2 / PR 2.2 lifted the previous Sprint 1 stop-gap that
-        # forced ``ResponseInvalidError`` retries down this generic path
-        # — the classifier-aware composite (``ClassifiedRecoveryStrategy``)
-        # now handles that case explicitly with eager fallback.  This
-        # strategy stays generic on purpose so it remains a safe drop-in
-        # for tests / scripted callers that don't want classification.
+        # Keep ``ResponseInvalidError`` retriable here so this strategy
+        # remains a safe drop-in for tests and scripted callers that do
+        # not use classifier-aware recovery.
         if isinstance(error, ResponseInvalidError):
             return True
         return error.status_code in self.retriable_status_codes
 
 
 # ---------------------------------------------------------------------------
-# Sprint 2 / PR 2.2 — classifier-aware composite strategy
+# Classifier-aware composite strategy
 # ---------------------------------------------------------------------------
 
 
@@ -323,9 +317,8 @@ class GenericBackoffStrategy(RecoveryStrategy):
 class ClassifiedRecoveryStrategy(RecoveryStrategy):
     """Recovery strategy that branches on ``classify_api_error`` output.
 
-    This is the production default for Sprint 2+: every
-    ``ProviderInvocationError`` is first run through
-    ``classify_api_error`` (Sprint 2 / PR 2.1) and the resulting
+    This is the production default. Every ``ProviderInvocationError``
+    is first run through ``classify_api_error`` and the resulting
     ``FailoverReason`` selects a recovery shape:
 
     +------------------------+--------+----------+----------+----------+
@@ -383,9 +376,10 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
     strategies.  Each ``FailoverReason`` maps to one branch in
     ``_dispatch`` — adding a reason or refining a hint is a localised
     edit, and the dispatch table in this docstring is the single
-    source of truth.  Sprint 6+ may extract per-reason strategies if
-    they need to coexist with credential-pool / OAuth-refresh logic;
-    until then the inline branches keep the code path obvious.
+    source of truth. Per-reason strategies can be extracted later if
+    they ever need to coexist with separate credential-pool or
+    OAuth-refresh logic. Until then the inline branches keep the code
+    path obvious.
     """
 
     max_attempts: int = 5
@@ -543,9 +537,9 @@ class ClassifiedRecoveryStrategy(RecoveryStrategy):
         # The ``unknown`` bucket means "the classifier could not pin
         # a reason" — usually a generic 5xx body or a fresh provider
         # error shape we haven't taught the matcher about yet.  Per
-        # hermes-agent's reference implementation this should retry
-        # with backoff (``retryable=True`` on the ``ClassifiedError``
-        # itself), not give up.  Delegating to ``GenericBackoffStrategy``
+        # the classifier contract this should retry with backoff
+        # (``retryable=True`` on the ``ClassifiedError`` itself), not
+        # give up. Delegating to ``GenericBackoffStrategy``
         # would mis-classify ``ProviderInvocationError()`` (no status,
         # no network flag) as non-retriable and surface a hard failure
         # for what is most likely a transient gateway hiccup.

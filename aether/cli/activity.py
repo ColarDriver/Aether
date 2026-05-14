@@ -1,6 +1,6 @@
 """Live activity bar shown at the bottom of the REPL during a turn.
 
-Mirrors the Claude-Code transcript style:
+Example transcript style:
 
     · Deciphering… (12s · ↓ 241 tokens · thought for 4s)
 
@@ -44,11 +44,11 @@ from aether.cli.theme import AETHER_DIM, TOOL_ACCENT, TOOL_SHIMMER, icon
 # output already shows ``↓ 50 tokens``.
 MIN_DISPLAY_TOKENS = 3
 
-# Legacy time gate retained for backwards compatibility with callers /
-# tests that still reference it (e.g. external integrations that
-# tweaked the threshold).  No longer consulted by ``ActivityBar`` —
-# kept at ``0`` so any code that *does* still apply it as a guard
-# becomes a no-op rather than silently keeping the counter hidden.
+# Retained for callers or tests that still reference it (for example
+# external integrations that tweaked the threshold). No longer
+# consulted by ``ActivityBar`` — kept at ``0`` so any code that still
+# applies it as a guard becomes a no-op rather than silently hiding
+# the counter.
 SHOW_TOKENS_AFTER_MS = 0
 
 # Animated leading glyph — cycled via a wall-clock derived frame index so
@@ -230,12 +230,10 @@ class ActivityBar:
             suffix_fields.append(format_duration_ms(elapsed_ms))
 
         # Token counter — appears as soon as ``≥ MIN_DISPLAY_TOKENS``
-        # have been streamed.  Mirrors claude-code's
-        # ``SpinnerAnimationRow``: no time gate, just a small char
-        # floor so trivial replies don't flash ``↓ 1 tokens``.
-        # Down-arrow convention matches Claude Code's "tokens flowing
-        # out of the model" visual; theme's ``arrow`` icon (→) reads as
-        # navigation, not direction-of-flow.
+        # have been streamed. No time gate, just a small char floor
+        # so trivial replies don't flash ``↓ 1 tokens``.
+        # The down-arrow reads as "tokens flowing out of the model";
+        # the theme's ``arrow`` icon (→) reads more like navigation.
         approx_tokens = max(0, st.response_chars // TOKEN_CHAR_RATIO)
         if approx_tokens >= MIN_DISPLAY_TOKENS:
             suffix_fields.append(f"↓ {format_tokens(approx_tokens)} tokens")

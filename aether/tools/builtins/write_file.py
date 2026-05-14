@@ -87,17 +87,51 @@ class WriteFileTool(ToolExecutor):
         plan = self.plan_write(call)
         if isinstance(plan, ToolResult):
             return plan
+        # No-op short circuit: overwriting a file with identical content
+        # should not prompt the user. Mirrors file_edit's old==new rejection.
+        if plan.existed and plan.old_content == plan.new_content:
+            return ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=f"no-op: {plan.path} already has identical content",
+                is_error=False,
+                metadata={
+                    "path": str(plan.path),
+                    "no_op": True,
+                    "size_bytes": plan.size_bytes,
+                    "existed": True,
+                    "bytes_before": plan.size_bytes,
+                    "bytes_after": plan.size_bytes,
+                    "lines_added": 0,
+                    "lines_removed": 0,
+                    "hunks": 0,
+                },
+            )
         context.metadata.setdefault("_tool_permission_preview_plans", {})[call.id] = plan
+        diff_text = self._build_diff(plan)
+        body = None if diff_text else self._fallback_body(plan)
         return ToolPermissionPreview(
             title="Overwrite file" if plan.existed else "Create file",
             subtitle=str(plan.path),
             path=str(plan.path),
-            diff=self._build_diff(plan),
+            diff=diff_text or None,
+            body=body,
             metadata={
                 "existed": plan.existed,
                 "size_bytes": plan.size_bytes,
                 "parent_exists": plan.path.parent.exists(),
+                "old_bytes": len(plan.old_content.encode("utf-8")),
+                "new_bytes": len(plan.new_content.encode("utf-8")),
             },
+        )
+
+    @staticmethod
+    def _fallback_body(plan: WriteFilePlan) -> str:
+        verb = "Overwrite" if plan.existed else "Create"
+        line_count = plan.new_content.count("\n") + (0 if not plan.new_content else 1)
+        return (
+            f"{verb} {plan.path}\n"
+            f"size: {plan.size_bytes} bytes ({line_count} lines)"
         )
 
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
@@ -203,17 +237,26 @@ class WriteFileTool(ToolExecutor):
             f"sha256: {digest}"
         )
 
+        diff_text, lines_added, lines_removed, hunks = self._build_diff_with_stats(plan)
+        result_metadata: dict[str, Any] = {
+            "path": str(path),
+            "size_bytes": len(encoded),
+            "sha256": digest,
+            "existed": plan.existed,
+            "bytes_before": len(plan.old_content.encode("utf-8")),
+            "bytes_after": len(encoded),
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+            "hunks": hunks,
+        }
+        if diff_text and len(diff_text) < 4096:
+            result_metadata["diff"] = diff_text
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
             content=body,
             is_error=False,
-            metadata={
-                "path": str(path),
-                "size_bytes": len(encoded),
-                "sha256": digest,
-                "existed": plan.existed,
-            },
+            metadata=result_metadata,
         )
 
     def _resolve_path(self, raw: Any) -> Path:
@@ -224,7 +267,12 @@ class WriteFileTool(ToolExecutor):
 
     @staticmethod
     def _build_diff(plan: WriteFilePlan) -> str:
-        diff_lines = list(
+        text, _added, _removed, _hunks = WriteFileTool._build_diff_with_stats(plan)
+        return text
+
+    @staticmethod
+    def _build_diff_with_stats(plan: WriteFilePlan) -> tuple[str, int, int, int]:
+        raw_lines = list(
             difflib.unified_diff(
                 plan.old_content.splitlines(keepends=True),
                 plan.new_content.splitlines(keepends=True),
@@ -233,12 +281,19 @@ class WriteFileTool(ToolExecutor):
                 n=2,
             )
         )
-        if len(diff_lines) > _DIFF_PREVIEW_LINES:
-            elided = len(diff_lines) - _DIFF_PREVIEW_LINES
-            diff_lines = diff_lines[:_DIFF_PREVIEW_LINES] + [
+        added = sum(
+            1 for line in raw_lines if line.startswith("+") and not line.startswith("+++")
+        )
+        removed = sum(
+            1 for line in raw_lines if line.startswith("-") and not line.startswith("---")
+        )
+        hunks = sum(1 for line in raw_lines if line.startswith("@@"))
+        if len(raw_lines) > _DIFF_PREVIEW_LINES:
+            elided = len(raw_lines) - _DIFF_PREVIEW_LINES
+            raw_lines = raw_lines[:_DIFF_PREVIEW_LINES] + [
                 f"\n... ({elided} more diff lines elided) ...\n"
             ]
-        return "".join(diff_lines)
+        return "".join(raw_lines), added, removed, hunks
 
     @staticmethod
     def _plan_from_context(call: ToolCall, context: TurnContext) -> WriteFilePlan | None:

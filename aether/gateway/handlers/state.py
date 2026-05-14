@@ -7,9 +7,9 @@ gateway restarts lose the binding (callers can re-resume the session
 to restore it).
 
 A simple ``threading.Lock`` guards the value so concurrent long
-handlers cannot race; in the PR 3 stdio-only world there is only
-one inbound caller at a time, but the lock is cheap and unlocks
-the future web-UI multi-peer story.
+handlers cannot race. In the current stdio-only setup there is only
+one inbound caller at a time, but the lock is cheap and preserves a
+future multi-peer path.
 """
 
 from __future__ import annotations

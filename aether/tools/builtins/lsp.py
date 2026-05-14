@@ -1,4 +1,4 @@
-"""Built-in ``lsp`` tool — Sprint 3.5 / PR-3 (PR 3.5.9).
+"""Built-in ``lsp`` tool.
 
 Exposes 9 Language Server Protocol operations to the model:
 
@@ -12,7 +12,7 @@ Exposes 9 Language Server Protocol operations to the model:
 * ``incomingCalls`` — call-hierarchy item -> who calls it
 * ``outgoingCalls`` — call-hierarchy item -> what it calls
 
-Manager resolution order mirrors the other v3.5 tools:
+Manager resolution order mirrors the other resource-backed tools:
 
 1. Constructor injection (``LSPTool(manager=...)``).
 2. ``context.metadata['_lsp_manager']`` (set by

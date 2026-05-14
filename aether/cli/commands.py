@@ -478,9 +478,9 @@ def _looks_like_command_name(head: str) -> bool:
 def is_slash(line: str) -> bool:
     """Return True only when *line* should be routed to the slash-command dispatcher.
 
-    Three gates, in order — modelled directly on open-claude-code's
-    slash-vs-prose disambiguation so users can paste paths like
-    ``/workspace/hermes-agent 帮我看下这个项目`` without the REPL
+    Three gates, in order — modelled on the same slash-vs-prose
+    disambiguation used by modern coding CLIs so users can paste paths
+    like ``/workspace/example-project 帮我看下这个项目`` without the REPL
     swallowing them as ``Unknown command``:
 
     1. Trimmed line must start with ``/`` and have at least one char

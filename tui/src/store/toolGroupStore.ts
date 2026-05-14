@@ -145,6 +145,11 @@ export const toolGroupActions = {
    * Flush the active group into `lastFlushed`. Returns the flushed record
    * so the caller (useGatewayEvents) can also push it into chatStore as a
    * `tool-group` chat item.
+   *
+   * Successful write/edit entries are dropped on flush — they each
+   * surface their own persistent EditSummary chat row, so keeping
+   * them in the ExploredTree would double-render the same edit. Failed
+   * write/edit entries are retained so users still see `(failed)`.
    */
   flushActive(): ToolGroupRecord | null {
     const state = toolGroupState.get()
@@ -155,13 +160,24 @@ export const toolGroupActions = {
       }
       return null
     }
+    const visibleEntries = active.entries.filter(
+      (e) => !((e.category === 'write' || e.category === 'edit') && !e.isError)
+    )
+    if (visibleEntries.length === 0) {
+      toolGroupState.set({ active: null, lastFlushed: null })
+      return null
+    }
+    const counts = emptyCounts()
+    for (const entry of visibleEntries) {
+      counts[entry.category] = (counts[entry.category] ?? 0) + 1
+    }
     const flushed: ToolGroupRecord = {
       id: active.id,
       iteration: active.iteration,
-      entries: active.entries,
-      counts: active.counts,
-      totalCalls: active.totalCalls,
-      hasError: active.hasError
+      entries: visibleEntries,
+      counts,
+      totalCalls: visibleEntries.length,
+      hasError: visibleEntries.some((e) => e.isError)
     }
     toolGroupState.set({ active: null, lastFlushed: flushed })
     return flushed

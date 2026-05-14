@@ -20,7 +20,8 @@ export interface OverlayState<TPayload = unknown> {
 }
 
 // Priority drives stacking order (higher renders / receives keys first).
-// Aligned with PR 8 ESC chain: permission > approval > picker > placeholder > help.
+// Overlay priority matches the ESC dismissal chain:
+// permission > approval > picker > placeholder > help.
 export const OVERLAY_PRIORITY: Record<OverlayKind, number> = {
   permission: 100,
   approval: 90,

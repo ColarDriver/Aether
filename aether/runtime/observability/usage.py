@@ -1,10 +1,9 @@
 """Canonical token usage representation, shared across providers.
 
-Sprint 3 / PR 3.1 (P1-4 + P1-11):
-    Three model providers (OpenAI-compatible, Anthropic, Codex/Responses)
-    return token usage in slightly different shapes.  Downstream consumers
-    (CLI footer, SDK, billing, Sprint 3 compaction triggers) need ONE
-    stable representation they can rely on.
+Three model providers (OpenAI-compatible, Anthropic, Codex/Responses)
+return token usage in slightly different shapes. Downstream consumers
+(CLI footer, SDK, billing, compaction triggers) need one stable
+representation they can rely on.
 
 This module provides:
 
@@ -31,7 +30,7 @@ combined:
     cache_write_tokens — prompt tokens being inserted into cache (premium)
     reasoning_tokens   — model-internal reasoning tokens (Codex / o1-style)
 
-Aliases preserved for backwards compatibility with legacy logging:
+Common aggregate aliases:
 
     prompt_tokens     = input_tokens + cache_read_tokens + cache_write_tokens
     completion_tokens = output_tokens

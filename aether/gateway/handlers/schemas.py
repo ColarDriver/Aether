@@ -1,6 +1,6 @@
-"""Wire schemas shared by the PR 3 gateway handlers.
+"""Wire schemas shared by the gateway handlers.
 
-These mirror the contract defined in PR 3's design doc.  All models
+These mirror the gateway handler contract. All models
 use ``extra="forbid"`` so unknown fields surface as validation errors
 rather than silently passing through.  The handler functions
 serialise instances via ``model_dump(mode="json", exclude_none=True)``
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SessionInfo(BaseModel):
@@ -36,6 +36,22 @@ class SessionInfo(BaseModel):
     summary: str | None = None
 
 
+class TranscriptToolCall(BaseModel):
+    """Flattened OpenAI-style function call shipped on assistant turns.
+
+    The on-disk session stores tool invocations under the OpenAI shape
+    ``{"id": ..., "type": "function", "function": {"name": ..., "arguments": ...}}``.
+    The wire model collapses that into ``{id, name, arguments}`` so the
+    TUI does not need to know about the function-calling envelope.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class TranscriptMessage(BaseModel):
     """One conversation message, as transmitted by ``session.resume``."""
 
@@ -45,6 +61,13 @@ class TranscriptMessage(BaseModel):
     text: str | None = None
     name: str | None = None
     tool_call_id: str | None = None
+    # Populated for assistant turns whose only action was tool-calling
+    # (content="" + tool_calls=[...]). Empty list for everyone else so
+    # the TUI can iterate uniformly.
+    tool_calls: list[TranscriptToolCall] = Field(default_factory=list)
+    # Populated for tool turns so the TUI can render `(failed)` markers
+    # without re-parsing the content body.
+    is_error: bool = False
     metadata: dict[str, Any] | None = None
 
 
@@ -91,4 +114,5 @@ __all__ = [
     "SessionInfo",
     "SlashCommandInfo",
     "TranscriptMessage",
+    "TranscriptToolCall",
 ]

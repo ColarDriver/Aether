@@ -13,8 +13,7 @@ Event models layered on top of the JSON-RPC envelope (delivered as
 notifications) likewise forbid extras.
 
 This module deliberately does NOT do batching.  Each frame is one
-envelope; the dispatcher rejects arrays at parse time.  See the PR 2
-design doc for the rationale.
+envelope; the dispatcher rejects arrays at parse time.
 """
 
 from __future__ import annotations
@@ -144,11 +143,11 @@ class RpcResponse(BaseModel):
 # in ``params``.  The dispatcher itself emits ``gateway.ready`` and
 # ``gateway.error`` directly as notifications under those method names
 # (no ``"event"`` wrapper) — those two events are part of the gateway
-# lifecycle, not the agent event stream that PR 4 will add.
+# lifecycle, not the agent event stream.
 
 
 class EventBase(BaseModel):
-    """Base for typed events.  PR 4 + PR 5 layer more events on top.
+    """Base for typed events.
 
     Subclasses must declare a ``type: Literal[...]`` field to act as
     the discriminator for any future tagged-union routing.  We
@@ -220,6 +219,7 @@ class ToolResult(AgentEventBase):
     content: str
     is_error: bool = False
     iteration: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IterationStart(AgentEventBase):

@@ -1,7 +1,6 @@
 """CLI prompter for plan-mode approval and structured questions.
 
-Sprint 3.5 / PR 3.5.7.  Backs ``ExitPlanModeTool`` and
-``AskUserQuestionTool``.
+Backs ``ExitPlanModeTool`` and ``AskUserQuestionTool``.
 
 Design constraints:
 

@@ -36,73 +36,52 @@ class ExitReason(str, Enum):
     MIDDLEWARE_ERROR = "MIDDLEWARE_ERROR"
     UNKNOWN_TOOL = "UNKNOWN_TOOL"
     EMPTY_RESPONSE = "EMPTY_RESPONSE"
-    # Sprint 1 / PR 1.1: response-shape validation failed even after the
-    # recovery layer's retry budget was exhausted.  Distinct from
+    # Response-shape validation failed even after the recovery layer's
+    # retry budget was exhausted. Distinct from
     # PROVIDER_ERROR so observers can tell "the API itself broke" apart
     # from "the API kept returning malformed bodies".
     RESPONSE_INVALID = "RESPONSE_INVALID"
-    # Sprint 1 / PR 1.2: response hit the model's output budget but we
-    # successfully stitched a continuation and returned the full text.
+    # Response hit the model's output budget but the engine stitched a
+    # continuation and returned the full text.
     LENGTH_RECOVERED = "LENGTH_RECOVERED"
-    # Sprint 1 / PR 1.2: response hit the output budget repeatedly and we
-    # had to stop after rollback / partial return.
+    # Response hit the output budget repeatedly and the engine had to
+    # stop after rollback or partial return.
     LENGTH_EXHAUSTED = "LENGTH_EXHAUSTED"
-    # Sprint 1 / PR 1.3: assistant tool-call payload was cut off mid-stream
-    # (either because finish_reason="length" arrived alongside tool_calls
-    # or because the JSON arguments did not terminate with "}" / "]").  We
-    # refused to dispatch the truncated call and either retried once or
-    # surfaced a partial turn.  Distinct from LENGTH_EXHAUSTED so observers
-    # can branch on "the model asked for a tool but never finished writing
-    # the arguments" vs "the model exhausted its output budget on prose".
+    # Assistant tool-call payload was cut off mid-stream, either because
+    # ``finish_reason="length"`` arrived alongside ``tool_calls`` or
+    # because the JSON arguments never terminated with ``}`` or ``]``.
+    # Distinct from ``LENGTH_EXHAUSTED`` so observers can tell "the
+    # model asked for a tool but never finished the arguments" apart
+    # from "the model exhausted its output budget on prose".
     TOOL_CALL_TRUNCATED = "TOOL_CALL_TRUNCATED"
-    # Sprint 1.5 / phantom-tool recovery: model wrote shell commands or
-    # ``<function=NAME>`` / ``<invoke>`` markers in prose instead of
-    # populating the structured ``tool_calls`` field, and the loop sent
-    # corrective messages for ``max_phantom_tool_retries`` turns without
-    # ever getting back a properly structured invocation.  Distinct from
-    # TEXT_RESPONSE because the model *intended* to invoke a tool — the
-    # turn is broken, not just complete.  Surfaced to the UI so the
-    # user sees a clear "the model never got around to actually running
-    # anything" footer instead of a misleading green checkmark.
+    # The model wrote a tool intent in prose instead of populating the
+    # structured ``tool_calls`` field, and repeated repair attempts
+    # still never produced a valid tool invocation. Distinct from
+    # ``TEXT_RESPONSE`` because the turn is broken rather than complete.
     PHANTOM_TOOL_INTENT = "PHANTOM_TOOL_INTENT"
-    # Sprint 2 / PR 2.2: provider returned 429 (or a 4xx body that
-    # classified to ``rate_limit``) and the recovery strategy gave up
-    # — usually because the fallback chain is exhausted *and* the
-    # rate-limit budget is too long for an interactive turn.  Distinct
-    # from PROVIDER_ERROR so observability can surface "throttled"
-    # specifically (operators tend to react differently to 429-class
-    # failures than to generic 5xx).
+    # Provider returned a rate-limit failure and the recovery strategy
+    # gave up. Distinct from ``PROVIDER_ERROR`` so observability can
+    # surface throttling explicitly.
     RATE_LIMITED = "RATE_LIMITED"
-    # Sprint 2 / PR 2.2: server rejected the request because the prompt
-    # exceeds the model's context window.  Surfaced when the recovery
-    # strategy decided compression was needed but no compressor is
-    # configured (Sprint 3 will wire compression in; until then this
-    # exits cleanly so the user knows *why* the call failed instead of
-    # silently retrying forever).
+    # Server rejected the request because the prompt exceeded the
+    # model's context window and the recovery path could not proceed.
     CONTEXT_EXHAUSTED = "CONTEXT_EXHAUSTED"
-    # Sprint 2 / PR 2.2: HTTP 413 (or message-pattern-matched
-    # equivalent) — the request body itself is too big regardless of
-    # the model's context window.  Same fallthrough rationale as
-    # CONTEXT_EXHAUSTED above; Sprint 3 compression will remove this
-    # being a user-visible terminal in the common case.
+    # The request body itself is too large regardless of the model's
+    # context window.
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
-    # Sprint 3 / PR 3.4: the compaction pipeline ran but could not
-    # reduce the prompt under the target threshold.  Distinct from
-    # CONTEXT_EXHAUSTED so observability can tell "we tried all enabled
-    # tiers" apart from the legacy "compression unavailable" terminal.
+    # The compaction pipeline ran but still could not reduce the prompt
+    # under the target threshold. Distinct from
+    # ``CONTEXT_EXHAUSTED`` so observability can tell "compression was
+    # attempted and still failed".
     COMPRESSION_EXHAUSTED = "COMPRESSION_EXHAUSTED"
-    # Sprint 2 / PR 2.2: the fallback chain ran out of providers while
-    # the last attempt was still failing.  Distinct from PROVIDER_ERROR
-    # so operators can tell "we tried everyone and they all rejected
-    # us" apart from "single provider blew up".
+    # The fallback chain ran out of providers while the last attempt
+    # was still failing.
     FALLBACK_EXHAUSTED = "FALLBACK_EXHAUSTED"
-    # Sprint 2 / PR 2.3 — model emitted unrepairable tool names (typos
-    # / hallucinated tools) for ``invalid_tool_max_retries`` iterations
-    # in a row.  We surface a distinct terminal so the UI / observability
-    # can tell "the model never figured out which tool to call" apart
-    # from "the tool ran but failed".
+    # The model emitted unrepairable tool names for
+    # ``invalid_tool_max_retries`` iterations in a row. Distinct from a
+    # tool runtime failure.
     INVALID_TOOL_REPEATED = "INVALID_TOOL_REPEATED"
-    # Sprint 4 / PR 4.2: empty-response recovery terminals.
+    # Empty-response recovery terminals.
     PARTIAL_STREAM_RECOVERY = "PARTIAL_STREAM_RECOVERY"
     FALLBACK_PRIOR_TURN_CONTENT = "FALLBACK_PRIOR_TURN_CONTENT"
     POST_TOOL_NUDGE = "POST_TOOL_NUDGE"
@@ -112,7 +91,7 @@ class ExitReason(str, Enum):
 
 StreamDeltaCallback = Callable[[str], None]
 
-# Sprint 3 / PR 3.1 — silent (count-only) streaming callback.
+# Silent count-only streaming callback.
 #
 # Some providers spend many seconds emitting tool-call argument JSON
 # fragments (``delta.tool_calls.function.arguments`` for OpenAI-style
@@ -123,8 +102,8 @@ StreamDeltaCallback = Callable[[str], None]
 # counter.  This callback is the count-only sibling of
 # ``StreamDeltaCallback``: providers forward each non-visible chunk
 # here so the UI estimator advances even during long tool-only turns,
-# mirroring claude-code's ``onUpdateLength`` semantics where every
-# delta type increases the live token count regardless of visibility.
+# mirroring ``claude-code`` semantics where every delta type increases
+# the live token count regardless of visibility.
 StreamSilentCallback = Callable[[str], None]
 
 class EngineStatus(str, Enum):
@@ -156,7 +135,7 @@ class NormalizedResponse:
     tool_calls: List[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     # Providers that expose reasoning should store it in metadata under
-    # ``reasoning_content`` or ``reasoning_details``.  Sprint 4's response
+    # ``reasoning_content`` or ``reasoning_details``. The response
     # classifier reads those keys; there is intentionally no top-level
     # ``reasoning`` field in this contract.
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -187,16 +166,16 @@ class EngineRequest:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     model_config: ModelCallConfig = field(default_factory=ModelCallConfig)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    # Sprint 3.5 / PR 3.5.7 — interactive prompter for plan-mode
-    # approval and ``AskUserQuestionTool``.  Optional: when ``None``
+    # Interactive prompter for plan-mode approval and
+    # ``AskUserQuestionTool``. Optional: when ``None``
     # the corresponding tools degrade to a clear "non-interactive"
     # error without crashing.  Untyped (``Any``) to avoid a hard import
     # of ``aether.cli.approval_prompter`` from the runtime layer; it
     # is duck-typed against the ``Prompter`` protocol.
     approval_prompter: Any = None
-    # Sprint 7 — engine-level permission prompter for dangerous tools.
-    # Separate from ``approval_prompter`` because this is a dispatch
-    # gate owned by the engine, not a tool-internal interaction helper.
+    # Engine-level permission prompter for dangerous tools. Separate
+    # from ``approval_prompter`` because this is a dispatch gate owned
+    # by the engine, not a tool-internal interaction helper.
     tool_permission_prompter: Any = None
     interrupt_signal: "InterruptSignal | None" = None
 
@@ -205,12 +184,8 @@ class EngineRequest:
 class EngineResult:
     """Result of one ``AgentEngine.run_loop`` invocation.
 
-    Most fields are self-explanatory.  ``metadata`` deserves a contract:
-
-    Sprint 3 / PR 3.1 — Stable ``metadata`` v1 schema (additive only).
-    The following top-level keys are part of the public API and will not
-    be renamed or have their value shape narrowed without a major version
-    bump:
+    Most fields are self-explanatory. ``metadata`` follows a stable,
+    additive schema for the top-level keys below:
 
     * ``request`` — snapshot of the originating ``EngineRequest``.
     * ``turn`` — flat snapshot of ``TurnContext.metadata`` (excluding a
@@ -223,28 +198,28 @@ class EngineResult:
     * ``api_calls`` — int, number of provider ``generate()`` calls in
       this turn.
     * ``pending_steer`` — unconsumed async user guidance text, or ``None``.
-      Sprint 5.2 populates this when `/steer` arrived but no tool result
-      boundary existed to inject it safely.
+      Populated when ``/steer`` arrived but no tool-result boundary
+      existed to inject it safely.
     * ``memory`` — ``{enabled, mode, retrieval_ms, candidate_count,
       injected_count, injected_tokens, scopes, skipped_reason, write_count,
-      error}``.  Sprint 8 populates this for transient memory retrieval and
-      injection observability.  Memory content is not included here.
-    * ``trajectory`` — ``{saved, path, error}``.  Sprint 5.5 populates
-      this when optional trajectory persistence is enabled.
+      error}``. Populated for transient memory retrieval and injection
+      observability. Memory content is not included here.
+    * ``trajectory`` — ``{saved, path, error}``. Populated when optional
+      trajectory persistence is enabled.
     * ``resource_cleanup`` — ``{completed, interrupted, acquired, released,
-      errors}``.  Sprint 5.6 populates this after task-scoped cleanup runs.
+      errors}``. Populated after task-scoped cleanup runs.
     * ``iteration_budget`` — ``{used, max, remaining, grace_consumed}``.
-      Filled with structured data by PR 3.2 (IterationBudget); PR 3.1
-      surfaces ``max == EngineConfig.max_iterations`` so downstream
-      footers can already render the bound.
+      Filled from ``IterationBudget``; ``max`` mirrors
+      ``EngineConfig.max_iterations`` so downstream footers can render
+      the bound.
     * ``exit`` — ``{reason, last_msg_role, stuck_after_tool}``.  Auxiliary
       diagnostic to the canonical ``exit_reason`` enum.
-    * ``reasoning`` — ``{last_reasoning}``.  Reserved shape; populated by
-      Sprint 5 reasoning-block extraction.
+    * ``reasoning`` — ``{last_reasoning}``. Reserved shape; populated by
+      reasoning-block extraction.
     * ``compaction`` — ``{tier1_spilled_count, tier2_snipped_count,
       tier3_cleared_count, tier4_collapse_segments,
-      tier5_summaries_generated}``.  Reserved shape; PR 3.3..3.7
-      five-tier compaction pipeline increments these as it fires.
+      tier5_summaries_generated}``. Reserved shape; the five-tier
+      compaction pipeline increments these as it fires.
 
     Other keys present in ``metadata`` (``phantom_synth_count``,
     ``tool_names_repaired``, ``recovery_decisions``, etc.) are

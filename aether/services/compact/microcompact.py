@@ -11,7 +11,7 @@ Two intended paths (mirroring claude-code's ``microCompact.ts``):
     prefix is unavoidable anyway.
 
   * :class:`CachedMicrocompactor` (stub here, real implementation lands
-    after Sprint 5 prompt cache).  For warm-cache scenarios the planned
+    with a future prompt-cache path). For warm-cache scenarios the planned
     implementation will use provider-specific ``cache_edits`` to delete
     tool results server-side without invalidating the cached prefix —
     so it does NOT mutate local messages.
@@ -156,7 +156,7 @@ class TimeBasedMicrocompactor:
 
         1. ``_aether_meta.timestamp`` on the most recent assistant
            message — written by :meth:`AgentEngine._assistant_aether_meta`
-           on every assistant message we produce (see PR 3.5 doc § 3.2).
+           on every assistant message we produce.
         2. ``turn_context.metadata['session_record_meta']
            ['last_assistant_timestamp']`` — fallback for replays /
            sessions hydrated from disk where per-message meta is lost.
@@ -339,9 +339,9 @@ class TimeBasedMicrocompactor:
 
 
 class CachedMicrocompactor:
-    """Stub for the cache-edit path (Sprint 5+ implementation).
+    """Stub for the cache-edit path.
 
-    When prompt cache lands (Sprint 5), this class will:
+    When prompt-cache support lands, this class will:
 
     * Track ``tool_use_ids`` that have been "registered" with the
       provider's prompt cache.
@@ -363,4 +363,3 @@ class CachedMicrocompactor:
         turn_context: TurnContext,  # noqa: ARG002 — protocol signature
     ) -> tuple[list[dict[str, Any]], int]:
         return messages, 0
-

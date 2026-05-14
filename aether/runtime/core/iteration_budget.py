@@ -1,9 +1,8 @@
 """Per-turn iteration budget with cheap-tool refund + grace call.
 
-Sprint 3 / PR 3.2 — replaces the nine scattered
-``iterations >= self.config.max_iterations`` checks in
-:mod:`aether.agents.core.agent` with a single structured object that
-also models two new behaviours:
+Replaces the scattered ``iterations >= self.config.max_iterations``
+checks in :mod:`aether.agents.core.agent` with a single structured
+object that also models two behaviors:
 
 * **Cheap-tool refund** — turns spent entirely on bookkeeping tools
   (``update_todo``, ``memory_write``, ``session_search`` and similar
@@ -30,12 +29,10 @@ Lifecycle (mirrors :func:`AgentEngine.run_loop`):
 
 The dataclass is **per-turn, per-session**.  Multiple concurrent
 turns each get their own instance — never share one across sessions
-or you reintroduce the cross-session-leak family of bugs Sprint 0
-closed.
+or you risk cross-session state leaks.
 
 Serialisation: ``to_dict()`` returns a JSON-friendly snapshot suitable
-for ``EngineResult.metadata['iteration_budget']`` (PR 3.1 reserved
-that slot; this PR fills it with structured fields).
+for ``EngineResult.metadata['iteration_budget']``.
 """
 
 from __future__ import annotations
@@ -51,7 +48,7 @@ class IterationBudget:
     --------
     used:
         Net iterations consumed (``consume_count - refund_count``).
-        Equivalent to the legacy ``iterations`` local variable in
+        Equivalent to the loop-local ``iterations`` counter in
         :func:`AgentEngine.run_loop`.
     grace_consumed:
         Whether the one-shot grace round has already been granted.
@@ -140,12 +137,10 @@ class IterationBudget:
     def to_dict(self) -> dict[str, int | bool]:
         """Serialise to a JSON-friendly dict for ``EngineResult.metadata``.
 
-        Field shape is the stable v1 schema PR 3.1 reserved under
-        ``metadata['iteration_budget']``.  Adding fields here is
-        backwards-compatible (consumers ignore unknown keys);
-        renaming or removing fields is a breaking change to the
-        public engine contract — coordinate with downstream
-        observability + CLI footer changes.
+        Adding fields here is backwards-compatible because consumers
+        ignore unknown keys. Renaming or removing fields is a breaking
+        change to the public engine contract and must stay coordinated
+        with downstream observability and CLI footer code.
         """
         return {
             "used": self.used,

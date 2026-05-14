@@ -1,4 +1,4 @@
-"""Sprint 2 / PR 2.3 — tool dispatch hardening primitives.
+"""Tool dispatch hardening primitives.
 
 Three independent failure modes share a common pre-dispatch sanitiser:
 
@@ -100,8 +100,8 @@ logger = logging.getLogger(__name__)
 
 # Default tool-name set treated as "delegate-class" for the cap.
 # Operators can override via ``EngineConfig.delegate_tool_names``;
-# the default covers the names hermes-agent and Aether's own
-# subagent layer use.  Lower-case here because we compare against
+# the default covers Aether's built-in delegation entry points.
+# Lower-case here because we compare against
 # ``_normalize_name(call.name)``.
 DEFAULT_DELEGATE_TOOL_NAMES: tuple[str, ...] = (
     "delegate_task",

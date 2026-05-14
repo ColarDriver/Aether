@@ -18,7 +18,7 @@ from aether.tools.base import ToolDescriptor
 class ModelProvider(ABC):
     """Provider contract used by AgentEngine."""
 
-    # Sprint 3 / PR 3.1: stable identifier consumed by
+    # Stable identifier consumed by
     # ``aether.runtime.observability.usage.normalize_usage`` to pick the right parser.
     # Subclasses MUST override.  Defaults are openai-compatible (best-effort
     # fallback) so tests / scripted providers don't crash on lookup.
@@ -37,12 +37,12 @@ class ModelProvider(ABC):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
-        # Sprint 3 / PR 3.1 — count-only sibling of ``stream_callback``.
+        # Count-only sibling of ``stream_callback``.
         # Providers SHOULD forward non-visible streaming chunks (tool-arg
         # JSON fragments, signatures) here so the CLI's "↓ N tokens"
         # counter advances even during long tool-only generation phases.
-        # Optional with a default of ``None`` so legacy callers / older
-        # provider subclasses that don't yet wire it through keep
+        # Optional with a default of ``None`` so callers and provider
+        # subclasses that don't yet wire it through keep
         # working (the engine's wrapper handles the missing-arg case).
         stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
@@ -54,8 +54,8 @@ class ModelProvider(ABC):
     ) -> tuple[bool, list[str]]:
         """Inspect a freshly-returned response and report any structural issues.
 
-        Sprint 1 / PR 1.1 — engine calls this immediately after
-        ``generate()`` returns.  If the result is ``(False, [...])`` the
+        The engine calls this immediately after ``generate()``
+        returns. If the result is ``(False, [...])`` the
         engine raises ``ResponseInvalidError`` (carrying the reasons list)
         and routes through the recovery layer.
 

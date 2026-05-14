@@ -5,8 +5,8 @@ import type { JsonObject } from '../gatewayTypes.js'
 import { overlayActions, type OverlayState } from '../store/overlayStore.js'
 
 /**
- * Transitional modal used until PR 8b lands the real Approval/Permission
- * components. It surfaces the raw method + params so a developer can see a
+ * Transitional modal used while the real Approval/Permission components are
+ * unavailable. It surfaces the raw method + params so a developer can see a
  * reverse RPC arrived, and it lets Y / N short-circuit the answer.
  *
  * Y commits an empty `{ confirmed: true }` for approval requests and
@@ -47,7 +47,7 @@ export function PlaceholderModal({ overlay }: { overlay: OverlayState }): ReactE
         <Text>{summary}</Text>
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>(placeholder UI · PR 8b will replace) </Text>
+        <Text dimColor>(placeholder UI) </Text>
         <Text>
           [<Text color="green">Y</Text>] approve · [<Text color="red">N</Text>] deny · ESC
           deny

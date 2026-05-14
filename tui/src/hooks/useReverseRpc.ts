@@ -32,8 +32,7 @@ export interface ReverseRpcResponder {
  * client, so dismissing an overlay (for any reason) is the single point where
  * the reverse-RPC loop closes.
  *
- * Until PR 8b ships full ApprovalModal / PermissionModal, every reverse RPC
- * lands in a placeholder overlay; that placeholder still answers with the
+ * Reverse RPCs land in overlays, and placeholder flows still answer with a
  * conservative deny payload so the engine never hangs.
  */
 export function useReverseRpc(client: GatewayClient): void {

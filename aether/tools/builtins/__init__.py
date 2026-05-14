@@ -1,18 +1,19 @@
 """Built-in tool kit shipped with the Aether harness.
 
 This package exposes the executors any ``AgentEngine`` can use out of
-the box.  After Sprint 3.5 / PR-3 the kit ships **20 tools**:
+the box. The bundled registry includes:
 
-* Filesystem & shell (PR-1): ``shell``, ``read_file``, ``write_file``,
+* Filesystem and shell tools: ``shell``, ``read_file``, ``write_file``,
   ``list_dir``, ``grep``, ``glob``, ``file_edit``, ``notebook_edit``,
   ``todo_write``.
-* Web (PR-2): ``web_fetch``, ``web_search``.
-* Subagent dispatch (PR-2): ``task``, ``task_output``, ``task_stop``.
-* Interaction (PR-2): ``enter_plan_mode``, ``exit_plan_mode``,
+* Web access tools: ``web_fetch``, ``web_search``.
+* Subagent dispatch tools: ``task``, ``task_output``, ``task_stop``.
+* Interaction tools: ``enter_plan_mode``, ``exit_plan_mode``,
   ``ask_user_question``.
-* Skill loader (PR-2): ``skill``.
-* Semantic code nav (PR-3): ``lsp``.
-* Headless browser (PR-3): ``web_browser``.
+* Skill loading: ``skill``.
+* Semantic code navigation: ``lsp``.
+* Headless browser automation: ``web_browser``.
+* Memory tools.
 
 Each new tool family is gated by an ``EngineConfig`` switch
 (``web_fetch_enabled`` / ``allow_subagent_dispatch`` /
@@ -110,11 +111,11 @@ def build_default_tool_registry(
     registry.register(ListDirTool(default_cwd=cwd))
     registry.register(GrepTool(default_cwd=cwd))
     registry.register(GlobTool(default_cwd=cwd))
-    # Sprint 3.5 / PR-1.
+    # Filesystem and shell tools.
     registry.register(FileEditTool(default_cwd=cwd))
     registry.register(NotebookEditTool(default_cwd=cwd))
     registry.register(TodoWriteTool())
-    # Sprint 3.5 / PR-2.
+    # Web, subagent, interaction, and skill tools.
     registry.register(WebFetchTool())
     registry.register(WebSearchTool())
     registry.register(AgentTool())
@@ -124,10 +125,10 @@ def build_default_tool_registry(
     registry.register(ExitPlanModeTool(prompter=approval_prompter))
     registry.register(AskUserQuestionTool(prompter=approval_prompter))
     registry.register(SkillTool(catalog=skill_catalog))
-    # Sprint 3.5 / PR-3.
+    # Semantic navigation and browser tools.
     registry.register(LSPTool(manager=lsp_manager))
     registry.register(WebBrowserTool(manager=browser_manager))
-    # Sprint 8 / PR 8.6 — memory tools.
+    # Memory tools.
     registry.register(MemoryReadTool())
     registry.register(MemoryListTool())
     registry.register(MemoryWriteTool())

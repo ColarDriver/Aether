@@ -161,7 +161,8 @@ export function applyGatewayEvent(event: GatewayEvent): void {
         toolCallId: event.tool_call_id,
         toolName: event.tool_name,
         text: event.content,
-        isError: Boolean(event.is_error)
+        isError: Boolean(event.is_error),
+        ...(event.metadata ? { metadata: event.metadata } : {})
       })
       activityActions.bumpToolCounter(Boolean(event.is_error))
       activityActions.setStatus('thinking')

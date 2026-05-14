@@ -21,8 +21,8 @@ from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_MAX_RESULTS = 200
-# Sprint 3.5 / PR 3.5.1 \u2014 path lists are dense (one path per line);
-# 20 KB is roughly 600-800 typical paths.
+# Path lists are dense (one path per line); 20 KB is roughly 600-800
+# typical paths.
 _MAX_RESULT_CHARS = 20_000
 _DEFAULT_SKIP = {
     ".git",

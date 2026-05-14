@@ -1,7 +1,5 @@
 """Per-language singleton manager for LSP clients.
 
-Sprint 3.5 / PR-3 (PR 3.5.9).
-
 Lazily constructs an :class:`LSPClient` the first time a tool asks for
 one for a given language.  Subsequent calls return the cached client so
 we pay the (sometimes substantial) initialisation cost — rust-analyzer

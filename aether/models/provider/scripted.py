@@ -29,7 +29,7 @@ class ScriptedProvider(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,
         stream_callback: StreamDeltaCallback | None = None,
-        # Sprint 3 / PR 3.1: signature parity with the base contract.
+        # Signature parity with the base contract.
         # ScriptedProvider has no streamed phase, so the silent counter
         # is unused — accepting it here keeps the engine's call-site
         # uniform across real and test providers.

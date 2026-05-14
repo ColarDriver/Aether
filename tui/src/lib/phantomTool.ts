@@ -54,7 +54,7 @@ const TOOL_OPEN_RE = new RegExp(
 )
 
 // `[tool: name]` bracket form (Python `_BRACKET_TOOL_LINE_RE`) plus the
-// legacy `[tool_call(name=foo)]` shape some TS callers historically emit.
+// alternate `[tool_call(name=foo)]` shape some TS callers emit.
 const BRACKET_TOOL_LINE_RES: ReadonlyArray<RegExp> = [
   /^[ \t]*\[tool:\s*[^\]\n]+\][ \t]*(?:\n|$)/gim,
   /^\s*\[tool_call\([^)]*\)\]\s*$/gim

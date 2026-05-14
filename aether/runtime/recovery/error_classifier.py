@@ -1,20 +1,20 @@
-"""Sprint 2 / PR 2.1 — structured API-error classification for the engine.
+"""Structured API-error classification for the engine.
 
 Background
 ----------
-Sprint 0 introduced ``ProviderInvocationError`` as the single structured
-exception that providers raise.  Sprint 0 / PR 0.3 then wired a
-``RecoveryStrategy`` chain that today only knows two concepts: "retry with
-backoff" or "give up".  That single-axis decision is too coarse for the
-real-world failure modes the engine has to recover from:
+``ProviderInvocationError`` is the single structured exception that
+providers raise. A ``RecoveryStrategy`` chain then decides whether to
+retry with backoff, compress context, fall back, or give up. That
+single-axis decision is too coarse for the real-world failure modes the
+engine has to recover from:
 
 * A 429 with a `Retry-After: 5` header should retry **and** rotate the
   failed credential / hand the next attempt to a fallback provider, not
   just sleep.
 * A 413 / context-overflow should trigger **context compression**
-  (Sprint 3) before any retry — retrying without compression just burns
-  the same payload again.
-* An OpenRouter HTTP-200 with an ``error`` body (Sprint 1's
+  before any retry — retrying without compression just burns the same
+  payload again.
+* An OpenRouter HTTP-200 with an ``error`` body (a
   ``ResponseInvalidError``) should **eagerly fall back** to the next
   provider rather than backoff retry on the same gateway.
 * A `400 "thinking_signature invalid"` from Anthropic must strip
@@ -24,23 +24,20 @@ real-world failure modes the engine has to recover from:
 The classifier turns each failure into a ``ClassifiedError`` with a
 single ``FailoverReason`` plus four orthogonal recovery hints
 (``retryable`` / ``should_compress`` / ``should_rotate_credential`` /
-``should_fallback``).  Sprint 2 / PR 2.2 will introduce the strategy
-chain that consumes these hints; this PR is **pure classification** so
-its tests can be exhaustive and the strategy work can layer on top
-without re-deriving anything.
+``should_fallback``). The strategy layer consumes these hints so the
+tests can stay exhaustive and the decision logic does not need to
+re-derive anything.
 
 Design notes
 ------------
-1. **Reason taxonomy mirrors hermes-agent's `agent/error_classifier.py`.**
-   The two engines share an observability vocabulary so dashboards,
-   logs, and operator runbooks read the same regardless of which
-   engine is generating the failure.  We deliberately drop a couple of
-   hermes-specific reasons that have no Aether-side recovery action
-   yet (`oauth_long_context_beta_forbidden`) — these will return at
-   the same time as the
-   matching strategies in later PRs.  When they come back the only
-   change required here is adding the enum entry and the pattern
-   matcher; the recovery hints already model the right action shape.
+1. **Stable reason taxonomy.**
+   The classifier uses a fixed observability vocabulary so dashboards,
+   logs, and operator runbooks can key off consistent reason names.
+   Reasons that do not yet have an Aether-side recovery action
+   (for example ``oauth_long_context_beta_forbidden``) are omitted for
+   now; adding them later only requires an enum entry and pattern
+   matcher because the recovery hints already model the right action
+   shape.
 
 2. **Status-code priority over message text.**  An HTTP status is a
    server-issued classification; it is higher signal than free-text
@@ -88,10 +85,9 @@ Usage
     elif classified.retryable:
         ...
 
-Each downstream consumer (Sprint 2 PR 2.2 strategies, Sprint 3
-compression) should branch on ``classified.reason`` first and read the
-boolean hints only as defensive defaults.  The reason is the contract;
-the hints are convenience.
+Each downstream consumer should branch on ``classified.reason`` first
+and read the boolean hints only as defensive defaults. The reason is
+the contract; the hints are convenience.
 """
 
 from __future__ import annotations
@@ -116,10 +112,9 @@ from aether.runtime.recovery.provider_errors import (
 class FailoverReason(str, enum.Enum):
     """Structured cause of an API failure — drives recovery strategy.
 
-    String values match ``hermes-agent``'s enum exactly so cross-engine
-    log correlation tools don't need a translation table.  When extending
-    this enum, mirror the value naming convention (snake_case, lowercase,
-    no provider name in the value).
+    String values are kept stable so log-correlation tools don't need
+    a translation table. When extending this enum, keep the same naming
+    convention (snake_case, lowercase, no provider name in the value).
     """
 
     # ── Authentication / authorization ───────────────────────────────
@@ -187,14 +182,14 @@ class FailoverReason(str, enum.Enum):
     """Anthropic 429 "extra usage" tier-gate on long-context requests.
     Recovery: cap context to the standard tier (~200k) and compress."""
 
-    # ── Response-shape (Sprint 1 / PR 1.1 hand-off) ──────────────────
+    # ── Response-shape ────────────────────────────────────────────────
     response_invalid = "response_invalid"
     """Provider returned HTTP 200 but the body shape was malformed
     (empty choices, embedded ``error`` field, missing message).
     Recovery: eager fall back to next provider — generic backoff just
     re-asks the same broken gateway."""
 
-    # ── Stream-specific (Sprint 1 / PR 1.1 hand-off) ─────────────────
+    # ── Stream-specific ───────────────────────────────────────────────
     stream_stalled = "stream_stalled"
     """SSE stream produced no events for the watchdog interval.
     Recovery: retry on the same provider but force the non-streaming
@@ -475,7 +470,7 @@ def classify_api_error(
 ) -> ClassifiedError:
     """Classify an arbitrary API exception into a recovery-aware verdict.
 
-    Priority pipeline (mirrors hermes-agent ``classify_api_error``):
+    Priority pipeline:
 
     0.  Aether-native subclasses of ``ProviderInvocationError`` get
         first crack — they carry the most specific signal.  Today

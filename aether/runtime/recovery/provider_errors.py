@@ -8,8 +8,8 @@ escaping the provider boundary.
 
 Why this matters
 ----------------
-Until Sprint 0, ``OpenAICompatibleModel`` did its own retry loop with blocking
-``time.sleep`` calls.  This meant the engine layer could not:
+``OpenAICompatibleModel`` used to do its own retry loop with blocking
+``time.sleep`` calls. This meant the engine layer could not:
 
 * Cancel during retry waits (interrupts blocked by ``time.sleep``).
 * Switch to a fallback provider (engine never sees the error until retry is
@@ -21,7 +21,7 @@ Until Sprint 0, ``OpenAICompatibleModel`` did its own retry loop with blocking
 By moving retry control up to the engine, ``ModelProvider`` becomes a
 **single-shot** abstraction: it makes one network call and returns either a
 ``NormalizedResponse`` or a structured error.  All retry policy is owned by
-``runtime/recovery.py`` (``RecoveryStrategy`` chain — added in PR 0.3).
+``runtime/recovery.py``.
 
 Field semantics
 ---------------
@@ -33,7 +33,7 @@ Field semantics
   re-attempting (capped to a sane maximum upstream).  ``None`` means "no
   hint, use default backoff".
 * ``body_summary`` — short truncated copy of the response body / error text
-  used for error classification (Sprint 2 ``ErrorClassifier`` reads this).
+  used for error classification.
 * ``is_network_error`` — ``True`` for transport-level failures (DNS, TLS,
   connection reset, read timeout) where ``status_code`` is unavailable.
   Distinguishing this from "server returned 5xx" matters for retry policy:
@@ -96,11 +96,11 @@ class ProviderInvocationError(Exception):
 class StreamStallError(ProviderInvocationError):
     """Raised when an SSE stream produces no events for too long.
 
-    Sprint 1 / PR 1.1 — added so the engine's recovery layer can distinguish
-    "the network got cut" from "the stream is hung mid-way".  A stall is
+    Added so the engine's recovery layer can distinguish "the network
+    got cut" from "the stream is hung mid-way". A stall is
     semantically a network-level failure (the server is alive enough to keep
     the TCP connection open but never sends another byte), so we set
-    ``is_network_error=True`` on the parent.  ``GenericBackoffStrategy``
+    ``is_network_error=True`` on the parent. ``GenericBackoffStrategy``
     therefore retries it like any other transport error — but providers also
     use this signal to flip their own ``_disable_streaming`` flag and fall
     back to non-streaming for the rest of the session.
@@ -125,16 +125,13 @@ class StreamStallError(ProviderInvocationError):
 class ResponseInvalidError(ProviderInvocationError):
     """Raised when a provider returns HTTP 200 but the response shape is malformed.
 
-    Sprint 1 / PR 1.1 — covers the "OpenRouter returned an `error` field in
-    a 200 body" / "choices is empty" / "message is null" class of failures.
+    Covers the "OpenRouter returned an `error` field in a 200 body" /
+    "choices is empty" / "message is null" class of failures.
     The engine catches this from ``provider.validate_response`` and treats
-    it like any other ``ProviderInvocationError`` (retried by Sprint 0's
-    ``GenericBackoffStrategy``).
-
-    Sprint 2 will introduce a dedicated ``ResponseInvalidStrategy`` that
-    triggers eager fallback rather than generic backoff retry.  Until then
-    we deliberately mark this as ``is_network_error=True`` so the existing
-    retry path picks it up — see the comment in ``GenericBackoffStrategy``.
+    it like any other ``ProviderInvocationError``. We deliberately mark
+    this as ``is_network_error=True`` so the recovery layer can pick it
+    up through the generic retry path when the classifier-aware path is
+    not in use.
 
     ``validation_errors`` is the human-readable list returned by
     ``ModelProvider.validate_response``.  It propagates into the recovery-
@@ -144,9 +141,9 @@ class ResponseInvalidError(ProviderInvocationError):
     validation_errors: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:  # pragma: no cover - inherits behaviour
-        # Sprint 1 placeholder: classify as network-error-equivalent so the
-        # generic retry path picks it up.  Sprint 2 will replace this with
-        # an explicit ResponseInvalidStrategy in the recovery chain.
+        # Classify as network-error-equivalent so the generic retry path
+        # picks it up when the caller is not using classifier-aware
+        # recovery.
         self.is_network_error = True
         # Body summary defaults to "; ".join(validation_errors) so logs are
         # immediately useful without callers having to set it manually.

@@ -18,7 +18,7 @@ Handler signature is ``(params: dict | None) -> dict | None``:
 
 * Return a dict → wrapped in :class:`RpcResponse.result`.
 * Return ``None`` → handler will respond later via ``respond(id, ...)``
-  (used by server-initiated request flows in PR 5; the dispatcher
+  (used by server-initiated request flows; the dispatcher
   itself never emits a response on its own when the handler returned
   None).
 * Raise :class:`GatewayError` → mapped to ``-32000`` application error.
@@ -27,9 +27,8 @@ Handler signature is ``(params: dict | None) -> dict | None``:
 
 Per-request context binding: every long-handler submission first calls
 ``contextvars.copy_context()`` so the worker thread inherits the
-current transport binding.  In the PR 1+2 stdio-only world this is
-redundant (one global transport), but it costs nothing and unlocks
-the per-peer transport routing PR 5 + the eventual web UI will need.
+current transport binding. In the current stdio-only setup this is
+redundant, but it costs nothing and preserves per-peer routing.
 """
 
 from __future__ import annotations
@@ -151,10 +150,9 @@ def _get_pool() -> concurrent.futures.ThreadPoolExecutor:
 def _shutdown_pool() -> None:
     """Stop the pool without waiting for in-flight tasks.
 
-    Aligned with Hermes' ``tui_gateway`` lifecycle: at process exit we
-    cannot block on a wedged handler, so we cancel pending work and
-    let the OS reap workers.  The shutdown grace in ``entry.py``
-    gives the pool a brief window to drain naturally.
+    At process exit we cannot block on a wedged handler, so we cancel
+    pending work and let the OS reap workers. The shutdown grace in
+    ``entry.py`` gives the pool a brief window to drain naturally.
     """
     global _pool
     with _pool_lock:
@@ -411,7 +409,7 @@ def notify(method: str, params: dict[str, Any] | None = None) -> None:
 def respond(request_id: Any, result: Any) -> None:
     """Emit a deferred success response for a request whose handler returned None.
 
-    Reserved for the PR 5 approval / permission bridge — the dispatcher
+    Reserved for deferred-response flows — the dispatcher
     itself never calls this.  Documented here so handlers know the
     contract: returning ``None`` from a short handler means "I will
     call ``respond()`` later".

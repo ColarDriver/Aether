@@ -1,4 +1,4 @@
-"""Built-in ``task_output`` tool — Sprint 3.5 / PR 3.5.6 (v1 stub).
+"""Built-in ``task_output`` tool.
 
 In Aether's v1 subagent model the parent agent dispatches a task via
 :class:`AgentTool` and *blocks* until the child returns its summary.
@@ -8,8 +8,8 @@ the model gets a chance to call :class:`TaskOutputTool` the dispatch
 call has already returned.
 
 We still ship the tool so the model's prompt can mention it without
-producing "tool not found" errors, and so the upgrade path to async
-fan-out (Sprint 4 / 5) keeps the same name.  The behaviour is a
+producing "tool not found" errors, and so a future async fan-out model
+can keep the same name. The behavior is a
 structured "not supported in sync mode" refusal that points the model
 back to ``AgentTool``'s direct return value.
 """

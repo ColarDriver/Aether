@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # error bodies can be megabytes for some providers.
 _MAX_BODY_SUMMARY_CHARS = 1024
 
-# Sprint 1 / PR 1.1: SSE stale-stream detection budget.  If an in-flight
-# streaming response produces zero bytes for this many seconds we abort
+# SSE stale-stream detection budget. If an in-flight streaming response
+# produces zero bytes for this many seconds we abort
 # with ``StreamStallError`` instead of waiting indefinitely.  Exposed as a
 # class attribute on ``OpenAICompatibleModel`` so tests can override without
 # the slow real-clock wait.
@@ -59,7 +59,7 @@ class OpenAICompatibleModel(ModelProvider):
     # instance.
     stream_read_timeout_sec: float = _DEFAULT_STREAM_READ_TIMEOUT_SEC
 
-    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the openai-compatible
+    # Routes ``normalize_usage`` to the openai-compatible
     # parser for OpenAI / Kimi / Zhipu / Doubao / vLLM / etc.  Subclasses
     # serving non-chat endpoints should override.
     provider_name: str = "openai"
@@ -85,8 +85,8 @@ class OpenAICompatibleModel(ModelProvider):
         self.base_url = base_url.rstrip("/")
         self.request_timeout_sec = max(5, int(request_timeout_sec))
 
-        # Sprint 1 / PR 1.1: per-instance flag flipped to True the first
-        # time a streaming attempt fails with ``StreamStallError``.  Once
+        # Per-instance flag flipped to True the first time a streaming
+        # attempt fails with ``StreamStallError``. Once
         # set, subsequent ``generate()`` calls skip streaming and go
         # straight to the (slower but more reliable) non-streaming path.
         # The flag deliberately lives on the instance, not the class —
@@ -112,7 +112,7 @@ class OpenAICompatibleModel(ModelProvider):
            (no point streaming if no one is listening).
         2. If a previous call on this instance hit ``StreamStallError`` and
            we set ``_disable_streaming`` → non-streaming (one-strike-out
-           per session, mirrors hermes 11369–11398).
+           per session).
         3. Otherwise → streaming.  If the streaming attempt itself fails
            with ``StreamStallError``, we flip ``_disable_streaming`` and
            re-attempt the same request once via the non-streaming path
@@ -189,9 +189,9 @@ class OpenAICompatibleModel(ModelProvider):
         payload: dict[str, Any],
         stream_callback: StreamDeltaCallback | None = None,
     ) -> NormalizedResponse:
-        """Original Sprint 0 single-shot path, factored out of generate().
+        """Original single-shot path, factored out of ``generate()``.
 
-        Behaviour and error contract are unchanged from PR 0.2:
+        Behaviour and error contract are unchanged:
         any HTTP / network / JSON failure is wrapped into a
         ``ProviderInvocationError``; success returns a parsed
         ``NormalizedResponse``.
@@ -305,8 +305,7 @@ class OpenAICompatibleModel(ModelProvider):
     ) -> NormalizedResponse:
         """SSE-based streaming path.
 
-        Implements the four pieces called out in P0-1 of the run-loop
-        roadmap:
+        Implements four streaming safeguards:
 
         1. **Per-chunk callback fan-out** — every meaningful delta (content
            or tool-call argument fragment) triggers ``stream_callback``
@@ -316,10 +315,9 @@ class OpenAICompatibleModel(ModelProvider):
            ``stream_read_timeout_sec`` (default 90 s).  If the server
            stops sending bytes for that long we surface a structured
            ``StreamStallError`` instead of letting it look like a generic
-           network error.  The 90-second figure mirrors hermes' tested
-           value; it's long enough to tolerate a slow first-token
-           generation but short enough that hung gateways still get
-           noticed.
+           network error. The 90-second figure is long enough to
+           tolerate a slow first-token generation but short enough that
+           hung gateways still get noticed.
         3. **First-delta detection** — we only need this internally so the
            non-streaming fallback path knows we already streamed
            *something* (so the engine's "fallback to one-shot
@@ -335,8 +333,7 @@ class OpenAICompatibleModel(ModelProvider):
         streaming_payload.setdefault("stream_options", {})
         # Without ``include_usage`` the OpenAI streaming protocol does not
         # send a final usage block.  Set it here so token accounting still
-        # works under streaming — Sprint 3 will rely on this for cost
-        # reporting.
+        # works under streaming for accurate cost reporting.
         if isinstance(streaming_payload["stream_options"], dict):
             streaming_payload["stream_options"].setdefault("include_usage", True)
 
@@ -413,7 +410,7 @@ class OpenAICompatibleModel(ModelProvider):
     ) -> tuple[bool, list[str]]:
         """Detect malformed chat-completions responses post-parse.
 
-        Sprint 1 / PR 1.1 — we deliberately keep this conservative.  A
+        We deliberately keep this conservative. A
         response is considered invalid only when it has neither content
         nor any tool calls *and* the upstream server signalled a non-stop
         finish reason that suggests an actual error rather than an empty
@@ -631,7 +628,7 @@ class OpenAICompatibleModel(ModelProvider):
     ) -> NormalizedResponse:
         choices = data.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
-            # Sprint 1 / PR 1.1: always carry the raw dict so
+            # Always carry the raw dict so
             # ``validate_response`` can introspect provider-specific error
             # shapes (e.g. OpenRouter's HTTP-200-with-error-body).
             return NormalizedResponse(
@@ -857,7 +854,7 @@ def _is_stale_connection_error(error: ProviderInvocationError) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SSE parser (Sprint 1 / PR 1.1)
+# SSE parser
 # ---------------------------------------------------------------------------
 
 
@@ -888,8 +885,8 @@ def _parse_sse_stream(
       ``ToolCall`` list (they would be ill-formed JSON in transit).  If
       the optional ``stream_silent_callback`` is provided we ALSO push
       each fragment to it so the CLI's "↓ N tokens" estimator keeps
-      ticking during long tool-only generation phases — Sprint 3 / PR
-      3.1, mirrors claude-code's ``input_json_delta`` → onUpdateLength
+      ticking during long tool-only generation phases. This mirrors
+      ``claude-code``'s ``input_json_delta`` -> ``onUpdateLength``
       contract.  The silent callback is wired only to the count
       estimator; no JSON ever lands in the visible body.
 
@@ -978,8 +975,8 @@ def _parse_sse_stream(
                     args_chunk = fn.get("arguments")
                     if isinstance(args_chunk, str) and args_chunk:
                         buf["arguments"] += args_chunk
-                        # Sprint 3 / PR 3.1 — feed tool-arg fragments
-                        # to the count-only sibling so the activity
+                        # Feed tool-arg fragments to the count-only
+                        # sibling so the activity
                         # bar advances during long tool-call phases.
                         # Empty / failed callbacks must not abort the
                         # SSE drain (same isolation rule as the
@@ -1012,9 +1009,8 @@ def _parse_sse_stream(
                 if not isinstance(parsed_args, dict):
                     parsed_args = {}
             except json.JSONDecodeError:
-                # Sprint 1 / PR 1.1 deliberately keeps this lenient.  Sprint
-                # 1 / PR 1.3 (truncated tool-call detection, P0-4) is the
-                # right place to flag this as truncated and bubble up — for
+                # Keep this lenient here. Truncated-tool-call detection is
+                # the right place to flag the payload and bubble up; for
                 # now we surface an empty args dict and let downstream
                 # tool dispatch see the broken state.
                 logger.warning(

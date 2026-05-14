@@ -172,12 +172,14 @@ class ShellTool(ToolExecutor):
 
         duration_ms = int((time.monotonic() - started) * 1000)
         exit_code = process.returncode
+        stderr_value = stderr_text or ""
+        stderr_lines = stderr_value.count("\n") + (1 if stderr_value else 0)
         full_output = self._format_output(
             command=command,
             cwd=cwd,
             exit_code=exit_code,
             stdout=stdout_text or "",
-            stderr=stderr_text or "",
+            stderr=stderr_value,
             duration_ms=duration_ms,
             timed_out=timed_out,
             timeout=timeout,
@@ -206,6 +208,7 @@ class ShellTool(ToolExecutor):
                 "interrupted": interrupted,
                 "cwd": str(cwd) if cwd else None,
                 "command": command,
+                "stderr_lines": stderr_lines,
             },
         )
 

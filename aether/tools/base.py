@@ -53,7 +53,7 @@ class ToolExecutor(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Sprint 3.5 / PR 3.5.1 \u2014 shared spill helper
+# Shared spill helper
 # ---------------------------------------------------------------------------
 #
 # Standalone module function (rather than a ToolExecutor mixin) because the
@@ -139,8 +139,9 @@ def maybe_spill_for_tool(
         notice = build_truncation_notice(
             receipt, full_lines=full_lines, full_bytes=full_bytes
         )
-        # Bump the per-turn spill counter; PR 3.1 already mirrors this
-        # into EngineResult.metadata['compaction']['tier1_spilled_count'].
+        # Bump the per-turn spill counter; ``AgentEngine._build_result``
+        # mirrors this into
+        # ``EngineResult.metadata['compaction']['tier1_spilled_count']``.
         context.metadata["tier1_spilled_count"] = (
             int(context.metadata.get("tier1_spilled_count", 0)) + 1
         )

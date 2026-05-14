@@ -1,4 +1,4 @@
-"""Built-in ``enter_plan_mode`` tool — Sprint 3.5 / PR 3.5.7.
+"""Built-in ``enter_plan_mode`` tool.
 
 Switches the current session into *plan mode*.  Once in plan mode the
 write-class tools (``shell``, ``write_file``, ``file_edit``,

@@ -1,4 +1,4 @@
-"""Built-in ``web_fetch`` tool — Sprint 3.5 / PR 3.5.5.
+"""Built-in ``web_fetch`` tool.
 
 Fetches an HTTP(S) URL, converts the body to markdown, and returns
 a structured response that includes the model's free-form ``prompt``
@@ -14,8 +14,8 @@ Why a dedicated tool (instead of letting the model ``shell: curl ...``):
 * HTML → markdown — raw HTML burns 5–10x more tokens than the
   semantic markdown form; we run ``markdownify`` server-side so the
   model only ever sees the cheap representation.
-* Disk spill (Sprint 3.5 / PR 3.5.1) — pages bigger than
-  :data:`WebFetchTool.MAX_RESULT_CHARS` get spilled to
+* Disk spill — pages bigger than :data:`WebFetchTool.MAX_RESULT_CHARS`
+  get spilled to
   ``~/.aether/tool_results/<session>/<call>.md`` and only a preview
   comes back inline.
 """

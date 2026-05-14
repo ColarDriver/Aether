@@ -1,11 +1,11 @@
 """Thin launcher for the TypeScript Ink TUI.
 
 Re-uses the existing ``aether/cli/main.py`` argparse surface so users get
-the same flag vocabulary as the legacy prompt_toolkit TUI, then translates
+the same flag vocabulary as the prompt_toolkit TUI, then translates
 those into environment variables consumed by ``tui/src/entry.tsx``
 before spawning the TS process.
 
-Invocation (during the cutover described in ``docs/tui-split/09_pr9_*``):
+Invocation:
 
     python -m aether.cli.launcher --provider claude --temperature 0.2
 

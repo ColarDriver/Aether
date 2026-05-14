@@ -10,8 +10,8 @@ from aether.runtime.tools.task_cleanup import acquire_task_resource_for_executor
 from aether.tools.base import ToolDescriptor, ToolExecutor, UnknownToolError
 
 
-# Sprint 3.5 / PR 3.5.7 — write-class tools that must be blocked while
-# the session is in plan mode.  ``EnterPlanModeTool`` flips
+# Write-class tools that must be blocked while the session is in plan
+# mode. ``EnterPlanModeTool`` flips
 # ``aether.runtime.session.session_state`` to ``"plan"``; ``ExitPlanModeTool``
 # flips it back after user approval.  Read-only tools (read_file,
 # grep, glob, list_dir, web_fetch, web_search, skill, ask_user_question,
@@ -28,7 +28,7 @@ WRITE_TOOLS_BLOCKED_IN_PLAN: frozenset[str] = frozenset(
         # mutate state on our behalf, defeating plan-mode's purpose.
         "task",
         "task_stop",
-        # Sprint 8 / PR 8.6 — write-class memory tools.
+        # Write-class memory tools.
         "memory_write",
         "memory_update",
         "memory_forget",
@@ -97,8 +97,8 @@ class ToolRegistry:
     def dispatch(self, call: ToolCall, context: TurnContext) -> ToolResult:
         executor = self.get(call.name)
         executor.validate(call)
-        # Sprint 3.5 / PR 3.5.7 — gate write-class tools when the
-        # session is in plan mode.  We return a structured ToolResult
+        # Gate write-class tools when the session is in plan mode. We
+        # return a structured ToolResult
         # rather than raising so the model sees a normal "this tool
         # refused" message and can correct course (typically by
         # calling ``exit_plan_mode``).

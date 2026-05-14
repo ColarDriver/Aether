@@ -147,13 +147,9 @@ class CompactionPipeline:
                 break
 
         tokens_after = self.token_estimator(current)
-        # Single canonical key for tier outcomes — matches the public
-        # contract documented in
-        # ``docs/sprint-3-compaction-pipeline/04_pr3_4_tier5_autocompact.md``
-        # (T-C1 row).  An earlier draft of this file also wrote a
-        # ``compaction_tier_outcomes`` mirror; that duplicate has been
-        # dropped because it was never the canonical name and pushed
-        # consumers toward picking the wrong key.
+        # Single canonical key for tier outcomes. An older duplicate
+        # ``compaction_tier_outcomes`` field has been removed so
+        # consumers only need to read one metadata key.
         turn_context.metadata.setdefault("tier_outcomes", []).extend(ctx.tier_outcomes)
         turn_context.metadata["compaction_last_trigger"] = trigger_reason
         turn_context.metadata["compaction_last_tokens_before"] = tokens_before

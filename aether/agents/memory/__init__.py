@@ -1,4 +1,4 @@
-"""Compatibility exports for legacy ``aether.agents.memory`` imports."""
+"""Re-export memory symbols under ``aether.agents.memory``."""
 
 from aether.memory import (
     MemoryBlock,

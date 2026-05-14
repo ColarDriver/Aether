@@ -29,17 +29,17 @@ Mutual exclusion with Tier 5:
 * When this tier has at least one *committed* segment in the current
   turn, we set ``turn_context.metadata['collapse_owns_headroom'] = True``.
 * :class:`AutoCompactor` checks that flag (condition 4) and bails — so
-  Tier 4 wins over Tier 5 once it has visibly helped.  Sprint 3
-  trade-off: we'd rather keep the model's recent fine-grained context
+  Tier 4 wins over Tier 5 once it has visibly helped. The trade-off is
+  that we'd rather keep the model's recent fine-grained context
   than re-summarise it through Tier 5's fork.
 
-Sprint 3 store-lifetime trade-off:
+Store-lifetime trade-off:
 
 The store currently lives on ``turn_context.metadata`` which resets
 per turn (``TurnContext`` is constructed fresh per ``run_turn``).
-This is the *minimum-viable* version called out in the PR doc § 5.3
-T-M2 — cross-turn persistence (serialise the store to ``session_record``)
-is a planned follow-up.  Per-turn rebuild still works in practice
+This is the minimum per-turn version. Cross-turn persistence
+(``session_record`` serialisation) is a planned follow-up. Per-turn
+rebuild still works in practice
 because:
 
 * Long sessions trigger Tier 4 inside a single turn (preflight or
@@ -100,8 +100,8 @@ class CollapseSegment:
 class CollapseStore:
     """All collapse state for one turn.
 
-    Lives on ``turn_context.metadata['_collapse_store']``.  Per-turn
-    lifetime is the Sprint 3 minimum (see module docstring).
+    Lives on ``turn_context.metadata['_collapse_store']``. Per-turn
+    lifetime keeps the state local to a single engine turn.
     """
 
     segments: list[CollapseSegment] = field(default_factory=list)
@@ -346,7 +346,7 @@ class ContextCollapseTier:
     ) -> Optional[tuple[int, int]]:
         """Pick the next contiguous range to collapse.
 
-        Strategy (Sprint 3 simplest version):
+        Strategy:
 
         * Skip the protected head (``compression_protect_first_n``).
         * Skip already-collapsed indices (any prior segment in store).
@@ -357,7 +357,7 @@ class ContextCollapseTier:
           in the candidate window — too small to bother summarising,
           let Tier 5 handle it.
 
-        **Tool-pair safety** (high-risk item from PR doc § 9): the
+        **Tool-pair safety**: the
         end of the segment is rolled back if it would split an
         ``assistant + tool_use`` from its matching ``tool_result``,
         and the start is rolled forward if it would orphan a
@@ -548,13 +548,12 @@ class ContextCollapseTier:
     def _extract_summary_text(summarised_messages: list[dict[str, Any]]) -> str:
         """Pull the summary text out of ``LLMForkSummarizer``'s output.
 
-        After PR 3.4's boundary-merge fix, the summariser emits a
+        The summarizer emits a
         single ``user`` message bearing
         ``_aether_meta.compact_summary=True``.  Its ``content`` starts
         with the ``[compact_boundary] ...`` prefix; we strip that
-        prefix (boundary and summary are merged in PR 3.4 but the
-        boundary text is meta-noise here, not part of the summary the
-        model needs to read).
+        prefix because the boundary text is meta-noise here, not part
+        of the summary the model needs to read.
         """
         for msg in summarised_messages:
             meta = msg.get("_aether_meta") or {}

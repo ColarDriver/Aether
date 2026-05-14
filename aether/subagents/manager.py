@@ -29,8 +29,8 @@ class SubagentManager:
         self.max_concurrent_children = max(1, int(max_concurrent_children))
         self.max_spawn_depth = max(1, int(max_spawn_depth))
         self.logger = logger or logging.getLogger(__name__)
-        # Sprint 3.5 / PR 3.5.6 — track running tasks so a peer tool
-        # (``TaskStopTool``) or the parent agent can request a graceful
+        # Track running tasks so a peer tool (``TaskStopTool``) or the
+        # parent agent can request a graceful
         # interrupt.  The mapping is ``task_id -> threading.Event``;
         # the child agent observes the event at iteration boundaries
         # via ``AgentEngine.interrupt`` (set in ``_execute_one``).

@@ -1,4 +1,4 @@
-"""Built-in ``web_browser`` tool — Sprint 3.5 / PR-3 (PR 3.5.10).
+"""Built-in ``web_browser`` tool.
 
 Headless Chromium navigation via Playwright.  Complements
 :class:`WebFetchTool` for JavaScript-rendered pages — WebFetch returns
@@ -17,10 +17,9 @@ SSRF
 ----
 We share the same :func:`is_url_safe` guard the other web tools use,
 so loopback / private IP / unsupported scheme URLs are rejected before
-any browser process starts.  Note that the v1 implementation does not
+any browser process starts. The current implementation does not
 re-check redirect destinations (Playwright follows redirects
-internally) — the docs flag this as a known limitation to revisit when
-we add user-facing browse confirmations.
+internally), which remains a known limitation.
 """
 
 from __future__ import annotations

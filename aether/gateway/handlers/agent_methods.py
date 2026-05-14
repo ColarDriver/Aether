@@ -7,9 +7,11 @@ client as JSON-RPC ``event`` notifications on the same transport.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from aether.agents.core.agent import AgentEngine
@@ -233,6 +235,7 @@ class _GatewayEventMiddleware(EngineMiddleware):
                 content=result.content,
                 is_error=bool(result.is_error),
                 iteration=_wire_iteration(context),
+                metadata=_safe_metadata(result.metadata),
             )
         )
         self._sink.status("thinking")
@@ -557,6 +560,27 @@ def _int_value(value: Any) -> int:
 
 def _wire_iteration(context: TurnContext) -> int:
     return max(0, int(context.iteration or 0) - 1)
+
+
+def _safe_metadata(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Forward only JSON-serialisable metadata so the wire never fails on encode.
+
+    Tools attach structured data to ``ToolResult.metadata`` (file diffs,
+    exit codes, byte counts…). The keys we care about are all primitives,
+    but the dict is free-form, so we strip any value that ``json.dumps``
+    rejects rather than letting an errant Path or set crash the emit.
+    """
+
+    if not raw:
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            continue
+        out[str(key)] = value
+    return out
 
 
 def register() -> None:

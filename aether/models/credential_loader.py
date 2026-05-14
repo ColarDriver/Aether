@@ -8,7 +8,7 @@ Implements two credential strategies:
      - Override path with $CLAUDE_CODE_CREDENTIALS_PATH
   2. Codex CLI token from ~/.codex/auth.json
      - Uses chatgpt.com/backend-api/codex/responses endpoint
-     - Supports both legacy top-level tokens and current nested tokens shape
+     - Supports both top-level tokens and the nested tokens shape
      - Override path with $CODEX_AUTH_PATH
 """
 

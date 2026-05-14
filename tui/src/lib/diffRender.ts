@@ -131,6 +131,62 @@ export function visibleLineIndices(
 }
 
 /**
+ * Single-line view used by the Claude-Code-style chat renderer. Each entry
+ * represents one rendered row in the post-execution diff: a line number in
+ * the relevant file, a marker (`+` / `−` / ` `), and the actual content
+ * with the unified-diff prefix character stripped.
+ *
+ * `lineNumber` is the new-file line for context/addition rows, and the
+ * old-file line for deletion rows — same convention `git diff --unified`
+ * uses when rendering each side. Hunk and file headers do not survive
+ * this transform; the line numbers themselves carry the structural
+ * information.
+ */
+export interface NumberedDiffLine {
+  kind: 'addition' | 'deletion' | 'context' | 'no-newline'
+  lineNumber: number | null
+  text: string
+}
+
+const HUNK_HEADER_RE = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/
+
+export function numberedDiffLines(parsed: ParsedDiff): NumberedDiffLine[] {
+  const out: NumberedDiffLine[] = []
+  let oldLine = 0
+  let newLine = 0
+  for (const line of parsed.lines) {
+    if (line.kind === 'file-header' || line.kind === 'meta') {
+      continue
+    }
+    if (line.kind === 'hunk-header') {
+      const match = HUNK_HEADER_RE.exec(line.text)
+      if (match) {
+        oldLine = parseInt(match[1] ?? '1', 10)
+        newLine = parseInt(match[2] ?? '1', 10)
+      }
+      continue
+    }
+    if (line.kind === 'no-newline') {
+      out.push({ kind: 'no-newline', lineNumber: null, text: line.text })
+      continue
+    }
+    const stripped = line.text.length > 0 ? line.text.slice(1) : ''
+    if (line.kind === 'addition') {
+      out.push({ kind: 'addition', lineNumber: newLine, text: stripped })
+      newLine += 1
+    } else if (line.kind === 'deletion') {
+      out.push({ kind: 'deletion', lineNumber: oldLine, text: stripped })
+      oldLine += 1
+    } else {
+      out.push({ kind: 'context', lineNumber: newLine, text: stripped })
+      oldLine += 1
+      newLine += 1
+    }
+  }
+  return out
+}
+
+/**
  * Convenience: returns a one-line summary like `+12 −3 across 2 hunks`.
  * Used at the top of the permission modal so the user sees impact at a glance
  * even before scrolling the diff.

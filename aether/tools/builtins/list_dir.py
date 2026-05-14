@@ -17,10 +17,10 @@ from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
 _DEFAULT_MAX_ENTRIES = 256
-# Sprint 3.5 / PR 3.5.1 \u2014 list_dir is naturally bounded by
-# ``max_entries``; spill is a last-resort backstop in case a caller
-# bumps that limit and a colossal directory still overflows the
-# context.  20 KB \u2248 256 typical entries.
+# ``list_dir`` is naturally bounded by ``max_entries``; spill is a
+# last-resort backstop in case a caller bumps that limit and a colossal
+# directory still overflows the context. 20 KB is roughly 256 typical
+# entries.
 _MAX_RESULT_CHARS = 20_000
 _DEFAULT_SKIP = (
     ".git",

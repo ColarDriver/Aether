@@ -13,7 +13,7 @@ const workspaceCwd = resolve(
 )
 
 // Translate CLI flags → env vars before mounting <App />. The TS entry is
-// invoked by the Python launcher with the same flag surface as the legacy
+// invoked by the Python launcher with the same flag surface as the
 // `aether` CLI (see `aether/cli/main.py`); we accept them directly here so a
 // developer running `npm start -- --temperature 0.2` reaches feature parity
 // with `aether --temperature 0.2`. Unknown flags pass through silently —

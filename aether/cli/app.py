@@ -114,7 +114,7 @@ class PendingPermissionPrompt:
 # ---------------------------------------------------------------------------
 #
 # prompt_toolkit's :class:`Keys` enum doesn't model Shift+Enter natively
-# because most legacy terminals collapse it down to plain CR / LF.
+# because many terminals collapse it down to plain CR / LF.
 # Modern terminals report it through one of two extended keyboard
 # protocols, both as escape sequences we can intercept at the parser:
 #
@@ -131,7 +131,7 @@ for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
 del _seq
 
 
-# Double-press windows for the ESC priority chain (PR 6.1).
+# Double-press windows for the ESC priority chain.
 # - ESC: 0.8s matches claude-code's `useDoublePress` default for the
 #   "press ESC again to clear" workflow.
 # - Ctrl-C: 2.0s — wider window because Ctrl-C exits the REPL outright,
@@ -592,9 +592,9 @@ class AetherApp:
                 self._resolve_permission_number(option_number)
                 event.app.invalidate()
 
-        # ESC single-press → priority chain (PR 6.1).  ``eager=True``
+        # ESC single-press -> priority chain. ``eager=True``
         # bypasses prompt_toolkit's 25 ms ESC-sequence timeout so the
-        # press feels instantaneous; this also displaces the legacy
+        # press feels instantaneous; this also displaces the
         # ``escape, enter`` newline binding (intentional — Shift+Enter
         # / Ctrl-J are the newline keys now).
         @bindings.add("escape", eager=True)
@@ -651,7 +651,7 @@ class AetherApp:
         return bindings
 
     # ------------------------------------------------------------------
-    # Interrupt-key handlers (PR 6.1)
+    # Interrupt-key handlers
     # ------------------------------------------------------------------
 
     def _handle_esc(self, event) -> None:  # noqa: ANN001

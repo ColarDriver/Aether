@@ -20,14 +20,11 @@ class ModelCallConfig:
 class EngineConfig:
     """Runtime configuration for the loop engine."""
 
-    # Hard cap on LLM iterations per turn — the structured ceiling
-    # ``IterationBudget`` (Sprint 3 / PR 3.2) is built on top of.  Default
-    # ``32`` matches the ``aether chat --max-iterations`` CLI default so
-    # SDK callers, subagents, and unattended tests see the same headroom
-    # interactive users do.  Cheap-tool refund + max-iterations summary
-    # provide soft guardrails before this number becomes painful, so the
-    # tradeoff favours "long task completes" over "cost is bounded";
-    # benchmarks / cost-sensitive deployments should override explicitly.
+    # Hard cap on LLM iterations per turn. ``IterationBudget`` layers
+    # cheap-tool refunds and the one-shot summary call on top of this
+    # ceiling. Default ``32`` matches ``aether chat --max-iterations``
+    # so CLI, SDK callers, subagents, and unattended tests share the
+    # same headroom.
     max_iterations: int = 32
     fail_on_tool_error: bool = False
     raise_on_middleware_error: bool = False
@@ -35,10 +32,9 @@ class EngineConfig:
     enable_todo_hydration: bool = False
     memory_nudge_interval: int = 0
     skill_nudge_interval: int = 0
-    # Sprint 8: memory subsystem defaults.  The default mode serves
-    # task/project agents, not personal-assistant user profiling.  Memory
-    # blocks are retrieved as transient provider-bound context only; later
-    # PRs wire the provider into the run loop.
+    # Memory subsystem defaults. The default mode targets task/project
+    # context rather than user profiling. Memory blocks are retrieved as
+    # transient provider-bound context only.
     memory_enabled: bool = True
     memory_mode: str = "project"
     memory_token_budget_pct: float = 0.08
@@ -50,62 +46,58 @@ class EngineConfig:
     memory_auto_write_enabled: bool = False
     memory_llm_rerank_enabled: bool = False
     memory_debug_log_content: bool = False
-    # Sprint 1 / PR 1.1: emergency rollback switch for the new SSE streaming
-    # path.  When False, the engine refuses to forward ``request.stream_callback``
-    # to the provider, forcing the (older, well-tested) non-streaming path
-    # even if the user passes a callback.  Useful for shipping deployments
-    # where a buggy provider gateway breaks SSE.
+    # Emergency rollback switch for SSE streaming. When False, the
+    # engine refuses to forward ``request.stream_callback`` to the
+    # provider and always uses the non-streaming path, even if the user
+    # passes a callback. Useful when a provider gateway has a broken SSE
+    # implementation.
     streaming_enabled: bool = True
-    # Sprint 1 / PR 1.2: enable/disable finish_reason="length" continuation
-    # logic.  When False, the engine will not try to stitch continuations and
-    # will simply surface the truncated answer as-is.
+    # Enable or disable finish_reason="length" continuation logic. When
+    # False, the engine surfaces the truncated answer as-is.
     length_continuation_enabled: bool = True
     # Maximum number of continuation attempts after a response ends with
     # finish_reason="length".  ``0`` effectively disables retries while still
     # allowing the thinking-budget detector and partial-return path.
     max_length_continue_retries: int = 3
-    # Sprint 1 / PR 1.3: emergency rollback switch for the truncated
-    # tool-call detector.  When False, the engine skips the
-    # "args don't end with } or ]" heuristic and the
-    # finish_reason="length" + tool_calls retry path; broken JSON falls
-    # through to the dispatcher (current pre-PR-1.3 behaviour).  Useful if
-    # the heuristic ever produces false positives on a specific model.
+    # Emergency rollback switch for truncated tool-call detection. When
+    # False, the engine skips the "args don't end with } or ]"
+    # heuristic and the finish_reason="length" + tool_calls retry path;
+    # malformed JSON falls through to the dispatcher unchanged. Useful
+    # if the heuristic ever produces false positives on a specific
+    # model.
     truncated_tool_call_detection_enabled: bool = True
-    # Number of times we re-issue the same provider call when the model
-    # returns ``finish_reason="length"`` together with tool_calls.  We
-    # deliberately do NOT append the broken assistant message to history
-    # for these attempts — the goal is to give the model a second chance
-    # at producing complete arguments without poisoning the conversation.
-    # Hermes ships ``1`` for this knob; we mirror it.
+    # Number of times the engine re-issues the same provider call when
+    # the model returns ``finish_reason="length"`` together with
+    # tool_calls. The broken assistant message is not appended to
+    # history for these attempts, so the model gets a clean retry at
+    # producing complete arguments.
     max_truncated_tool_call_retries: int = 1
-    # Sprint 1 / PR 1.3: when tool_call arguments fail to parse as JSON
-    # (and we have ruled out truncation), how many times we silently
-    # re-issue the API call before injecting a tool-error message back
-    # into history so the model can self-correct.  Hermes ships ``3``.
+    # When tool_call arguments fail to parse as JSON (and truncation
+    # has been ruled out), how many times to silently re-issue the API
+    # call before injecting a tool-error message back into history so
+    # the model can self-correct.
     max_invalid_json_retries: int = 3
     # Disable the tool-error self-correction injection entirely if it
     # ever causes infinite recovery loops in practice.  Defaults to True
     # because the injection is significantly safer than letting broken
     # JSON poison a tool runtime.
     invalid_json_recovery_enabled: bool = True
-    # Sprint 1.5 / phantom-tool recovery: when the model returns a
+    # Phantom-tool recovery: when the model returns a
     # response with no structured ``tool_calls`` *but* the visible body
     # carries clear evidence of attempted tool invocation (\u0060\u0060\u0060bash
     # blocks, ``<function=NAME>`` inline tags, ``<invoke>`` XML), inject
     # a corrective ``role=user`` message and retry instead of silently
-    # finalising as TEXT_RESPONSE.  The retry budget bounds the loop
-    # so a model that *consistently* refuses structured tool_calls
+    # finalising as TEXT_RESPONSE. The retry budget bounds the loop so
+    # a model that consistently refuses structured tool_calls
     # eventually exits with PHANTOM_TOOL_INTENT instead of looping
-    # forever.  Disabling falls back to today's "show diagnostic +
-    # finalise" behaviour, which is fine for non-Kimi-class models
-    # that always populate ``tool_calls`` correctly.
+    # forever. Disabling falls back to surfacing the diagnostic and
+    # finalising the turn without a corrective retry.
     phantom_tool_recovery_enabled: bool = True
-    # Default chosen empirically: typical Kimi-class failures self-
-    # correct within 1–2 corrective turns; 2 retries lets us nudge
-    # twice before giving up.  Set to 0 to disable retries entirely
-    # while keeping the diagnostic.
+    # Two retries cover the common case where one or two corrective
+    # turns are enough. Set to 0 to disable retries while keeping the
+    # diagnostic.
     max_phantom_tool_retries: int = 2
-    # Sprint 1.5 / P0-9: when ``True`` and the model emits prose-style
+    # When ``True`` and the model emits prose-style
     # tool intents (\u0060\u0060\u0060bash\u0060\u0060\u0060 fences, ``<function=NAME>``,
     # ``<functions.shell:N>``, ``<invoke>``) instead of structured
     # ``tool_calls``, the engine attempts to synthesize ``ToolCall``s
@@ -117,15 +109,15 @@ class EngineConfig:
     # message retry path runs as before.  Disable to keep the strict
     # claude-code-style "no synthesis, prose is just text" semantics.
     phantom_tool_synthesis_enabled: bool = True
-    # Sprint 1.5 / P0-9: when ``True`` and ``tool_registry`` is not
+    # When ``True`` and ``tool_registry`` is not
     # explicitly passed to ``AgentEngine``, the engine populates it with
     # the bundled tool kit (``shell``, ``read_file``, ``write_file``,
     # ``list_dir``, ``grep``, ``glob``).  Set ``False`` to get the
-    # legacy empty-registry behaviour — useful for tests that install
+    # empty-registry behavior — useful for tests that install
     # only mocks, or for callers shipping their own toolset and that
     # want no surprises.
     use_builtin_tools: bool = True
-    # Sprint 1.5 / P0-9: when ``True`` the engine prepends a small
+    # When ``True`` the engine prepends a small
     # ``<tool_use_contract>`` system block enumerating the registered
     # tools and forbidding prose-style tool emission (markdown ``bash``
     # fences, ``<function=NAME>``, ``<functions.shell:N>``, ``<invoke>``,
@@ -133,63 +125,54 @@ class EngineConfig:
     # models that hallucinate tool calls in ``content``.  Suppressed
     # automatically when the registry is empty (no tools to advertise).
     tool_use_contract_enabled: bool = True
-    # Sprint 2 / PR 2.2: master switch for the classifier-aware
-    # recovery composite (rate-limit / context-overflow / payload /
-    # thinking-signature / response-invalid strategies).  When ``False``
-    # the engine falls back to the Sprint 0 ``GenericBackoffStrategy``
-    # — useful as an emergency rollback if a future strategy
-    # mis-classifies a hot upstream failure mode.  Default ``True``
-    # because every shipped strategy is a strict superset of the
-    # generic backoff path (they delegate to it for unknown reasons).
+    # Master switch for the classifier-aware recovery composite
+    # (rate-limit / context-overflow / payload / thinking-signature /
+    # response-invalid strategies). When ``False`` the engine falls
+    # back to ``GenericBackoffStrategy``. Default ``True`` because the
+    # specific strategies delegate unknown reasons to the generic path.
     classified_recovery_enabled: bool = True
-    # Sprint 2 / PR 2.2: when ``True`` and ``EngineServices.fallback_chain``
-    # carries more than one provider, recovery decisions tagged
-    # ``activate_fallback`` actually rotate the active provider.
-    # Default ``False`` per the sprint plan: failover is only useful
-    # once the chain has been validated end-to-end with real provider
-    # credentials; flipping this on without that prep just hides
-    # configuration mistakes.  Single ``True`` flip after
-    # ``FallbackChain`` is wired in production.
+    # When ``True`` and ``EngineServices.fallback_chain`` carries more
+    # than one provider, recovery decisions tagged
+    # ``activate_fallback`` rotate the active provider. Keep ``False``
+    # to disable provider failover even when a chain is configured.
     fallback_chain_enabled: bool = False
-    # Sprint 2 / PR 2.2: maximum number of provider rotations the
+    # maximum number of provider rotations the
     # fallback chain may perform inside a single turn.  Bounds the
     # worst-case "every provider returns 429 in sequence" scenario so
     # an interactive turn never spins through 10 providers before
     # giving up.  ``0`` disables fallback entirely (equivalent to
     # ``fallback_chain_enabled=False``).
     max_fallback_activations_per_turn: int = 4
-    # Sprint 2 / PR 2.2: ``Retry-After`` waits longer than this many
-    # seconds force an immediate fallback (or give-up if the chain is
-    # exhausted) instead of blocking the turn for the full duration.
-    # Mirrors hermes' "if rate-limit wait > 30s, rotate" heuristic.
+    # ``Retry-After`` waits longer than this many seconds force an
+    # immediate fallback (or give-up if the chain is exhausted)
+    # instead of blocking the turn for the full duration.
     rate_limit_fallback_threshold_seconds: float = 30.0
-    # Sprint 5 / PR 5.9: cross-session provider/base_url lockout.  When a
+    # cross-session provider/base_url lockout.  When a
     # session observes a rate-limit response with a concrete reset hint, it
     # writes a short-lived file lock so other sessions skip that same upstream
     # and use fallback instead of repeatedly burning failed requests.
     rate_guard_enabled: bool = True
     rate_guard_dir: Path | None = None
-    # Sprint 2 / PR 2.3: per-turn retry budget for unrepairable tool
+    # per-turn retry budget for unrepairable tool
     # names.  Each iteration that surfaces at least one unknown +
     # unrepairable name bumps a counter; once it reaches this cap the
     # turn finalises with ``ExitReason.INVALID_TOOL_REPEATED`` so
     # observers see "the model never figured out the right name"
-    # instead of an opaque tool failure.  Default ``3`` matches the
-    # P0-5 acceptance criteria in ``02_p0_critical_gaps.md``.
+    # instead of an opaque tool failure.
     invalid_tool_max_retries: int = 3
-    # Sprint 2 / PR 2.3: maximum delegate-class tool calls that may
+    # maximum delegate-class tool calls that may
     # actually dispatch in a single turn.  Excess calls become
     # synthetic error ``ToolResult``s telling the model to consolidate
     # work into fewer delegations.  ``0`` disables delegate dispatch
     # entirely (useful for debugging).
     max_delegate_calls_per_turn: int = 4
-    # Sprint 2 / PR 2.3: tool names treated as "delegate-class" by
+    # tool names treated as "delegate-class" by
     # the per-turn cap above.  Compared via the same name normalisation
     # the repair path uses (case-fold + dash↔underscore + namespace
     # strip) so ``DelegateTask`` / ``delegate-task`` /
-    # ``mcp__router__delegate_task`` all hit the cap.  Defaults cover
-    # the names hermes-agent and Aether's subagent layer use; operators
-    # can extend the tuple to bring custom delegators under the cap.
+    # ``mcp__router__delegate_task`` all hit the cap. Defaults cover
+    # the built-in delegation entry points; operators can extend the
+    # tuple to bring custom delegators under the cap.
     delegate_tool_names: tuple[str, ...] = (
         "delegate_task",
         "delegate",
@@ -197,15 +180,15 @@ class EngineConfig:
         "subagent_dispatch",
         "spawn_subagent",
     )
-    # Sprint 2 / PR 2.3: when ``True`` the engine deduplicates identical
+    # when ``True`` the engine deduplicates identical
     # tool calls (same name, same canonicalised args) within a single
     # iteration — the first call dispatches, the rest become stub
     # ``ToolResult``s that point at the original call id.  Default
     # ``True`` because duplicate dispatch is almost always model
     # confusion (re-reading the same file 5x); set to ``False`` to
-    # restore Sprint 1 behaviour for diagnostics.
+    # restore direct-dispatch behavior for diagnostics.
     tool_dedup_enabled: bool = True
-    # Sprint 3 / PR 3.2: cheap-tool refund list.  Tools whose call
+    # cheap-tool refund list.  Tools whose call
     # doesn't consume real iteration budget — typically bookkeeping
     # operations (``update_todo``, ``memory_*``) and read-only state
     # queries (``session_search``).  When an iteration's tool_calls
@@ -216,8 +199,8 @@ class EngineConfig:
     # the tool-repair path uses (case-fold + dash↔underscore + namespace
     # strip) so ``UpdateTodo``, ``update-todo`` and
     # ``mcp__router__update_todo`` all match ``update_todo``.  Set to
-    # ``()`` to restore the legacy "every tool call costs a slot"
-    # behaviour — useful for debugging or for workloads where every
+    # ``()`` to make every tool call consume a slot — useful for
+    # debugging or for workloads where every
     # tool has real cost (e.g. paid-API-only tool kits).
     cheap_tool_names: tuple[str, ...] = (
         "update_todo",
@@ -228,24 +211,18 @@ class EngineConfig:
         "skill_manage",
         "session_search",
     )
-    # Sprint 3 / PR 3.2: when ``True``, exhausting ``max_iterations``
-    # triggers a single one-shot LLM call (no tools, no streaming) to
-    # generate a summary of what the turn accomplished.  The summary
-    # text becomes ``EngineResult.final_response`` while
-    # ``exit_reason`` stays ``MAX_ITERATIONS`` so observability sees
-    # the same termination signal as before — only the human-facing
-    # response payload changes.  Bounded cost (one extra round per
-    # max-iterations event) and large UX win: previously users saw
-    # ``done · 0.0s`` with an empty body after a 60-second turn.
-    # Set to ``False`` to restore the pre-PR-3.2 silent-break
-    # behaviour (e.g. for benchmarks where the empty-string response
-    # is part of the test contract).
+    # When ``True``, exhausting ``max_iterations`` triggers a single
+    # one-shot LLM call (no tools, no streaming) to generate a summary
+    # of what the turn accomplished. The summary becomes
+    # ``EngineResult.final_response`` while ``exit_reason`` stays
+    # ``MAX_ITERATIONS``. Set to ``False`` to leave
+    # ``final_response`` empty on budget exhaustion.
     summary_on_budget_exhausted: bool = True
-    # Sprint 3 / PR 3.4: master switch for the five-tier compaction
-    # pipeline.  Default ``False`` preserves Sprint 2 behaviour: context
-    # overflow recovery exits cleanly instead of attempting an LLM-fork
-    # summary.  Operators can enable after validating the summariser path
-    # with their provider credentials.
+    # Master switch for the five-tier compaction pipeline. Default
+    # ``False`` keeps context-overflow recovery on the clean-exit path
+    # instead of attempting an LLM-generated summary. Operators can
+    # enable it after validating the summarizer path with their
+    # provider credentials.
     compression_enabled: bool = False
     # Pre-LLM threshold as a fraction of the resolved model context window.
     # When estimated history size is below this threshold, preflight
@@ -267,7 +244,7 @@ class EngineConfig:
     compression_protect_last_n: int = 6
     # Target output budget for the summary text generated by the LLM fork.
     compression_target_summary_tokens: int = 4_000
-    # Sprint 3 / PR 3.5 — Tier 3 (TimeBasedMicrocompactor) tuning.
+    # Tier 3 (TimeBasedMicrocompactor) tuning.
     #
     # ``microcompact_gap_threshold_minutes``: minutes since the last
     # assistant message that must elapse before Tier 3 considers the
@@ -297,7 +274,7 @@ class EngineConfig:
         "glob",
         "list_dir",
     )
-    # Sprint 3 / PR 3.6 — Tier 2 (Snipper) tuning.
+    # Tier 2 (Snipper) tuning.
     #
     # ``snip_enabled``: master switch for the Tier 2 snipper.  Can
     # be disabled even when the rest of the pipeline is active —
@@ -328,7 +305,7 @@ class EngineConfig:
     # a streaming response was interrupted between blocks or when
     # the model emitted a blank "let me think..." pause.
     snip_empty_enabled: bool = True
-    # Sprint 3 / PR 3.7 — Tier 4 (ContextCollapseTier) tuning.
+    # Tier 4 (ContextCollapseTier) tuning.
     #
     # ``context_collapse_enabled``: master switch for the projection-
     # based collapse tier.  Default ``False`` because Tier 4 mutates
@@ -355,7 +332,7 @@ class EngineConfig:
     # mean fewer summary calls but each one is harder for the LLM
     # to summarise well.  Default 20 is a sweet spot in profiling.
     context_collapse_segment_max_messages: int = 20
-    # Sprint 3.5 / PR 3.5.1: master switch for per-tool result spill.
+    # master switch for per-tool result spill.
     # When ``True`` (default), tools that produce more than their own
     # ``MAX_RESULT_CHARS`` write the full output to disk under
     # ``tool_result_spill_dir`` and keep only an inline preview plus a
@@ -365,14 +342,14 @@ class EngineConfig:
     # marker — emergency rollback if the spill directory becomes
     # problematic (read-only NFS, full disk, untrusted on shared host).
     tool_result_spill_enabled: bool = True
-    # Sprint 3.5 / PR 3.5.1: override directory for spilled results.
+    # override directory for spilled results.
     # When ``None`` (default) the helpers in
     # :mod:`aether.runtime.tools.tool_result_storage` use
     # ``~/.aether/tool_results/<session_id>/<call_id>.<ext>``.  Set to a
     # faster local disk on systems where ``$HOME`` is on slow networked
     # storage, or to a tmpfs path on ephemeral CI workers.
     tool_result_spill_dir: Path | None = None
-    # Sprint 3.5 / PR 3.5.5 — web tool master switches and limits.
+    # web tool master switches and limits.
     # ``web_search_provider`` selects the search backend; only ``brave``
     # is implemented today, but having an explicit knob keeps the door
     # open for ddgs / tavily / serpapi without touching tool code.
@@ -382,12 +359,12 @@ class EngineConfig:
     web_search_provider: str = "brave"
     web_fetch_max_download_bytes: int = 5 * 1024 * 1024
     web_fetch_timeout_seconds: int = 30
-    # Sprint 3.5 / PR 3.5.6 — subagent dispatch master switch.  When
+    # subagent dispatch master switch.  When
     # ``False`` the ``task`` / ``task_stop`` tools refuse to dispatch
     # and return a structured error.  Cheap rollback for environments
     # where letting the model fan out is undesirable (cost, isolation).
     allow_subagent_dispatch: bool = True
-    # Sprint 3.5 / PR 3.5.7 — interaction tool master switches.
+    # interaction tool master switches.
     # ``plan_mode_enabled`` gates ``EnterPlanMode`` / ``ExitPlanMode``;
     # ``ask_user_question_enabled`` gates ``AskUserQuestion``.  When
     # disabled the tools refuse with a clear "disabled by configuration"
@@ -395,7 +372,7 @@ class EngineConfig:
     plan_mode_enabled: bool = True
     ask_user_question_enabled: bool = True
     ask_user_question_timeout_seconds: int = 600
-    # Sprint 7: tool permission confirmation.  Dangerous tools are gated
+    # tool permission confirmation.  Dangerous tools are gated
     # before dispatch so confirmations render in the CLI control plane
     # instead of scrollback/transcript.  Non-interactive callers deny
     # dangerous tools by default unless they explicitly opt into allow.
@@ -404,7 +381,7 @@ class EngineConfig:
     tool_permission_auto_allow_readonly: bool = True
     tool_permission_non_interactive_default: str = "deny"
     tool_permission_session_allow_enabled: bool = True
-    # Sprint 3.5 / PR 3.5.8 — skill catalog configuration.  Empty
+    # skill catalog configuration.  Empty
     # ``skill_search_paths`` means "use sensible defaults" inside
     # ``SkillCatalog`` callers (project-root ``skills/`` then
     # ``~/.aether/skills``).  ``skill_list_in_system_prompt`` is OFF
@@ -413,7 +390,7 @@ class EngineConfig:
     skill_tool_enabled: bool = True
     skill_search_paths: tuple[Path, ...] = ()
     skill_list_in_system_prompt: bool = False
-    # Sprint 3.5 / PR 3.5.9 — LSP tool gate.  ``True`` by default
+    # LSP tool gate.  ``True`` by default
     # because the tool degrades gracefully (it returns a friendly
     # "language server not installed" message when no LSP binary is
     # on PATH), so leaving it on never crashes a turn that doesn't
@@ -423,7 +400,7 @@ class EngineConfig:
     lsp_tool_enabled: bool = True
     lsp_server_overrides: Dict[str, Any] = field(default_factory=dict)
     lsp_request_timeout_seconds: int = 8
-    # Sprint 4 / PR 4.1-4.4: empty-response recovery and structured
+    # empty-response recovery and structured
     # tool-error rollback knobs.
     legitimate_empty_passthrough_enabled: bool = True
     empty_response_recovery_enabled: bool = True
@@ -446,16 +423,16 @@ class EngineConfig:
     max_provider_recovery_attempts: int = 8
     tool_error_structured_format_enabled: bool = True
     tool_schema_precheck_enabled: bool = True
-    # Sprint 5 / PR 5.4: failed provider request debug dumps.
+    # failed provider request debug dumps.
     # Disabled by default because request bodies can contain sensitive user
     # data even after credential/header redaction.
     dump_failed_requests: bool = False
     request_dump_dir: Path = Path("./request_dumps")
-    # Sprint 5 / PR 5.5: optional trajectory JSONL persistence.
+    # optional trajectory JSONL persistence.
     # Disabled by default because transcripts can contain sensitive user/tool data.
     save_trajectories: bool = False
     trajectory_dir: Path = Path("./trajectories")
-    # Sprint 3.5 / PR 3.5.10 — Headless Chromium browser tool.
+    # Headless Chromium browser tool.
     # **Disabled by default** because Playwright is a heavyweight
     # optional dependency (~150 MB Chromium download) and most
     # turns don't need a real browser.  Flip on after running

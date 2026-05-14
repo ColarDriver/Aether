@@ -2,17 +2,16 @@
 
 A :class:`Transport` is anything that can accept a JSON-serialisable
 dict and forward it to the peer as one newline-terminated frame.  The
-PR 1 implementation ships exactly one transport — :class:`StdioTransport`
-— which writes to ``sys.stdout`` (resolved lazily so tests can swap the
-stream).  Later PRs will add ``WebSocketTransport`` and ``TeeTransport``
-for the web UI path without changing handler code.
+current implementation ships exactly one transport —
+:class:`StdioTransport` — which writes to ``sys.stdout`` (resolved
+lazily so tests can swap the stream). Additional transports can be
+added later without changing handler code.
 
 The "current" transport for a given request is tracked in a
-:class:`contextvars.ContextVar`.  This lets handlers running on worker
-threads (PR 2's long-handler pool) write back to the right peer when
-multiple peers (future web sessions) coexist.  In the PR 1 stdio-only
-world the contextvar transparently falls back to a module-level
-``StdioTransport`` singleton.
+:class:`contextvars.ContextVar`. This lets handlers running on worker
+threads write back to the right peer when multiple peers coexist. In
+the current stdio-only setup the contextvar transparently falls back to
+a module-level ``StdioTransport`` singleton.
 
 Framing rules:
 

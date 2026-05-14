@@ -1,14 +1,14 @@
-"""Sprint 2 / PR 2.2 — provider fallback chain.
+"""Provider fallback chain.
 
 Background
 ----------
 A single upstream model provider is a single point of failure: a 429
 storm, a billing block, a regional outage, or a mis-configured API key
-turns every turn into a hard error.  Hermes-agent solves this by
+turns every turn into a hard error. This module addresses that by
 keeping an ordered list of equivalent providers and rotating to the
 next one when a recovery strategy classifies the failure as a
 "transfer this to someone else" event (``rate_limit`` / ``billing`` /
-``response_invalid`` / ``model_not_found`` per Sprint 2's classifier).
+``response_invalid`` / ``model_not_found`` per the recovery classifier).
 
 This module is the Aether equivalent.  The chain is intentionally
 boring:
@@ -72,7 +72,7 @@ Usage
             continue
         ...
 
-Sprint 2 wires the engine side of that loop in ``agent.py``; this
+The engine wires the recovery side of that loop in ``agent.py``; this
 module just exposes the primitives.
 """
 

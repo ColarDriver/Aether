@@ -1,4 +1,4 @@
-"""Built-in ``task_stop`` tool — Sprint 3.5 / PR 3.5.6.
+"""Built-in ``task_stop`` tool.
 
 Best-effort cooperative cancellation for a running subagent.  Routes
 to :meth:`SubagentManager.stop_task`, which sets a per-task

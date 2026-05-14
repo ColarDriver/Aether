@@ -1,7 +1,5 @@
 """Playwright browser lifecycle manager.
 
-Sprint 3.5 / PR-3 (PR 3.5.10).
-
 Reasons we *don't* let :class:`WebBrowserTool` own the browser
 directly:
 

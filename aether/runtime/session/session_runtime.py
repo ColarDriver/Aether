@@ -27,8 +27,8 @@ Lifecycle scopes (important — pick the right home for your state):
 - ``TurnContext.metadata`` (see ``runtime/contracts.py``)
     Lives across iterations within one turn.  Examples: per-turn retry
     counters such as ``empty_response_retries`` / ``provider_error_retries``.
-    These keys are documented in ``TURN_METADATA_KEYS`` below so that
-    Sprint 1+ work can rely on them.
+    These keys are documented in ``TURN_METADATA_KEYS`` below so other
+    engine paths can rely on them consistently.
 
 - Module-level singletons or DI services
     Lives across all sessions (e.g. ``InterruptController``,
@@ -46,20 +46,20 @@ from typing import Any, Dict, Final
 # ---------------------------------------------------------------------------
 # TurnContext.metadata key contract
 # ---------------------------------------------------------------------------
-# These string constants document the standard keys that the run-loop and
-# its helpers (Sprint 0 → Sprint 5) read/write inside ``TurnContext.metadata``.
+# These string constants document the standard keys that the run loop
+# and its helpers read and write inside ``TurnContext.metadata``.
 # Centralising them here prevents typos and makes it discoverable where each
 # piece of per-turn state lives.
 #
 # Convention: only fields whose lifetime is exactly "one turn" belong here.
 # Cross-turn fields belong on ``SessionRuntimeState`` below.
 
-# Per-turn retry counters (Sprint 0).  Reset at the top of every turn.
+# Per-turn retry counters. Reset at the top of every turn.
 TURN_KEY_EMPTY_RESPONSE_RETRIES: Final[str] = "empty_response_retries"
 TURN_KEY_PROVIDER_ERROR_RETRIES: Final[str] = "provider_error_retries"
 
-# Sprint 1 / PR 1.3 — per-turn retry counters for the truncated tool-call
-# detector.  Both reset to 0 at turn entry; they live on
+# Per-turn retry counters for the truncated tool-call detector. Both
+# reset to 0 at turn entry; they live on
 # ``TurnContext.metadata`` because their lifetime is exactly one turn and
 # concurrent sessions sharing the engine instance must not interfere.
 #
@@ -71,8 +71,8 @@ TURN_KEY_PROVIDER_ERROR_RETRIES: Final[str] = "provider_error_retries"
 #   truncated (so the model just made a JSON formatting mistake).
 TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES: Final[str] = "truncated_tool_call_retries"
 TURN_KEY_INVALID_JSON_RETRIES: Final[str] = "invalid_json_retries"
-# Sprint 1.5 / phantom-tool recovery: bumped each time the engine
-# detects the model wrote a tool intent in prose (\u0060\u0060\u0060bash …,
+# Bumped each time the engine detects the model wrote a tool intent in
+# prose (\u0060\u0060\u0060bash …,
 # ``<function=NAME>`` …, ``<invoke>`` …) but did not populate the
 # structured ``tool_calls`` field, and we sent a corrective user
 # message asking it to retry with proper tool_calls.  Bounded by
@@ -80,8 +80,8 @@ TURN_KEY_INVALID_JSON_RETRIES: Final[str] = "invalid_json_retries"
 # consistently refuses tool_calls exits with PHANTOM_TOOL_INTENT
 # instead of looping forever.
 TURN_KEY_PHANTOM_TOOL_RETRIES: Final[str] = "phantom_tool_retries"
-# Sprint 1.5 / P0-9: bumped each time the engine *successfully*
-# turns prose-style tool intent into structured ``ToolCall``s and
+# Bumped each time the engine *successfully* turns prose-style tool
+# intent into structured ``ToolCall``s and
 # dispatches them inline (see ``synthesize_tool_calls_from_phantom``
 # + the run-loop synthesis branch).  Distinct from
 # ``TURN_KEY_PHANTOM_TOOL_RETRIES`` because synthesis keeps the loop
@@ -91,7 +91,7 @@ TURN_KEY_PHANTOM_TOOL_RETRIES: Final[str] = "phantom_tool_retries"
 # warning.
 TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: Final[str] = "phantom_tool_synthesized"
 
-# Sprint 4 / PR 4.1: empty-response degradation counters and state keys.
+# Empty-response degradation counters and state keys.
 TURN_KEY_THINKING_PREFILL_RETRIES: Final[str] = "thinking_prefill_retries"
 TURN_KEY_POST_TOOL_EMPTY_RETRIED: Final[str] = "post_tool_empty_retried"
 TURN_KEY_CODEX_ACK_RETRIES: Final[str] = "codex_intermediate_ack_retries"
@@ -140,19 +140,19 @@ class SessionRuntimeState:
     # memory = per-turn, skill = per-tool-call iteration.
     skill_nudge_counter: int = 0
 
-    # Sprint 4 / PR 4.1: cross-turn housekeeping fallback snapshot.
+    # Cross-turn housekeeping fallback snapshot.
     # Written at the end of a turn by the agent and read by the next
     # turn's empty-response recovery path.
     last_assistant_text_with_tools: str = ""
     last_assistant_tools_all_housekeeping: bool = False
 
-    # Sprint 7: in-memory, session-scoped tool permission rules.
-    # Stored here rather than on ``TurnContext.metadata`` because
+    # In-memory, session-scoped tool permission rules. Stored here
+    # rather than on ``TurnContext.metadata`` because
     # "allow this path/command for this session" must survive across
     # turns but must not leak into other sessions or persist to disk.
     tool_permission_rules: list[Any] = field(default_factory=list)
 
-    # Sprint 8 / PR 8.3: task/session memory snapshots.  The concrete
+    # Task and session memory snapshots. The concrete
     # ``TaskMemorySnapshot`` type lives in ``aether.memory.task``; this field
     # stays typed as ``Any`` to keep the runtime package independent from the
     # memory provider implementation.  Keys are task ids, plus ``"__session__"``

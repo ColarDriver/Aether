@@ -464,7 +464,7 @@ function hasAutoResumeFlag(): boolean {
 }
 
 /**
- * Honour `AETHER_RESUME` env vars set by the launcher (PR 9 territory) so
+ * Honour `AETHER_RESUME` env vars set by the launcher so
  * users can land directly in a resumed session: if the value is a session id
  * we restore that session; if the flag is set with no/empty value we open the
  * SessionPicker overlay.

@@ -1,4 +1,4 @@
-"""Built-in ``notebook_edit`` tool — Sprint 3.5 / PR 3.5.4.
+"""Built-in ``notebook_edit`` tool.
 
 Structured cell-level editing for Jupyter ``.ipynb`` files.  Treating
 notebooks as opaque JSON via ``write_file`` is fragile (one stray

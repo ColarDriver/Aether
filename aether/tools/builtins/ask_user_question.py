@@ -1,4 +1,4 @@
-"""Built-in ``ask_user_question`` tool — Sprint 3.5 / PR 3.5.7.
+"""Built-in ``ask_user_question`` tool.
 
 Lets the model interrupt its turn to ask the user a structured
 question via the configured :class:`Prompter`.  Each item in the

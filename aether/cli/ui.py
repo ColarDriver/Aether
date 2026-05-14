@@ -1068,7 +1068,7 @@ class CLIUI:
         # different wording right above the footer.  Reset at
         # ``begin_turn``.
         self._phantom_hint_rendered: bool = False
-        # Sprint 1.5 / P0-9: when the engine *synthesizes* structured
+        #  / : when the engine *synthesizes* structured
         # tool_calls from prose intent, ``end_turn`` is told via the
         # ``phantom_synth_notes`` kwarg.  We surface a single dim
         # ``↻ synthesized N call(s) from prose`` line so the user
@@ -1441,7 +1441,7 @@ class CLIUI:
         # showing a stale "responding" verb in the gap.
         self._turn_state.mode = MODE_THINKING
 
-        # Phantom-tool diagnostic — Sprint 1.5 / P0-9 deferred path.
+        # Phantom-tool diagnostic —  /  deferred path.
         # We can't decide at stream-end whether the warning is needed
         # because the engine's synthesis pass runs *after* this method
         # returns: a stripped block might still get rescued into a
@@ -2127,7 +2127,7 @@ class CLIUI:
         )
         parsed_intent = self._last_trailing_command is not None
 
-        # Sprint 1.5 / P0-9: when the engine synthesized real
+        #  / : when the engine synthesized real
         # ``ToolCall``s from prose intents, render a single dim
         # acknowledgement line and *drop* any pending phantom warning
         # — the call did dispatch, the warning would be misleading.
@@ -2300,7 +2300,7 @@ class CLIUI:
     def bump_response_chars(self, delta: str) -> None:
         """Advance the live token estimator without rendering ``delta``.
 
-        Sprint 3 / PR 3.1 — pair with
+        pair with
         :attr:`EngineRequest.stream_silent_callback`.  Providers call
         this for streamed content that contributes to model output
         length but should NOT appear in the visible body — primarily

@@ -4,7 +4,7 @@ Exposes the slash-command registry from :mod:`aether.cli.commands` as
 a flat list of ``{name, description, category}`` entries.  The
 handler does NOT execute the registry's ``_cmd_*`` handlers — those
 operate on ``ReplState`` (prompt_toolkit-bound state) which has no
-meaning across a process boundary.  PR 7's TS slash dispatcher pulls
+meaning across a process boundary. The TS slash dispatcher pulls
 this catalog and decides per-command whether to handle locally or
 fan out to ``session.*`` / ``prefs.*`` / ``providers.*`` / ``agent.*``
 RPC methods.

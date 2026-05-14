@@ -1,7 +1,28 @@
 import { atom } from 'nanostores'
 
-import type { JsonObject, TranscriptMessage } from '../gatewayTypes.js'
-import type { ToolGroupRecord } from './toolGroupStore.js'
+import type {
+  JsonObject,
+  ToolResultMetadata,
+  TranscriptMessage,
+  TranscriptToolCall
+} from '../gatewayTypes.js'
+import {
+  EXPLORE_CATEGORIES,
+  categoryFor,
+  hintForCall,
+  verbForTool,
+  type ToolCategory
+} from '../lib/toolCategory.js'
+import type { ToolGroupEntry, ToolGroupRecord } from './toolGroupStore.js'
+
+export interface ToolCallSummary {
+  path: string
+  linesAdded: number
+  linesRemoved: number
+  hunks?: number
+  diff?: string
+  noOp?: boolean
+}
 
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; ts: number }
@@ -20,7 +41,10 @@ export type ChatItem =
       // ExploredTree) or stands alone (rendered as ToolCallPanel).
       coalesce: boolean
       durationMs: number | null
-      result?: { text: string; isError: boolean }
+      result?: { text: string; isError: boolean; metadata?: ToolResultMetadata }
+      // Set when the matching tool.result arrives with edit/write
+      // metadata. Drives the EditSummary chat row ("● Edited X (+N −M)").
+      summary?: ToolCallSummary
     }
   | {
       kind: 'tool-result'
@@ -211,6 +235,7 @@ export const chatActions = {
     toolName?: string
     text: string
     isError: boolean
+    metadata?: ToolResultMetadata
   }): void {
     const items = chatItems.get()
     // Attach the result to the matching tool-call item so ToolCallPanel can
@@ -236,10 +261,18 @@ export const chatActions = {
     const existing = next[matchIdx]
     if (existing?.kind === 'tool-call') {
       const durationMs = Date.now() - existing.ts
+      const summary = input.isError
+        ? undefined
+        : buildEditSummary(existing.toolName, input.metadata)
       next[matchIdx] = {
         ...existing,
         durationMs,
-        result: { text: input.text, isError: input.isError }
+        result: {
+          text: input.text,
+          isError: input.isError,
+          ...(input.metadata ? { metadata: input.metadata } : {})
+        },
+        ...(summary ? { summary } : {})
       }
       chatItems.set(next)
     }
@@ -273,28 +306,7 @@ export const chatActions = {
   },
 
   replaceTranscript(messages: TranscriptMessage[]): void {
-    const items: ChatItem[] = []
-    for (const message of messages) {
-      const text = message.text ?? ''
-      if (!text) {
-        continue
-      }
-      if (message.role === 'user') {
-        items.push({ kind: 'user', id: makeId('user'), text, ts: Date.now() })
-      } else if (message.role === 'assistant') {
-        items.push({
-          kind: 'assistant',
-          id: makeId('assistant'),
-          runId: makeId('assistant-run'),
-          text,
-          streaming: false,
-          ts: Date.now()
-        })
-      } else if (message.role === 'system') {
-        items.push({ kind: 'note', id: makeId('note'), text, level: 'info', ts: Date.now() })
-      }
-    }
-    chatItems.set(items)
+    chatItems.set(rebuildChatItemsFromTranscript(messages))
   },
 
   toggleVerbose(): boolean {
@@ -310,6 +322,274 @@ export function previewArgs(args: JsonObject): string {
     return '{}'
   }
   return raw.length > 120 ? `${raw.slice(0, 117)}...` : raw
+}
+
+/**
+ * Build a ToolCallSummary from a tool.result event's metadata, but only
+ * when the tool was an edit/write and the metadata carries a usable path.
+ * Returns undefined for shell results, lookups, and failed calls — the
+ * EditSummary chat row only renders when there is something concrete to
+ * report (file path + line counts).
+ */
+export function buildEditSummary(
+  toolName: string,
+  metadata: ToolResultMetadata | undefined
+): ToolCallSummary | undefined {
+  if (!metadata) return undefined
+  const category = categoryFor(toolName)
+  if (category !== 'edit' && category !== 'write') return undefined
+  const path = typeof metadata.path === 'string' ? metadata.path : undefined
+  if (!path) return undefined
+  const summary: ToolCallSummary = {
+    path,
+    linesAdded: numberOr(metadata.lines_added, 0),
+    linesRemoved: numberOr(metadata.lines_removed, 0)
+  }
+  if (typeof metadata.hunks === 'number') {
+    summary.hunks = metadata.hunks
+  }
+  if (typeof metadata.diff === 'string') {
+    summary.diff = metadata.diff
+  }
+  if (metadata.no_op === true) {
+    summary.noOp = true
+  }
+  return summary
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/**
+ * Replay a saved session transcript into the ChatItem list shape the
+ * renderer expects. Mirrors what `useGatewayEvents` does live for the
+ * `tool.call` / `tool.result` / `iteration.end` events:
+ *
+ *   * Assistant text becomes a non-streaming `assistant` ChatItem.
+ *   * Each entry in `assistant.tool_calls` becomes a `tool-call`
+ *     ChatItem (coalesce flag set by `categoryFor`).
+ *   * Tool results back-fill the matching `tool-call` (so the
+ *     ToolCallPanel can render call + result together) and, when the
+ *     metadata includes `path`/`lines_added`/`lines_removed`, attach a
+ *     `summary` so `EditSummary` shows `● Update(path)` in chat.
+ *   * Explore-category bursts (read/search/list and failed write/edit)
+ *     get flushed into a `tool-group` ChatItem at the next user message
+ *     or end-of-transcript — same filter live `flushActive` uses.
+ *
+ * System messages are dropped; they carry the runtime system prompt
+ * (often >1 KB of XML) and the Banner already shows session metadata.
+ */
+export function rebuildChatItemsFromTranscript(
+  messages: TranscriptMessage[]
+): ChatItem[] {
+  const items: ChatItem[] = []
+  const toolCallIndex: Map<string, number> = new Map()
+  // Held in a single-slot holder so the closures below can read/write
+  // the current pending group without tripping TS's narrowing checks
+  // around let-bound nullable closures.
+  const groupHolder: { current: PendingToolGroup | null } = { current: null }
+
+  const flushPending = (): void => {
+    const pending = groupHolder.current
+    if (!pending) return
+    const visible = pending.entries.filter(
+      (e) => !((e.category === 'write' || e.category === 'edit') && !e.isError)
+    )
+    if (visible.length > 0) {
+      const counts = emptyCategoryCounts()
+      for (const entry of visible) {
+        counts[entry.category] = (counts[entry.category] ?? 0) + 1
+      }
+      items.push({
+        kind: 'tool-group',
+        id: makeId('tool-group'),
+        ts: Date.now(),
+        group: {
+          id: pending.id,
+          iteration: pending.iteration,
+          entries: visible,
+          counts,
+          totalCalls: visible.length,
+          hasError: visible.some((e) => e.isError)
+        }
+      })
+    }
+    groupHolder.current = null
+  }
+
+  let iteration = 0
+  for (const message of messages) {
+    if (message.role === 'system') {
+      // Drop — the system prompt is internal plumbing.
+      continue
+    }
+    const text = message.text ?? ''
+
+    if (message.role === 'user') {
+      flushPending()
+      if (text) {
+        items.push({
+          kind: 'user',
+          id: makeId('user'),
+          text,
+          ts: Date.now()
+        })
+      }
+      iteration += 1
+      continue
+    }
+
+    if (message.role === 'assistant') {
+      // Assistant text always flushes the prior explore burst so the
+      // tree lands above the new narrative text (live wiring does the
+      // same on iteration.end / done).
+      if (text) {
+        flushPending()
+        items.push({
+          kind: 'assistant',
+          id: makeId('assistant'),
+          runId: makeId('assistant-run'),
+          text,
+          streaming: false,
+          ts: Date.now()
+        })
+      }
+      const toolCalls = message.tool_calls ?? []
+      for (const call of toolCalls) {
+        pushReplayedToolCall({
+          call,
+          iteration,
+          items,
+          toolCallIndex,
+          ensureGroup: () => {
+            if (!groupHolder.current) {
+              groupHolder.current = {
+                id: `tg_replay_${items.length}`,
+                iteration,
+                entries: []
+              }
+            }
+            return groupHolder.current
+          }
+        })
+      }
+      continue
+    }
+
+    if (message.role === 'tool') {
+      const toolCallId = message.tool_call_id ?? ''
+      const matchIdx = toolCallId ? toolCallIndex.get(toolCallId) ?? -1 : -1
+      const metadata = (message.metadata ?? undefined) as
+        | ToolResultMetadata
+        | undefined
+      const isError = Boolean(message.is_error)
+      if (matchIdx >= 0) {
+        const existing = items[matchIdx]
+        if (existing?.kind === 'tool-call') {
+          const summary = isError
+            ? undefined
+            : buildEditSummary(existing.toolName, metadata)
+          items[matchIdx] = {
+            ...existing,
+            durationMs: 0,
+            result: {
+              text,
+              isError,
+              ...(metadata ? { metadata } : {})
+            },
+            ...(summary ? { summary } : {})
+          }
+          // Propagate error flag to the matching group entry so a
+          // failed read/search still shows `(failed)` in Explored.
+          const groupSnapshot = groupHolder.current
+          if (groupSnapshot) {
+            for (const entry of groupSnapshot.entries) {
+              if (entry.toolCallId === toolCallId) {
+                entry.isError = entry.isError || isError
+                break
+              }
+            }
+          }
+        }
+      } else if (text || isError) {
+        // Orphan result (no matching tool-call seen) — emit a thin
+        // standalone tool-result so the user is not missing data.
+        items.push({
+          kind: 'tool-result',
+          id: makeId('tool-result'),
+          toolCallId,
+          text,
+          isError,
+          ts: Date.now()
+        })
+      }
+      continue
+    }
+  }
+
+  flushPending()
+  return items
+}
+
+interface PendingToolGroup {
+  id: string
+  iteration: number
+  entries: ToolGroupEntry[]
+}
+
+interface PushReplayedToolCallInput {
+  call: TranscriptToolCall
+  iteration: number
+  items: ChatItem[]
+  toolCallIndex: Map<string, number>
+  ensureGroup: () => PendingToolGroup
+}
+
+function pushReplayedToolCall(input: PushReplayedToolCallInput): void {
+  const category = categoryFor(input.call.name)
+  const isExplore = EXPLORE_CATEGORIES.has(category)
+  const args = (input.call.arguments ?? {}) as JsonObject
+  const item: ChatItem = {
+    kind: 'tool-call',
+    id: makeId('tool-call'),
+    toolCallId: input.call.id,
+    toolName: input.call.name,
+    args,
+    argsPreview: previewArgs(args),
+    ts: Date.now(),
+    iteration: input.iteration,
+    coalesce: isExplore,
+    durationMs: null
+  }
+  input.items.push(item)
+  input.toolCallIndex.set(input.call.id, input.items.length - 1)
+  if (isExplore) {
+    const group = input.ensureGroup()
+    group.entries.push({
+      toolCallId: input.call.id,
+      toolName: input.call.name,
+      category,
+      verb: verbForTool(input.call.name),
+      detail: hintForCall(input.call.name, args),
+      isError: false
+    })
+  }
+}
+
+function emptyCategoryCounts(): Record<ToolCategory, number> {
+  return {
+    search: 0,
+    read: 0,
+    list: 0,
+    write: 0,
+    edit: 0,
+    bash: 0,
+    web: 0,
+    subagent: 0,
+    mcp: 0,
+    other: 0
+  }
 }
 
 function makeId(prefix: string): string {

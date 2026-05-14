@@ -75,6 +75,34 @@ export interface ToolCall extends AgentEventBase {
   iteration: number
 }
 
+export interface ToolResultMetadata {
+  // file tools (write_file / file_edit)
+  path?: string
+  bytes_before?: number
+  bytes_after?: number
+  size_bytes?: number
+  lines_added?: number
+  lines_removed?: number
+  hunks?: number
+  diff?: string
+  change_count?: number
+  replace_all?: boolean
+  existed?: boolean
+  sha256?: string
+  no_op?: boolean
+  // shell tool
+  exit_code?: number
+  duration_ms?: number
+  cwd?: string | null
+  command?: string
+  truncated?: boolean
+  timed_out?: boolean
+  interrupted?: boolean
+  stderr_lines?: number
+  // free-form fallback so unknown tools can still ship structured data
+  [key: string]: unknown
+}
+
 export interface ToolResult extends AgentEventBase {
   type: 'tool.result'
   tool_call_id: string
@@ -82,6 +110,7 @@ export interface ToolResult extends AgentEventBase {
   content: string
   is_error?: boolean
   iteration: number
+  metadata?: ToolResultMetadata
 }
 
 export interface IterationStart extends AgentEventBase {
@@ -232,11 +261,19 @@ export interface SessionInfo {
   summary?: string | null
 }
 
+export interface TranscriptToolCall {
+  id: string
+  name: string
+  arguments: JsonObject
+}
+
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   text?: string | null
   name?: string | null
   tool_call_id?: string | null
+  tool_calls?: TranscriptToolCall[]
+  is_error?: boolean
   metadata?: JsonObject | null
 }
 

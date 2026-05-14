@@ -7,9 +7,8 @@ broad ``except Exception:`` clauses scattered throughout providers and
 middleware do not accidentally swallow the signal — the same idiom
 Python uses for :class:`KeyboardInterrupt` and :class:`SystemExit`.
 
-Sprint 6 / PR 6.2 introduced this module for :class:`EngineInterrupted`,
-which crosses the stream-callback / provider / run-loop boundary the
-instant a user requests cancellation.
+:class:`EngineInterrupted` crosses the stream-callback / provider /
+run-loop boundary the instant a user requests cancellation.
 """
 
 from __future__ import annotations
@@ -35,9 +34,10 @@ class EngineInterrupted(BaseException):
       to the moment the flag was observed.  Empty string is fine when
       the flag flipped before the first delta.
     * ``was_in_tool_call`` — ``True`` when the interrupt arrived while
-      a tool was executing rather than during the LLM stream.  PR 6.4
-      uses this to pick between the ``[Request interrupted by user]``
-      / ``[Request interrupted by user for tool use]`` markers.
+      a tool was executing rather than during the LLM stream. The run
+      loop uses this to pick between the ``[Request interrupted by
+      user]`` and ``[Request interrupted by user for tool use]``
+      markers.
     """
 
     __slots__ = ("reason", "partial_text", "was_in_tool_call")

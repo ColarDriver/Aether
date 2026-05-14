@@ -14,9 +14,7 @@ This module owns the detection heuristics and produces a corrective
 ``role=user`` message that the run-loop appends to ``messages`` before
 issuing the next LLM call.  The message tells the model exactly what
 it wrote, why it didn't run, and asks it to retry with proper
-``tool_calls``.  Hermes ships an analogous "self-correct on bad JSON"
-nudge as part of its tool-error injection layer; see P0-4 for the
-parallel pattern in the engine.
+``tool_calls``.
 
 Design notes
 ------------
@@ -229,7 +227,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
             # Most observed bodies are JSON objects (the model is
             # mimicking the OpenAI tool-call shape).  Fall back to
             # treating the whole body as a single ``command`` string
-            # for the legacy "model just dumped the command" form.
+            # for the plain "model just dumped the command" form.
             try:
                 parsed = json.loads(body)
             except Exception:  # noqa: BLE001
@@ -357,9 +355,9 @@ def build_corrective_user_message(
     intent so the model sees exactly what it wrote and can lift the
     same arguments straight into a structured ``tool_calls`` block on
     the next turn.  Truncates the digest to keep the corrective
-    message under a couple of hundred tokens — Hermes-style nudges
-    that ballooned past that point started crowding out the actual
-    user request from the context window.
+    message under a couple of hundred tokens so the corrective text
+    does not crowd out the actual user request from the context
+    window.
     """
     parts: list[str] = []
     parts.append(f"[Aether note · attempt {attempt_index}]")

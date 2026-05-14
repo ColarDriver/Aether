@@ -42,9 +42,8 @@ by collecting every deletion target into a single
 OpenAI-style messages (``role='tool'`` + ``tool_calls``) are
 recognised in a *limited* way: Rule 1 / 2 inspect them as
 information sources but the deletion path is currently
-Anthropic-shape only.  This matches Sprint 3's de-facto
-canonical message shape inside the engine; OpenAI-shape Tier 2
-support is a planned follow-up.
+Anthropic-shape only. This matches the engine's current canonical
+message shape; OpenAI-shape Tier 2 support is a planned follow-up.
 """
 
 from __future__ import annotations

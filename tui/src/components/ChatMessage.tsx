@@ -7,6 +7,7 @@ import { theme } from '../lib/theme.js'
 import { isTurnFooterText } from '../lib/turnFooter.js'
 import type { ChatItem } from '../store/chatStore.js'
 
+import { EditSummary } from './EditSummary.js'
 import { ExploredTree } from './ExploredTree.js'
 import { ToolCallPanel } from './ToolCallPanel.js'
 
@@ -69,6 +70,22 @@ export function ChatMessage({ item, expanded, focused }: ChatMessageProps): Reac
     // transcript so we do not double-render. Standalone calls (bash/web/etc.)
     // render as a per-call ToolCallPanel.
     if (item.coalesce) {
+      // Successful file_edit / write_file calls always surface a
+      // persistent "● Edited X (+N −M)" row instead of being silently
+      // absorbed into the Explored tree. The ExploredTree filter (see
+      // toolGroupStore) drops those entries on its side so we do not
+      // double-render. Failed edits keep the old behavior — they appear
+      // inside Explored with a `(failed)` tag.
+      if (item.summary) {
+        return (
+          <EditSummary
+            summary={item.summary}
+            toolName={item.toolName}
+            expanded={expanded}
+            focused={focused}
+          />
+        )
+      }
       return <></>
     }
     return <ToolCallPanel item={item} expanded={expanded} focused={focused} />

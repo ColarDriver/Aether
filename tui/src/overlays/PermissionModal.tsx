@@ -1,7 +1,9 @@
 import { Box, Text, useInput } from 'ink'
 import { useMemo, useState, type ReactElement } from 'react'
 
+import { ShellCommandPreview } from '../components/ShellCommandPreview.js'
 import { DiffView } from '../lib/diffView.js'
+import { reportPermissionPreviewFallback } from '../lib/permissionTelemetry.js'
 import type {
   JsonObject,
   PermissionPreview,
@@ -215,26 +217,23 @@ function PreviewBody({
   preview: PermissionPreview | null
   request: PermissionToolRequest
 }): ReactElement | null {
-  if (preview?.diff) {
+  // Falsy-string-aware guard: a tool may set `diff` / `command` / `body`
+  // to "" when the relevant data was structurally empty (e.g., overwriting
+  // a file with identical content). Treat whitespace-only values the same
+  // as null so we do not render an empty Diff/Shell block AND we do not
+  // fall through to the raw-JSON escape hatch when the tool actually had
+  // something to say via a sibling field.
+  if (preview?.diff && preview.diff.trim().length > 0) {
     return (
       <Box marginTop={1} flexDirection="column">
         <DiffView diff={preview.diff} expanded={false} />
       </Box>
     )
   }
-  if (preview?.command) {
-    return (
-      <Box marginTop={1} flexDirection="column">
-        {preview.command.split('\n').map((line, idx) => (
-          <Text key={idx}>
-            <Text bold {...theme.colorProps('accent')}>{idx === 0 ? '$ ' : '  '}</Text>
-            <Text {...theme.colorProps('text')}>{line || ' '}</Text>
-          </Text>
-        ))}
-      </Box>
-    )
+  if (preview?.command && preview.command.trim().length > 0) {
+    return <ShellCommandPreview command={preview.command} />
   }
-  if (preview?.body) {
+  if (preview?.body && preview.body.trim().length > 0) {
     return (
       <Box marginTop={1} flexDirection="column">
         {preview.body.split('\n').slice(0, 8).map((line, idx) => (
@@ -244,7 +243,18 @@ function PreviewBody({
     )
   }
   // Fall back: dump arguments preview so the user is never asked to approve a
-  // black-box request.
+  // black-box request. Tools should populate at least one of
+  // diff/command/body; fire a one-shot telemetry
+  // signal so a regression here is observable.
+  reportPermissionPreviewFallback({
+    toolName: request.tool_name,
+    hasPreview: preview !== null,
+    previewKeys: preview
+      ? (Object.keys(preview) as Array<keyof PermissionPreview>).filter(
+          (k) => preview[k] != null && preview[k] !== ''
+        )
+      : []
+  })
   const args = JSON.stringify(request.arguments ?? {}, null, 2)
   return (
     <Box marginTop={1}>

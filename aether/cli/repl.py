@@ -111,7 +111,7 @@ def run_repl(
     console = Console(theme=THEME, force_terminal=True if color_enabled() else None)
     ui = CLIUI(console, verbose=verbose)
     # Interactive REPL owns the bottom-region permission overlay, so it
-    # opts into Sprint 7's engine-level dangerous-tool gate explicitly.
+    # opts into 's engine-level dangerous-tool gate explicitly.
     # SDK / test callers keep backwards-compatible EngineConfig defaults
     # unless they opt in themselves.
     engine.config.tool_permissions_enabled = True
@@ -237,11 +237,8 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
     while we sit inside ``engine.run_loop``.
     """
     ui = state.ui
-    # Sprint 3.5 / PR-2 — interactive prompter forwarded to
-    # ``ExitPlanModeTool`` and ``AskUserQuestionTool``.  Built lazily
-    # per turn so each turn sees the live stdin/stdout (REPL stdio
-    # never changes mid-process today, but constructing on demand keeps
-    # the engine free to swap streams in tests).
+    # Build the interactive prompter lazily so each turn sees the
+    # current stdin/stdout streams.
     from aether.cli.approval_prompter import ApprovalPrompter
 
     request = EngineRequest(
@@ -251,9 +248,9 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
         system_message=state.system_prompt,
         model_config=state.model_config,
         stream_callback=ui.make_stream_callback(),
-        # Sprint 3 / PR 3.1: separate count-only channel so providers
-        # can tick the live token estimator during long tool-call
-        # generation phases without polluting the visible body.
+        # Separate count-only channel so providers can update the live
+        # token estimator during long tool-call generation without
+        # polluting the visible body.
         stream_silent_callback=ui.make_stream_silent_callback(),
         approval_prompter=ApprovalPrompter(),
         tool_permission_prompter=state.tool_permission_prompter,
@@ -282,7 +279,7 @@ def _run_turn_blocking(state: ReplState, user_input: str) -> None:
         exit_reason_value = result.exit_reason.value
         iterations = result.iterations
         result_messages = list(result.messages)
-        # Sprint 1.5 / P0-9: surface engine-side synthesis to the UI.
+        #  / : surface engine-side synthesis to the UI.
         # ``runtime.phantom_tool_synthesized`` counts how many prose
         # intents were rescued into structured ``tool_calls``;
         # ``turn.phantom_synth_notes`` carries the per-call

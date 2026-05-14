@@ -1,4 +1,4 @@
-"""Built-in ``skill`` tool — Sprint 3.5 / PR 3.5.8.
+"""Built-in ``skill`` tool.
 
 Loads a SKILL.md file from the configured catalog and returns its
 body to the model so the calling turn can follow the playbook

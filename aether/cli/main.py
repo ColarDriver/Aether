@@ -86,7 +86,7 @@ def _default_history_file() -> Path:
 # Without this block the model has no idea where the harness is running.
 # When the user asks "查看当前文件夹" / "what's in this directory?" the
 # model can only guess or apologise, since it doesn't know its CWD,
-# whether it's in a git repo, the platform, or today's date.
+# whether it's in a git repo, the platform, or the current date.
 #
 # We prepend a small ``<environment>...</environment>`` block to whatever
 # system prompt the user supplied (or stand alone if none was given) so
@@ -95,8 +95,8 @@ def _default_history_file() -> Path:
 def _build_environment_context() -> str:
     """Return a small block describing where + when the harness is running.
 
-    Mirrors Claude Code's "Environment" system-prompt section: working
-    directory, platform, shell, git status, today's date.  Kept short so
+    Environment system-prompt section: working directory, platform,
+    shell, git status, current date. Kept short so
     it doesn't dominate the system prompt or burn the prefix cache.
     """
     import platform as _platform
@@ -235,7 +235,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     # Always prepend the environment block so the model knows its
-    # working directory, platform, git state, and today's date — even
+    # working directory, platform, git state, and current date — even
     # when the user didn't supply a system prompt.  Without this the
     # model has to guess (or apologise) when asked about the workspace.
     system_prompt = _augment_system_prompt(system_prompt)

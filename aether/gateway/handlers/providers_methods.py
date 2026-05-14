@@ -169,7 +169,7 @@ def _live_list_models(
 
     # Non-OpenAI providers don't have a generic discovery endpoint we can
     # probe (Claude / Codex catalogs are static client-side). Fall back to
-    # the legacy `provider.list_models()` path so future provider additions
+    # the `provider.list_models()` path so future provider additions
     # can opt into discovery just by overriding that method.
     try:
         provider = build_provider(

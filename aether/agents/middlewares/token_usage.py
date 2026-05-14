@@ -1,6 +1,6 @@
 """Middleware for logging token usage from normalized provider responses.
 
-Sprint 3 / PR 3.1: this middleware shares the canonical normalisation
+this middleware shares the canonical normalisation
 path with the engine's per-turn accumulator (see
 ``aether.runtime.observability.usage.normalize_usage``) so log output stays consistent
 with what ends up in ``EngineResult.metadata['usage']``.
@@ -61,10 +61,11 @@ class TokenUsageMiddleware(RuntimeMiddlewareBase):
         """Pull a raw usage dict out of a NormalizedResponse.metadata.
 
         Provider-side normalisation already puts the canonical raw dict
-        under ``metadata["usage"]``, but legacy paths (LangChain-shaped
-        callbacks, scripted test fixtures) sometimes use ``token_usage``
-        or ``llm_output.token_usage`` instead — we keep those probes so
-        ad-hoc test responses still surface in the log.
+        under ``metadata["usage"]``, but alternate metadata shapes
+        (LangChain-shaped callbacks, scripted test fixtures) sometimes
+        use ``token_usage`` or ``llm_output.token_usage`` instead. We
+        keep those probes so ad-hoc test responses still surface in the
+        log.
         """
         if not isinstance(metadata, dict):
             return None

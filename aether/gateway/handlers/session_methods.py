@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import json
+
 from aether.cli.sessions import (
     SessionRecord,
     delete_session,
@@ -20,7 +22,11 @@ from aether.cli.sessions import (
     save_session,
 )
 from aether.gateway.dispatcher import method
-from aether.gateway.handlers.schemas import SessionInfo, TranscriptMessage
+from aether.gateway.handlers.schemas import (
+    SessionInfo,
+    TranscriptMessage,
+    TranscriptToolCall,
+)
 from aether.gateway.handlers.state import (
     get_current_session,
     set_current_session,
@@ -83,13 +89,63 @@ def _to_transcript(msg: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else None
+    tool_calls = _extract_tool_calls(msg) if role == "assistant" else []
+    is_error = bool(msg.get("is_error")) if role == "tool" else False
     return TranscriptMessage(
         role=role,
         text=text,
         name=name,
         tool_call_id=tool_call_id,
+        tool_calls=tool_calls,
+        is_error=is_error,
         metadata=metadata,
-    ).model_dump(mode="json", exclude_none=True)
+    ).model_dump(mode="json", exclude_none=False)
+
+
+def _extract_tool_calls(msg: dict[str, Any]) -> list[TranscriptToolCall]:
+    """Normalise the on-disk OpenAI ``tool_calls`` shape into the wire model.
+
+    Stored shape is ``[{"id", "type": "function", "function": {"name",
+    "arguments"}}, ...]`` with ``arguments`` either an already-parsed
+    dict or the raw JSON string returned by the provider. We forward
+    the parsed dict and silently drop entries the provider sent that
+    no longer match the expected envelope — anything we cannot parse
+    would not be replayable in the TUI anyway.
+    """
+
+    raw = msg.get("tool_calls")
+    if not isinstance(raw, list):
+        return []
+    out: list[TranscriptToolCall] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        arguments_raw = function.get("arguments")
+        if isinstance(arguments_raw, dict):
+            arguments = arguments_raw
+        elif isinstance(arguments_raw, str):
+            try:
+                parsed = json.loads(arguments_raw) if arguments_raw else {}
+            except json.JSONDecodeError:
+                # Provider sent malformed JSON — keep the raw string
+                # around under ``__raw__`` so the TUI can still show
+                # *something* in the args preview without crashing.
+                arguments = {"__raw__": arguments_raw}
+            else:
+                arguments = parsed if isinstance(parsed, dict) else {"__raw__": arguments_raw}
+        else:
+            arguments = {}
+        out.append(TranscriptToolCall(id=call_id, name=name, arguments=arguments))
+    return out
 
 
 def _require_str(params: dict[str, Any] | None, key: str, *, where: str) -> str:

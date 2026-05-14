@@ -9,7 +9,7 @@ from aether.runtime.control.interrupt_signal import InterruptSignal
 
 
 class InterruptController:
-    """Session-scoped interrupt signals with legacy flag-style API."""
+    """Session-scoped interrupt signals with a simple flag-style API."""
 
     def __init__(self) -> None:
         self._lock = RLock()

@@ -45,7 +45,7 @@ OAUTH_BILLING_HEADER = os.environ.get("ANTHROPIC_BILLING_HEADER", _DEFAULT_BILLI
 class ClaudeChatModel(ModelProvider):
     """ModelProvider backed by the Anthropic Messages API."""
 
-    # Sprint 3 / PR 3.1: routes ``normalize_usage`` to the Anthropic
+    # Routes ``normalize_usage`` to the Anthropic
     # parser so cache_read_input_tokens / cache_creation_input_tokens
     # are split correctly for billing math.
     provider_name: str = "anthropic"
@@ -88,8 +88,8 @@ class ClaudeChatModel(ModelProvider):
         # Anthropic's high-level ``messages.stream`` only exposes a
         # ``text_stream`` (text + thinking deltas already covered by
         # the visible ``stream_callback``); ``input_json_delta``
-        # forwarding to a silent counter is a follow-up that needs
-        # the lower-level event stream and is out of scope for PR 3.1.
+        # forwarding to a silent counter needs the lower-level event
+        # stream and is left for a later implementation.
         stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         payload = self._build_request_payload(messages, tools=tools, config=config, context=context)
@@ -99,8 +99,8 @@ class ClaudeChatModel(ModelProvider):
         attempt = 1
         while attempt <= self.retry_max_attempts:
             try:
-                # Sprint 3 / PR 3.1: route through the streaming API
-                # whenever the caller supplied a ``stream_callback``.
+                # Route through the streaming API whenever the caller
+                # supplied a ``stream_callback``.
                 # Anthropic returns a single blob from ``messages.create``
                 # and only signals usage at the end of the call — without
                 # streaming, the CLI's ``↓ N tokens`` counter stays at 0
@@ -560,7 +560,7 @@ class ClaudeChatModel(ModelProvider):
           returns — fed into :meth:`_parse_response` as before.
         * ``streamed`` is ``True`` when at least one text/thinking
           chunk was forwarded to ``stream_callback``; the caller uses
-          this to decide whether to emit the legacy "full content"
+          this to decide whether to emit the final full-content
           fallback (which would otherwise double-count).
 
         The Anthropic Python SDK exposes a high-level ``text_stream``

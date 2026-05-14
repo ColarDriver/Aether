@@ -85,8 +85,8 @@ def strip_memory_context_text(text: str) -> str:
 def strip_memory_context_from_messages(messages: list[dict[str, Any]]) -> bool:
     """Mutate ``messages`` in place to remove ``<memory_context>`` blocks.
 
-    Used by the engine's recovery compaction path so the summariser
-    never sees retrieved memory (PR 8.2 boundary).  Handles both plain
+    Used by the engine's recovery compaction path so the summarizer
+    never sees retrieved memory. Handles both plain
     ``str`` contents and structured multimodal lists.  Returns ``True``
     if any block was stripped — useful for the caller to decide
     whether to refresh metadata.

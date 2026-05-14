@@ -1,4 +1,4 @@
-"""Built-in ``web_search`` tool — Sprint 3.5 / PR 3.5.5.
+"""Built-in ``web_search`` tool.
 
 Calls the Brave Search REST API and returns top-N results formatted
 as markdown.  Brave Search is selected for v1 because:

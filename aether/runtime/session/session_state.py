@@ -1,8 +1,8 @@
 """Per-session lightweight state shared across tools within one process.
 
-Sprint 3.5 / PR 3.5.7 introduces this module to back the *session mode*
-state used by ``EnterPlanModeTool`` / ``ExitPlanModeTool`` and the
-plan-mode write-tool gate in :mod:`aether.tools.registry`.
+Backs the session-mode state used by ``EnterPlanModeTool`` /
+``ExitPlanModeTool`` and the plan-mode write-tool gate in
+:mod:`aether.tools.registry`.
 
 Why a module-level ``dict`` (and not ``TurnContext.metadata``)?
 

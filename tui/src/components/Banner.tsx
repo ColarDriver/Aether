@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { Box, Text } from 'ink'
 import stringWidth from 'string-width'
 import { useStore } from '@nanostores/react'
@@ -7,10 +8,15 @@ import { probeEnvironment } from '../lib/environment.js'
 import { theme } from '../lib/theme.js'
 import { sessionState } from '../store/sessionStore.js'
 
-const TUI_VERSION = '0.1.0'
+const require = createRequire(import.meta.url)
+const { version: PACKAGE_VERSION = '1.0.0' } = require('../../package.json') as {
+  version?: string
+}
+const APP_VERSION = process.env.AETHER_VERSION?.trim() || PACKAGE_VERSION
 const BANNER_MAX_WIDTH = 72
 const BANNER_MIN_WIDTH = 48
 const LABEL_WIDTH = 11
+const ICON_WIDTH = 2
 
 function terminalWidth(): number {
   const cols = process.stdout?.columns
@@ -50,9 +56,6 @@ export function Banner(): ReactElement | null {
 
   const width = bannerWidth()
   const border = theme.isColorEnabled() ? primaryDim : undefined
-  const baseUrl = session.baseUrl
-    ? truncate(session.baseUrl, Math.max(16, width - 34))
-    : null
   const sessionDetails = buildSessionDetails(session).slice(0, 4)
   const toolDetails = session.bannerTools.filter(Boolean).slice(0, 4)
   const skillDetails = session.bannerSkills.filter(Boolean).slice(0, 4)
@@ -60,11 +63,6 @@ export function Banner(): ReactElement | null {
   return (
     <Box flexDirection="column">
       <TopBorder width={width} />
-      <FrameLine width={width}>
-        <Text {...dim} italic>
-          industrial agent harness  v{TUI_VERSION}
-        </Text>
-      </FrameLine>
       <FrameLine width={width}>
         <Text> </Text>
       </FrameLine>
@@ -87,7 +85,6 @@ export function Banner(): ReactElement | null {
         value={
           <Text>
             <Text bold>{session.model || 'resolving…'}</Text>
-            {baseUrl ? <Text {...dim}>{'  ' + baseUrl}</Text> : null}
           </Text>
         }
       />
@@ -174,15 +171,16 @@ export function Banner(): ReactElement | null {
 
 function TopBorder({ width }: { width: number }): ReactElement {
   const border = theme.isColorEnabled() ? theme.palette.primaryDim : undefined
-  const title = `${theme.icon('logo')} Aether`
+  const title = `${theme.icon('logo')} Aether v${APP_VERSION}`
   const filler = '─'.repeat(Math.max(0, width - stringWidth(title) - 5))
 
   return (
     <Box>
       <Text {...(border ? { color: border } : {})}>╭─ </Text>
       <Text bold {...theme.colorProps('brand')}>
-        {title}
+        {theme.icon('logo')} Aether
       </Text>
+      <Text {...theme.colorProps('dim')}>{` v${APP_VERSION}`}</Text>
       <Text {...(border ? { color: border } : {})}>{' ' + filler + '╮'}</Text>
     </Box>
   )
@@ -244,9 +242,12 @@ function InfoRow({
     <FrameLine width={width} paddingLeft={2 + level * 2}>
       <Box>
         <Box width={LABEL_WIDTH} flexShrink={0}>
-          <Text {...dim}>
-            <Text {...brand}>{icon}</Text> {label}
-          </Text>
+          <Box flexDirection="row">
+            <Box width={ICON_WIDTH} flexShrink={0}>
+              <Text {...brand}>{icon}</Text>
+            </Box>
+            <Text {...dim}>{label}</Text>
+          </Box>
         </Box>
         <Box flexGrow={1}>{value}</Box>
       </Box>

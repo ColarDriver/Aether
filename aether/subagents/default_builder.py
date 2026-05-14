@@ -33,6 +33,8 @@ class DefaultSubagentBuilder(SubagentBuilder):
             enable_todo_hydration=parent.config.enable_todo_hydration,
             memory_nudge_interval=parent.config.memory_nudge_interval,
             skill_nudge_interval=parent.config.skill_nudge_interval,
+            skill_listing_enabled=parent.config.skill_listing_enabled,
+            skill_listing_token_budget=parent.config.skill_listing_token_budget,
             memory_enabled=parent.config.memory_enabled,
             memory_mode=parent.config.memory_mode,
             memory_token_budget_pct=parent.config.memory_token_budget_pct,
@@ -60,6 +62,7 @@ class DefaultSubagentBuilder(SubagentBuilder):
             session_store=parent._session_store,
             hooks=parent._hooks,
             memory_provider=parent.services.memory_provider,
+            skill_catalog=parent._skill_catalog,
         )
         parent_signal = None
         if getattr(task.request, "interrupt_signal", None) is not None:

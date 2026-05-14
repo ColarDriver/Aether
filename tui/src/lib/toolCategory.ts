@@ -244,6 +244,14 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
     return ''
   }
   const category = categoryFor(name)
+  const path =
+    strOrNull(args['path']) ??
+    strOrNull(args['file_path']) ??
+    strOrNull(args['filename']) ??
+    strOrNull(args['filepath']) ??
+    strOrNull(args['relative_workspace_path']) ??
+    strOrNull(args['target_file']) ??
+    strOrNull(args['directory'])
 
   if (category === 'bash') {
     const cmd = strOrNull(args['command']) ?? strOrNull(args['cmd']) ?? strOrNull(args['script'])
@@ -257,18 +265,15 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
       strOrNull(args['pattern']) ??
       strOrNull(args['query']) ??
       strOrNull(args['search_term'])
-    const path =
-      strOrNull(args['path']) ??
-      strOrNull(args['directory']) ??
-      strOrNull(args['file'])
-    if (pattern && path) {
-      return `"${truncate(pattern, 40)}" in ${truncate(path, 40)}`
+    const searchPath = path ?? strOrNull(args['file'])
+    if (pattern && searchPath) {
+      return `"${truncate(pattern, 40)}" in ${truncate(searchPath, 40)}`
     }
     if (pattern) {
       return `"${truncate(pattern)}"`
     }
-    if (path) {
-      return truncate(path)
+    if (searchPath) {
+      return truncate(searchPath)
     }
   }
 
@@ -289,22 +294,19 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
     }
   }
 
-  for (const key of [
-    'path',
-    'file_path',
-    'filename',
-    'filepath',
-    'relative_workspace_path',
-    'target_file',
-    'directory',
-    'url',
-    'name',
-    'command',
-    'cmd',
-    'script',
-    'pattern',
-    'query'
-  ]) {
+  if (category === 'read' && path) {
+    const range = formatReadRange(args)
+    if (range) {
+      return truncate(`${path} · ${range}`)
+    }
+    return truncate(path)
+  }
+
+  if (path) {
+    return truncate(path)
+  }
+
+  for (const key of ['command', 'cmd', 'script', 'pattern', 'query']) {
     const value = strOrNull(args[key])
     if (value) {
       return truncate(value)
@@ -326,4 +328,37 @@ function strOrNull(value: unknown): string | null {
   }
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function intOrNull(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  if (!/^-?\d+$/.test(trimmed)) {
+    return null
+  }
+  return Number.parseInt(trimmed, 10)
+}
+
+function formatReadRange(args: JsonObject): string | null {
+  const offset = intOrNull(args['offset'])
+  const limit = intOrNull(args['limit'])
+  if (offset === null && limit === null) {
+    return null
+  }
+  if (offset !== null && offset < 0) {
+    if (limit !== null && limit > 0) {
+      return `${limit} lines from ${offset}`
+    }
+    return `from ${offset}`
+  }
+  const start = offset ?? 1
+  if (limit !== null && limit > 0) {
+    return `lines ${start}-${start + limit - 1}`
+  }
+  return `from line ${start}`
 }

@@ -23,11 +23,10 @@ skill loader.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.tools.skill_catalog import SkillCatalog
+from aether.runtime.tools.skill_catalog import SkillCatalog, build_default_skill_catalog
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
 
 
@@ -150,18 +149,7 @@ class SkillTool(ToolExecutor):
         # to the project-root ``skills/`` directory.  Cache on ``self``
         # so repeated invocations within the same engine reuse the
         # catalog without re-walking the filesystem.
-        search_paths: list[Path] = []
-        configured = tuple(getattr(config, "skill_search_paths", ()) or ())
-        if configured:
-            search_paths.extend(Path(p) for p in configured)
-        else:
-            cwd = Path.cwd()
-            for candidate in (cwd / "skills", Path.home() / ".aether" / "skills"):
-                search_paths.append(candidate)
-        if not search_paths:
-            return None
-        catalog = SkillCatalog(search_paths=search_paths)
-        catalog.discover()
+        catalog = build_default_skill_catalog(config)
         self._catalog = catalog
         return catalog
 

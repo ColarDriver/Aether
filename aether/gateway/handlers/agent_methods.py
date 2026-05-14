@@ -62,6 +62,7 @@ from aether.runtime.core.contracts import (
     TurnContext,
 )
 from aether.runtime.core.hooks import EngineHooks
+from aether.runtime.tools.skill_catalog import build_default_skill_catalog
 from aether.tools.registry import ToolRegistry
 
 
@@ -299,12 +300,14 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
         tool_registry = _build_tool_registry()
         approval_prompter = GatewayPrompter(session_id=session_id, run_id=run_id)
         permission_prompter = GatewayToolPermissionPrompter(run_id=run_id)
+        skill_catalog = build_default_skill_catalog(config)
         engine = AgentEngine(
             provider,
             tool_registry=tool_registry,
             middleware_pipeline=MiddlewarePipeline([_GatewayEventMiddleware(sink)]),
             config=config,
             hooks=_GatewayEventHooks(sink),
+            skill_catalog=skill_catalog,
         )
         request = EngineRequest(
             session_id=session_id,
@@ -452,6 +455,7 @@ def _build_engine_config(max_iterations: Any) -> EngineConfig:
     if isinstance(max_iterations, int):
         config.max_iterations = max_iterations
     config.tool_permissions_enabled = True
+    config.skill_listing_enabled = True
     return config
 
 

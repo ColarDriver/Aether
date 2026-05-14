@@ -58,6 +58,18 @@ describe('hintForCall', () => {
     expect(hintForCall('write_file', { filename: 'bar.json' })).toBe('bar.json')
   })
 
+  it('shows read_file line ranges when offset or limit is present', () => {
+    expect(hintForCall('read_file', { path: 'agent.py', offset: 1398, limit: 30 })).toBe(
+      'agent.py · lines 1398-1427'
+    )
+    expect(hintForCall('read_file', { path: 'agent.py', offset: 1855 })).toBe(
+      'agent.py · from line 1855'
+    )
+    expect(hintForCall('read_file', { path: 'agent.py', limit: 20 })).toBe(
+      'agent.py · lines 1-20'
+    )
+  })
+
   it('returns the URL for web fetches', () => {
     expect(hintForCall('WebFetch', { url: 'https://example.com' })).toBe('https://example.com')
   })

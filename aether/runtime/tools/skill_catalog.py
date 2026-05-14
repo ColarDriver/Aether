@@ -29,12 +29,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
 
-__all__ = ["Skill", "SkillCatalog"]
+__all__ = ["Skill", "SkillCatalog", "build_default_skill_catalog"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -48,6 +48,22 @@ class Skill:
     body: str = ""
     source: str = "local"
     version: Optional[str] = None
+
+
+def build_default_skill_catalog(config: Any | None = None) -> SkillCatalog:
+    """Build a catalog from configured search paths or sensible defaults."""
+    search_paths: list[Path] = []
+    configured_any = getattr(config, "skill_search_paths", ()) if config is not None else ()
+    configured = tuple(configured_any) if configured_any else ()
+    if configured:
+        search_paths.extend(Path(p) for p in configured)
+    else:
+        cwd = Path.cwd()
+        for candidate in (cwd / "skills", Path.home() / ".aether" / "skills"):
+            search_paths.append(candidate)
+    catalog = SkillCatalog(search_paths=search_paths)
+    catalog.discover()
+    return catalog
 
 
 class SkillCatalog:

@@ -165,6 +165,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
     from aether.cli.repl import run_repl
     from aether.cli.sessions import SessionRecord
     from aether.config.schema import EngineConfig, ModelCallConfig
+    from aether.runtime.tools.skill_catalog import build_default_skill_catalog
     from aether.subagents import SubagentManager
 
     from aether.cli import prefs as _prefs
@@ -209,16 +210,19 @@ def cmd_chat(args: argparse.Namespace) -> None:
         fail_on_tool_error=False,
         fail_on_unknown_tool=False,
         use_builtin_tools=not args.no_builtin_tools,
+        skill_listing_enabled=True,
     )
     # Wire a SubagentManager so the built-in ``task`` / ``task_stop`` tools
     # can dispatch isolated child agents.  Without this the parent fails with
     # "AgentTool not wired: SubagentManager is not configured on the parent
     # agent" the moment the model tries to delegate.
     subagent_manager = SubagentManager()
+    skill_catalog = build_default_skill_catalog(engine_config)
     engine = AgentEngine(
         provider=provider,
         config=engine_config,
         subagent_manager=subagent_manager,
+        skill_catalog=skill_catalog,
     )
 
     model_config = ModelCallConfig(

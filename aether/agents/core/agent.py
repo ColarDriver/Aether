@@ -12,7 +12,9 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, cast
+
+from aether.runtime.tools.skill_catalog import SkillCatalog
 
 from aether.agents.core.phantom_tool import (
     PhantomToolIntent,
@@ -111,6 +113,7 @@ from aether.runtime.observability.unicode_sanitizer import (
     strip_surrogates,
 )
 from aether.runtime.observability.usage import CanonicalUsage, normalize_usage
+from aether.runtime.tools.skill_listing import format_skill_listing
 from aether.runtime.tools.tool_error_format import (
     FormattedToolError,
     format_invalid_tool_args_error,
@@ -268,7 +271,7 @@ class AgentEngine:
         hooks: EngineHooks | None = None,
         recovery_strategy: RecoveryStrategy | None = None,
         fallback_chain: FallbackChain | None = None,
-        skill_catalog: "object | None" = None,
+        skill_catalog: SkillCatalog | None = None,
         lsp_manager: "object | None" = None,
         browser_manager: "object | None" = None,
         steer_inbox: SteerInbox | None = None,
@@ -458,6 +461,7 @@ class AgentEngine:
         error_text: str | None = None
         exit_reason = ExitReason.EMPTY_RESPONSE
         iterations = 0
+        budget: IterationBudget | None = None
 
         try:
             state_machine, messages, context = self._prepare_turn_entry(request)
@@ -519,6 +523,9 @@ class AgentEngine:
                         )
                         if preflight is not None:
                             messages = preflight.compressed_messages
+
+                    self._register_skill_nudge(context)
+                    messages = self._maybe_inject_skill_nudge(messages, context)
 
                     hook_outcome = self._collect_pre_llm_hook_outcome(
                         "pre_llm_call",
@@ -761,7 +768,6 @@ class AgentEngine:
                                 state_machine.transition(LoopState.PRE_LLM)
                                 continue
                             # action == "ok" → fall through to dispatch.
-                        self._register_skill_nudge(context)
 
                         # Tool path: append assistant tool-call message first, then execute each call.
                         state_machine.transition(LoopState.TOOL_DISPATCH)
@@ -862,6 +868,13 @@ class AgentEngine:
                                 self._append_tool_result_message(messages, result)
                                 continue
 
+                            tool_call: ToolCall | None = None
+                            result = ToolResult(
+                                tool_call_id=call.id,
+                                name=call.name,
+                                content="tool execution did not produce a result",
+                                is_error=True,
+                            )
                             permission_checked = self._apply_tool_permission_gate(
                                 call,
                                 request=request,
@@ -893,6 +906,7 @@ class AgentEngine:
                                     tool_call = pre_tool
 
                             if not isinstance(permission_checked, ToolResult) and tool_call is not None:
+                                assert tool_call is not None
                                 # Track active call so middleware on_error handlers can build
                                 # a deterministic fallback ToolResult for this exact invocation.
                                 context.metadata.pop("tool_error_result", None)
@@ -901,6 +915,12 @@ class AgentEngine:
                                     self.services.tool_registry.get(tool_call.name),
                                     "interrupt_behavior",
                                     "block",
+                                )
+                                result = ToolResult(
+                                    tool_call_id=tool_call.id,
+                                    name=tool_call.name,
+                                    content="tool execution did not produce a result",
+                                    is_error=True,
                                 )
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
@@ -1166,7 +1186,7 @@ class AgentEngine:
             # Force a deterministic terminal state if loop exits by condition rather than break.
             if state_machine.state not in {LoopState.FAILED, LoopState.INTERRUPTED, LoopState.FINALIZE}:
                 state_machine.transition(LoopState.FINALIZE)
-                if budget.exhausted:
+                if budget is not None and budget.exhausted:
                     exit_reason = ExitReason.MAX_ITERATIONS
 
             # max-iterations summary fallback.
@@ -1184,7 +1204,7 @@ class AgentEngine:
             if (
                 exit_reason == ExitReason.MAX_ITERATIONS
                 and not final_response
-                and "budget" in locals()
+                and budget is not None
             ):
                 summary_text = self._handle_max_iterations(
                     request, messages, context
@@ -1404,9 +1424,15 @@ class AgentEngine:
         turn_id = str(uuid.uuid4())
 
         metadata = dict(request.metadata)
-        loop_state_callback = metadata.get("_loop_state_callback")
+        loop_state_callback_value = metadata.get("_loop_state_callback")
+        loop_state_callback: Callable[[LoopState], None] | None = None
+        if callable(loop_state_callback_value):
+            loop_state_callback = cast(
+                Callable[[LoopState], None],
+                loop_state_callback_value,
+            )
         state_machine = EngineStateMachine(
-            on_transition=loop_state_callback if callable(loop_state_callback) else None
+            on_transition=loop_state_callback
         )
         turn_start_idx = len(messages)
         # stamp the active provider's identity onto the
@@ -1533,6 +1559,18 @@ class AgentEngine:
                 self.services.tool_registry.list_descriptors(),
             )
 
+        if self.config.skill_listing_enabled and self._skill_catalog is not None:
+            listing = format_skill_listing(
+                self._skill_catalog,
+                budget_chars=self.config.skill_listing_token_budget,
+            )
+            if listing:
+                prompt_for_messages = (
+                    f"{prompt_for_messages}\n\n{listing}"
+                    if prompt_for_messages and prompt_for_messages.strip()
+                    else listing
+                )
+
         if prompt_for_messages:
             messages = self._inject_system_prompt(messages, prompt_for_messages)
 
@@ -1599,6 +1637,33 @@ class AgentEngine:
         if state.skill_nudge_counter >= interval:
             context.metadata["should_review_skills"] = True
             state.skill_nudge_counter = 0
+
+    def _maybe_inject_skill_nudge(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
+        """Re-inject the skill listing as a user-role system reminder."""
+        if not context.metadata.get("should_review_skills"):
+            return messages
+        context.metadata["should_review_skills"] = False
+        if not self.config.skill_listing_enabled or self._skill_catalog is None:
+            return messages
+        listing = format_skill_listing(
+            self._skill_catalog,
+            budget_chars=self.config.skill_listing_token_budget,
+        )
+        if not listing:
+            return messages
+        nudged_messages = list(messages)
+        nudged_messages.append(
+            {
+                "role": "user",
+                "content": listing,
+                "metadata": {"source": "skill_nudge"},
+            }
+        )
+        return nudged_messages
 
     def _maybe_recover_phantom_tool_intent(
         self,
@@ -1785,6 +1850,13 @@ class AgentEngine:
                 state_machine.transition(LoopState.INTERRUPTED)
                 return "interrupted", ExitReason.INTERRUPTED, None
 
+            tool_call: ToolCall | None = None
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content="tool execution did not produce a result",
+                is_error=True,
+            )
             permission_checked = self._apply_tool_permission_gate(
                 call,
                 request=request,
@@ -1817,6 +1889,12 @@ class AgentEngine:
                     self.services.tool_registry.get(tool_call.name),
                     "interrupt_behavior",
                     "block",
+                )
+                result = ToolResult(
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                    content="tool execution did not produce a result",
+                    is_error=True,
                 )
                 try:
                     result = self.services.tool_registry.dispatch(tool_call, context)
@@ -2640,7 +2718,7 @@ class AgentEngine:
         try:
             api_kwargs = {
                 "messages": prepared_messages,
-                "tools": [asdict(tool) if is_dataclass(tool) else tool for tool in tools],
+                "tools": [asdict(cast(Any, tool)) if is_dataclass(tool) else tool for tool in tools],
                 "model_config": asdict(call_config),
             }
             model = call_config.extra.get("model") if isinstance(call_config.extra, dict) else None
@@ -3985,11 +4063,11 @@ class AgentEngine:
 
         1. **Type normalisation.**  ``arguments`` arrives as ``str`` 99% of
            the time, but providers occasionally hand us a pre-parsed
-           ``dict`` / ``list`` (already-decoded JSON), or a non-string scalar
+           ``dict`` (already-decoded JSON), a non-string scalar
            (e.g. integer mistakenly serialised as the args field), or an
-           empty string (treated as ``"{}"``).  We coerce all of these into
-           their canonical string form before any further checks so the
-           rest of the pipeline only sees well-typed args.
+           empty string (treated as ``"{}"``).  Tool executors require a
+           JSON object, so arrays / scalars are rejected through the same
+           recovery path as other malformed argument payloads.
         2. **JSON parse.**  We attempt ``json.loads`` on each arg string and
            collect every (tool_name, error_message) pair that fails.  An
            empty ``invalid_json_args`` list is the dispatch-OK fast path.
@@ -4022,25 +4100,27 @@ class AgentEngine:
         view stay accurate.
         """
         invalid_json_args: list[tuple[str, str]] = []
-        invalid_json_by_id: dict[str, tuple[str, json.JSONDecodeError]] = {}
+        invalid_json_by_id: dict[str, tuple[str, Exception]] = {}
 
         for call in response.tool_calls:
             raw = getattr(call, "arguments", None)
 
-            # 1) Pre-parsed dict / list — leave alone.  These are
-            # produced by ``OpenAICompatibleModel._parse_tool_call`` after
-            # a successful upstream JSON parse, or by ScriptedProvider in
-            # tests.  They are never truncated by definition.
-            if isinstance(raw, (dict, list)):
+            # 1) Pre-parsed dict — leave alone.  These are produced by
+            # provider parsers after a successful upstream JSON parse and
+            # already match the ``ToolCall.arguments`` contract.
+            if isinstance(raw, dict):
                 continue
 
-            # 2) Non-string scalars: coerce to ``str()``.  A model can
-            # technically emit ``"arguments": 42`` if the provider does
-            # not enforce the schema; falling back to ``str()`` keeps the
-            # downstream JSON parse honest about what we received.
-            if raw is not None and not isinstance(raw, str):
-                call.arguments = str(raw)
-                raw = call.arguments
+            # Arrays are valid JSON but not valid tool-argument payloads:
+            # tools expect a single object.  Surface them through the same
+            # retry / injection path as malformed JSON.
+            if isinstance(raw, list):
+                raw_args = json.dumps(raw, ensure_ascii=False)
+                exc = ValueError("Tool arguments must decode to a JSON object; got JSON array.")
+                invalid_json_args.append((call.name, str(exc)))
+                invalid_json_by_id[call.id] = (raw_args, exc)
+                call.arguments = {}
+                continue
 
             # 3) Empty / whitespace-only string: treat as empty object.
             # OpenAI sometimes emits this for tools with no required
@@ -4055,16 +4135,24 @@ class AgentEngine:
             except json.JSONDecodeError as exc:
                 invalid_json_args.append((call.name, str(exc)))
                 invalid_json_by_id[call.id] = (args_text, exc)
-                # Keep the raw string on ``call.arguments`` so the
-                # truncation heuristic and the error-injection path can
-                # both see it.  Dispatch will not see this call —
-                # ``invalid_json_args`` gates that.
+                # Preserve the raw string out-of-band so the truncation
+                # heuristic and the error-injection path can both see it.
+                # Dispatch will not see this call — ``invalid_json_args``
+                # gates that.
+                call.arguments = {}
                 continue
 
-            # Successful parse: store the decoded form so dispatch sees
-            # the canonical dict/list payload regardless of how the wire
-            # protocol delivered it.
-            call.arguments = parsed if isinstance(parsed, (dict, list)) else {}
+            # Successful parse: tool arguments must still be a JSON object.
+            if isinstance(parsed, dict):
+                call.arguments = parsed
+                continue
+
+            exc = ValueError(
+                f"Tool arguments must decode to a JSON object; got {type(parsed).__name__}."
+            )
+            invalid_json_args.append((call.name, str(exc)))
+            invalid_json_by_id[call.id] = (args_text, exc)
+            call.arguments = {}
 
         # 4) Fast path: no JSON errors, dispatch.
         if not invalid_json_args:
@@ -4076,7 +4164,13 @@ class AgentEngine:
         # of what ``finish_reason`` said — see the docstring for why.
         invalid_ids = set(invalid_json_by_id)
         truncated = any(
-            (not (str(getattr(c, "arguments", "")) or "").rstrip().endswith(("}", "]")))
+            (
+                not (
+                    invalid_json_by_id[c.id][0].rstrip().endswith(("}", "]"))
+                    if c.id in invalid_json_by_id
+                    else True
+                )
+            )
             and c.id in invalid_ids
             for c in response.tool_calls
         )
@@ -4131,9 +4225,11 @@ class AgentEngine:
                         "type": "function",
                         "function": {
                             "name": c.name,
-                            "arguments": c.arguments
-                            if isinstance(c.arguments, str)
-                            else json.dumps(c.arguments, ensure_ascii=False),
+                            "arguments": (
+                                invalid_json_by_id[c.id][0]
+                                if c.id in invalid_json_by_id
+                                else json.dumps(c.arguments, ensure_ascii=False)
+                            ),
                         },
                     }
                     for c in response.tool_calls
@@ -4402,7 +4498,8 @@ class AgentEngine:
             if not isinstance(tail, dict):
                 trimmed.pop()
                 continue
-            metadata = tail.get("metadata") if isinstance(tail.get("metadata"), dict) else {}
+            metadata_obj = tail.get("metadata")
+            metadata: dict[str, Any] = metadata_obj if isinstance(metadata_obj, dict) else {}
             if metadata.get("_length_continue_prompt") or metadata.get("partial"):
                 trimmed.pop()
                 continue
@@ -4650,7 +4747,7 @@ class AgentEngine:
             except Exception:  # noqa: BLE001
                 interactive = False
 
-        if not interactive:
+        if not interactive or prompter is None:
             non_interactive_mode = normalize_permission_mode(
                 getattr(self.config, "tool_permission_non_interactive_default", "deny"),
                 default=ToolPermissionMode.DENY,
@@ -5408,7 +5505,8 @@ class AgentEngine:
             for call in tool_calls:
                 if not isinstance(call, dict):
                     continue
-                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                function_obj = call.get("function")
+                function: dict[str, Any] = function_obj if isinstance(function_obj, dict) else {}
                 name = call.get("name") or function.get("name")
                 if name:
                     tool_names.append(str(name))

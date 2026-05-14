@@ -222,7 +222,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
         # another ``<function=`` immediately.
         body = re.sub(r"</?\s*function\b[^>]*>\s*$", "", body).strip()
 
-        args: dict[str, Any] = {}
+        function_args: dict[str, Any] = {}
         if body:
             # Most observed bodies are JSON objects (the model is
             # mimicking the OpenAI tool-call shape).  Fall back to
@@ -233,10 +233,10 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
             except Exception:  # noqa: BLE001
                 parsed = None
             if isinstance(parsed, dict):
-                args = parsed
+                function_args = parsed
             else:
-                args["command"] = " ".join(body.split())
-        intent.invoke_calls.append((name, args))
+                function_args["command"] = " ".join(body.split())
+        intent.invoke_calls.append((name, function_args))
 
     # 3) Anthropic-style <invoke>...</invoke>.
     for invoke in _INVOKE_BLOCK_RE.finditer(content):
@@ -282,7 +282,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
         # close cleanly and the body includes the close-tag anyway).
         body = re.sub(r"</?\s*functions\.[A-Za-z_][A-Za-z0-9_]*:\d+\s*>\s*$", "", body).strip()
 
-        args: dict[str, Any] = {}
+        slot_args: dict[str, Any] = {}
         if body:
             # Most Kimi templates write a JSON object, but a stray model
             # sometimes types the command directly.  Try JSON first, then
@@ -292,10 +292,10 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
             except Exception:  # noqa: BLE001
                 parsed = None
             if isinstance(parsed, dict):
-                args = parsed
+                slot_args = parsed
             else:
-                args = {"command": " ".join(body.split())}
-        intent.invoke_calls.append((name, args))
+                slot_args = {"command": " ".join(body.split())}
+        intent.invoke_calls.append((name, slot_args))
 
     return intent
 

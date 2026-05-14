@@ -32,6 +32,8 @@ class EngineConfig:
     enable_todo_hydration: bool = False
     memory_nudge_interval: int = 0
     skill_nudge_interval: int = 0
+    skill_listing_enabled: bool = True
+    skill_listing_token_budget: int = 4096
     # Memory subsystem defaults. The default mode targets task/project
     # context rather than user profiling. Memory blocks are retrieved as
     # transient provider-bound context only.

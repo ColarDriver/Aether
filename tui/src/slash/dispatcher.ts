@@ -33,7 +33,7 @@ export type SlashCommand = {
 }
 
 export type SlashResult =
-  | { kind: 'note'; text: string; level: 'info' | 'warn' | 'error' }
+  | { kind: 'note'; text: string; level: 'success' | 'info' | 'warn' | 'error' }
   | { kind: 'replace-history'; messages: TranscriptMessage[]; info?: SessionInfo }
   | { kind: 'session'; info: SessionInfo; note?: string }
   | { kind: 'clear' }

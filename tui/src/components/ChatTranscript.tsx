@@ -2,6 +2,8 @@ import { Box, Text, useInput } from 'ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState, type ReactElement } from 'react'
 
+import { stripToolBlocks } from '../lib/phantomTool.js'
+import { isTurnFooterText } from '../lib/turnFooter.js'
 import { chatItems, type ChatItem } from '../store/chatStore.js'
 import { focusActions, focusOwner } from '../store/focusStore.js'
 import { overlayStack } from '../store/overlayStore.js'
@@ -25,7 +27,10 @@ export function ChatTranscript(): ReactElement {
   const [focusedToolCallId, setFocusedToolCallId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
 
-  const visible = useMemo(() => items.slice(-MAX_VISIBLE), [items])
+  const visible = useMemo(
+    () => items.slice(-MAX_VISIBLE).filter((item) => renderKind(item) !== null),
+    [items]
+  )
 
   const focusableTools = useMemo(
     () =>
@@ -117,12 +122,81 @@ export function ChatTranscript(): ReactElement {
   // marginTop already supplies visual breathing between turns.
   return (
     <Box flexDirection="column">
-      {visible.map((item) => {
+      {visible.map((item, index) => {
         const isToolCall = item.kind === 'tool-call'
         const focused = isToolCall && item.toolCallId === focusedToolCallId
         const isExpanded = isToolCall && expanded.has(item.toolCallId)
-        return <ChatMessage key={item.id} item={item} focused={focused} expanded={isExpanded} />
+        const previous = index > 0 ? visible[index - 1] ?? null : null
+        const spacedAbove = shouldInsertSpacer(previous, item)
+        return (
+          <Box key={item.id} marginTop={spacedAbove ? 1 : 0}>
+            <ChatMessage item={item} focused={focused} expanded={isExpanded} />
+          </Box>
+        )
       })}
     </Box>
   )
+}
+
+type RenderKind =
+  | 'user'
+  | 'assistant'
+  | 'tool-group'
+  | 'tool-call'
+  | 'status'
+  | 'footer'
+  | 'other'
+
+const SPACED_KINDS: ReadonlySet<RenderKind> = new Set([
+  'user',
+  'assistant',
+  'tool-group',
+  'tool-call',
+  'status',
+  'footer'
+])
+
+function renderKind(item: ChatItem): RenderKind | null {
+  switch (item.kind) {
+    case 'user':
+      return 'user'
+    case 'assistant':
+      return stripToolBlocks(item.text).trim() ? 'assistant' : null
+    case 'tool-call':
+      return item.coalesce ? null : 'tool-call'
+    case 'tool-group':
+      return 'tool-group'
+    case 'tool-result':
+      return 'other'
+    case 'note':
+      if (isTurnFooterText(item.text) || item.text.startsWith('●') || item.text.startsWith('*')) {
+        return 'footer'
+      }
+      if (isInterruptStatusText(item.text)) {
+        return 'status'
+      }
+      return 'other'
+  }
+}
+
+function shouldInsertSpacer(previous: ChatItem | null, current: ChatItem): boolean {
+  const prevKind = previous ? renderKind(previous) : null
+  const nextKind = renderKind(current)
+  if (!prevKind || !nextKind) {
+    return false
+  }
+  if (!SPACED_KINDS.has(prevKind) || !SPACED_KINDS.has(nextKind)) {
+    return false
+  }
+  if (prevKind === 'status' && nextKind === 'footer') {
+    return false
+  }
+  if (prevKind === 'tool-call' && nextKind === 'tool-call') {
+    return false
+  }
+  return true
+}
+
+function isInterruptStatusText(text: string): boolean {
+  return text.trim().toLowerCase() === 'interrupt'
 }

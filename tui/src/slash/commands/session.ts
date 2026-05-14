@@ -83,10 +83,19 @@ function renderSessionsTable(sessions: SessionInfo[], currentId: string | null):
   return `Saved sessions · ${sessions.length}\n${lines.join('\n')}\nUse /resume to switch into one of these sessions.`
 }
 
+/**
+ * Mirrors Python `_cmd_session` in `aether/cli/commands.py:84-87` — emits
+ * two separate `info` lines (id, then turns) so the layout matches the
+ * Rich-printed prompt_toolkit version. The provider/model are appended on
+ * the same line as the id since both are sub-second to read together.
+ */
 function formatCurrent(info: SessionInfo): string {
-  return `${info.session_id.slice(0, 8)}  ${info.provider}/${info.model}${
-    info.summary ? ' · ' + info.summary : ''
-  }`
+  const turnCount = info.message_count ?? 0
+  const summary = info.summary ? ` · ${info.summary}` : ''
+  return (
+    `session: ${info.session_id}  ${info.provider}/${info.model}${summary}` +
+    `\nturns:   ${turnCount}`
+  )
 }
 
 function formatRelativeTime(epochSeconds: number | undefined): string {

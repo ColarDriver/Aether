@@ -144,8 +144,8 @@ describe('useReverseRpc — handleReverseRpcEvent', () => {
     vi.advanceTimersByTime(500)
     expect(client.respond).toHaveBeenCalledOnce()
     expect(client.respond).toHaveBeenCalledWith('srv_perm_4', {
-      type: 'deny',
-      reason: 'overlay dismissed'
+      type: 'abort',
+      feedback: 'overlay dismissed'
     })
   })
 
@@ -215,10 +215,10 @@ describe('defaultDeny', () => {
     expect(defaultDeny('approval.request')).toEqual({ confirmed: false })
   })
 
-  it('permission.request → type:deny with reason', () => {
+  it('permission.request → type:abort with feedback (matches Python user_abort branch)', () => {
     expect(defaultDeny('permission.request')).toEqual({
-      type: 'deny',
-      reason: 'overlay dismissed'
+      type: 'abort',
+      feedback: 'overlay dismissed'
     })
   })
 

@@ -66,7 +66,7 @@ type PendingRequest = {
   method: string
   resolve: (value: unknown) => void
   reject: (reason: unknown) => void
-  timer: NodeJS.Timeout
+  timer: NodeJS.Timeout | null
 }
 
 class AsyncEventQueue {
@@ -304,19 +304,35 @@ export class GatewayClient extends EventEmitter {
     await Promise.race([exitPromise, delay(Math.min(graceMs, 500))])
   }
 
-  request<T = unknown>(method: string, params?: object): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params?: object,
+    options: { timeoutMs?: number | null } = {}
+  ): Promise<T> {
     const id = `cli_${this.#nextRequestId++}`
     const frame = this.#withOptionalParams({ jsonrpc: '2.0' as const, id, method }, params)
 
+    // `timeoutMs: null` (or 0 / Infinity) disables the client-side timer. Use
+    // it for long-running RPCs like agent.run where the server itself owns
+    // the bound (cancellation goes through agent.cancel). Mirrors the Python
+    // CLI which calls the engine directly and never imposes a wall clock.
+    const explicit = options.timeoutMs
+    const timeoutMs =
+      explicit === undefined ? this.#requestTimeoutMs : explicit
+    const useTimer =
+      timeoutMs !== null && Number.isFinite(timeoutMs) && timeoutMs > 0
+
     return new Promise<T>((resolveRequest, rejectRequest) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(id)
-        rejectRequest(
-          new GatewayTimeoutError(
-            `Gateway request timed out after ${this.#requestTimeoutMs}ms: ${method}`
-          )
-        )
-      }, this.#requestTimeoutMs)
+      const timer = useTimer
+        ? setTimeout(() => {
+            this.#pending.delete(id)
+            rejectRequest(
+              new GatewayTimeoutError(
+                `Gateway request timed out after ${timeoutMs}ms: ${method}`
+              )
+            )
+          }, timeoutMs as number)
+        : null
 
       this.#pending.set(id, {
         method,
@@ -328,7 +344,9 @@ export class GatewayClient extends EventEmitter {
       try {
         this.#writeFrame(frame)
       } catch (error) {
-        clearTimeout(timer)
+        if (timer) {
+          clearTimeout(timer)
+        }
         this.#pending.delete(id)
         rejectRequest(error)
       }
@@ -449,12 +467,24 @@ export class GatewayClient extends EventEmitter {
 
     const pending = this.#pending.get(id)
     if (!pending) {
+      // Server-initiated request ids (srv_app_*, srv_perm_*) reach this frame
+      // shape because the gateway dispatcher synthesises an ack response after
+      // it processes our reverse-RPC answer (see
+      // aether/gateway/dispatcher.py:_parse_reverse_response). The ack carries
+      // the same `srv_*` id but is not tied to anything we initiated, so
+      // dropping it silently is the contract — surfacing it as a protocol
+      // error would spam the transcript on every approval / permission turn.
+      if (typeof id === 'string' && id.startsWith('srv_')) {
+        return
+      }
       this.#emitProtocolError(raw, `response id is not pending: ${String(id)}`)
       return
     }
 
     this.#pending.delete(id)
-    clearTimeout(pending.timer)
+    if (pending.timer) {
+      clearTimeout(pending.timer)
+    }
 
     if ('error' in frame) {
       if (!isRpcError(frame.error)) {
@@ -580,7 +610,9 @@ export class GatewayClient extends EventEmitter {
 
   #rejectAllPending(reason: unknown): void {
     for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer)
+      if (pending.timer) {
+        clearTimeout(pending.timer)
+      }
       pending.reject(reason)
     }
     this.#pending.clear()

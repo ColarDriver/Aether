@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { render } from 'ink'
 
 import { applyCliArgs } from './lib/cliArgs.js'
+import { terminateDevWatchRunner } from './lib/devExit.js'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(packageRoot, '..')
@@ -24,6 +25,7 @@ const [{ App }, { GatewayClient }] = await Promise.all([
   import('./gatewayClient.js')
 ])
 const client = new GatewayClient()
+let userExited = false
 
 try {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -38,10 +40,14 @@ try {
     }
   )
   await instance.waitUntilExit()
+  userExited = true
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(`${message}\n`)
   process.exitCode = 1
 } finally {
   await client.stop().catch(() => undefined)
+  if (userExited) {
+    terminateDevWatchRunner()
+  }
 }

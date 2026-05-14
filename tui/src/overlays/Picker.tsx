@@ -21,6 +21,8 @@ export interface PickerPayload<T> {
   title: string
   items: PickerItem<T>[]
   initialId?: string
+  /** Enable `/` filtering. Off by default to match the Python picker. */
+  filterable?: boolean
   /**
    * When set, the row whose `id` matches `currentId` gets a check-mark
    * appended by the picker chrome (Python TUI's `→ kimi-k2.6 ✓` pattern).
@@ -29,12 +31,13 @@ export interface PickerPayload<T> {
    */
   currentId?: string
   /**
-   * Render one row. `focused` is true for the currently highlighted item.
+   * Render one row. `focused` is true for the currently highlighted item,
+   * `current` marks the already-selected value.
    * The component is responsible for layout (icon, columns, dim metadata)
    * — the picker chrome only paints the title, count, pager hints and the
    * footer keymap.
    */
-  renderRow(item: PickerItem<T>, focused: boolean): ReactElement
+  renderRow(item: PickerItem<T>, focused: boolean, current: boolean): ReactElement
   /**
    * Called when the user hits Enter. Return a promise to keep the picker
    * mounted while the action resolves (e.g. RPC call); the picker shows a
@@ -53,14 +56,24 @@ export interface PickerPayload<T> {
   emptyMessage?: string
 }
 
-const PAGE_SIZE = 12
+const PAGE_SIZE = 10
 
 export function Picker<T>({
   overlay
 }: {
   overlay: OverlayState<PickerPayload<T>>
 }): ReactElement {
-  const { title, items, initialId, currentId, renderRow, onSelect, pendingVerb, emptyMessage } =
+  const {
+    title,
+    items,
+    initialId,
+    currentId,
+    renderRow,
+    onSelect,
+    pendingVerb,
+    emptyMessage,
+    filterable = false
+  } =
     overlay.payload
   const effectiveInitialId = initialId ?? currentId
 
@@ -135,7 +148,7 @@ export function Picker<T>({
         return
       }
       if (filtered.length === 0) {
-        if (input === '/') {
+        if (filterable && input === '/') {
           setFilterMode(true)
         }
         return
@@ -164,7 +177,7 @@ export function Picker<T>({
         setCursor(filtered.length - 1)
         return
       }
-      if (input === '/') {
+      if (filterable && input === '/') {
         setFilterMode(true)
         return
       }
@@ -194,25 +207,35 @@ export function Picker<T>({
   )
 
   const border = theme.color('accent')
+  const brand = theme.colorProps('brand')
   const accent = theme.colorProps('accent')
   const dim = theme.colorProps('dim')
+  const borderColor = theme.color('border')
+  const cursorBg = theme.color('brand')
+  const cursorFg = '#FFFFFF'
+  const arrow = theme.icon('arrow') || '→'
+  const logo = theme.icon('logo') || '*'
+  const success = theme.icon('success') || '✓'
 
   if (items.length === 0) {
     return (
       <Box
         flexDirection="column"
-        borderStyle="round"
-        {...(border ? { borderColor: border } : {})}
+        width="100%"
+        borderStyle="single"
+        {...(borderColor ? { borderColor } : {})}
         paddingX={1}
       >
-        <Text bold {...accent}>
-          {title}
+        <Text bold {...brand}>
+          {logo} {title}
         </Text>
         <Box marginTop={1}>
           <Text>{emptyMessage ?? 'No entries available.'}</Text>
         </Box>
         <Box marginTop={1}>
-          <Text {...dim}>ESC close</Text>
+          <Text {...dim}>
+            <Text {...accent}>Esc</Text> cancel
+          </Text>
         </Box>
       </Box>
     )
@@ -226,36 +249,19 @@ export function Picker<T>({
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
-      {...(border ? { borderColor: border } : {})}
+      width="100%"
+      borderStyle="single"
+      {...(borderColor ? { borderColor } : {})}
       paddingX={1}
     >
-      <Box>
-        <Text bold {...accent}>
-          {title}
-        </Text>
-        <Text {...dim}>
-          {' · '}
-          {filtered.length === items.length
-            ? `${items.length} entr${items.length === 1 ? 'y' : 'ies'}`
-            : `${filtered.length}/${items.length} match`}
-        </Text>
-        {filter || filterMode ? (
-          <Text {...dim}>
-            {' · /'}
-            {filter}
-            {filterMode ? <Text {...accent}>_</Text> : null}
-          </Text>
-        ) : null}
-      </Box>
+      <Text bold {...brand}>
+        {logo} {title}
+      </Text>
 
-      {hasAbove ? (
-        <Box marginTop={1}>
-          <Text {...dim}>↑ {pageStart} more above</Text>
-        </Box>
-      ) : null}
-
-      <Box flexDirection="column" marginTop={1}>
+      <Box marginTop={1} flexDirection="column">
+        <Text {...dim} italic>
+          {hasAbove ? `   ${arrow} more above` : ' '}
+        </Text>
         {visible.length === 0 ? (
           <Text {...dim}>no matches — backspace or ESC to clear</Text>
         ) : (
@@ -264,25 +270,33 @@ export function Picker<T>({
             const focused = realIdx === cursor
             const isCurrent = currentId !== undefined && item.id === currentId
             return (
-              <Box key={item.id}>
-                {focused ? <Text {...accent}>▸ </Text> : <Text>  </Text>}
-                {renderRow(item, focused)}
+              <Box key={item.id} width="100%">
+                <Box width={3} flexShrink={0}>
+                  {focused ? (
+                    <Text
+                      {...(cursorBg ? { backgroundColor: cursorBg } : {})}
+                      {...(cursorFg ? { color: cursorFg } : {})}
+                    >
+                      {' '}{arrow}{' '}
+                    </Text>
+                  ) : (
+                    <Text>{'   '}</Text>
+                  )}
+                </Box>
+                <Box flexGrow={1}>
+                  {renderRow(item, focused, isCurrent)}
+                </Box>
                 {isCurrent ? (
-                  <Text color="green">{'  ' + theme.icon('success') || '  *'}</Text>
+                  <Text {...accent}>{'  ' + success}</Text>
                 ) : null}
               </Box>
             )
           })
         )}
+        <Text {...dim} italic>
+          {hasBelow ? `   ${arrow} more below` : ' '}
+        </Text>
       </Box>
-
-      {hasBelow ? (
-        <Box>
-          <Text {...dim}>
-            ↓ {filtered.length - pageStart - PAGE_SIZE} more below
-          </Text>
-        </Box>
-      ) : null}
 
       <Box marginTop={1} flexDirection="column">
         {pending ? (
@@ -292,7 +306,25 @@ export function Picker<T>({
         ) : null}
         {error ? <Text color="red">error: {error}</Text> : null}
         <Text {...dim}>
-          ↑/↓ navigate · / filter · Enter select · ESC cancel
+          {'  '}
+          <Text {...accent}>↑↓</Text> navigate
+          {'  ·  '}
+          <Text {...accent}>Enter</Text> select
+          {'  ·  '}
+          <Text {...accent}>Esc</Text> cancel
+          {filterable ? (
+            <>
+              {'  ·  '}
+              <Text {...accent}>/</Text> filter
+              {filter || filterMode ? (
+                <>
+                  {' · /'}
+                  {filter}
+                  {filterMode ? <Text {...accent}>_</Text> : null}
+                </>
+              ) : null}
+            </>
+          ) : null}
         </Text>
       </Box>
     </Box>

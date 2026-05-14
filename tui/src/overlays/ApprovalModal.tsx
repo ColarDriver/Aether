@@ -38,6 +38,10 @@ function PlanApproval({
   const remaining = useCountdown(params.deadline_ms ?? 0)
 
   useInput((input, key) => {
+    if (key.ctrl && input === 'c') {
+      overlayActions.dismiss(overlay.id, 'cancel')
+      return
+    }
     if (key.escape) {
       overlayActions.dismiss(overlay.id, 'cancel')
       return
@@ -138,6 +142,10 @@ function QuestionApproval({
 
   useInput(
     (input, key) => {
+      if (key.ctrl && input === 'c') {
+        overlayActions.dismiss(overlay.id, 'cancel')
+        return
+      }
       if (key.escape) {
         overlayActions.dismiss(overlay.id, 'cancel')
         return

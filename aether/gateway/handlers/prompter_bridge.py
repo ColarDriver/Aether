@@ -27,6 +27,18 @@ class GatewayPromptDisconnected(BaseException):
     """Raised when the peer disappears while a prompt is pending."""
 
 
+_DEFAULT_PROMPT_TIMEOUT = 24 * 60 * 60.0
+"""Effectively-infinite default for user-facing reverse-RPC prompts.
+
+The Python CLI prompter (`AetherToolPermissionPrompter`) blocks
+``Future.result(timeout=None)`` so the user has unlimited time to answer.
+The gateway path cannot pass ``None`` to ``concurrent.futures.Future.result``
+because the reverse-RPC bridge needs a finite wait, but anything humans care
+about fits inside a day — keeping the timeout sky-high preserves the
+intent without changing the wire shape.
+"""
+
+
 class GatewayPrompter:
     """Prompter protocol implementation backed by reverse RPC."""
 
@@ -35,7 +47,7 @@ class GatewayPrompter:
         *,
         session_id: str,
         run_id: str,
-        request_timeout: float = 600.0,
+        request_timeout: float = _DEFAULT_PROMPT_TIMEOUT,
     ) -> None:
         self.session_id = session_id
         self.run_id = run_id
@@ -95,7 +107,7 @@ class GatewayToolPermissionPrompter:
         self,
         *,
         run_id: str,
-        request_timeout: float = 120.0,
+        request_timeout: float = _DEFAULT_PROMPT_TIMEOUT,
     ) -> None:
         self.run_id = run_id
         self.request_timeout = float(request_timeout)

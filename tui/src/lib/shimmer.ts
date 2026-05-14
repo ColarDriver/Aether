@@ -34,21 +34,19 @@ export function shimmer(label: string, tick: number): ShimmerSlices {
 }
 
 const THINKING_VERBS: readonly string[] = [
-  'thinking',
-  'pondering',
-  'forging',
-  'channeling',
-  'weaving',
-  'composing',
-  'refining',
-  'planning',
-  'sifting',
-  'synthesising'
+  'Thinking',
+  'Pondering',
+  'Forging',
+  'Channeling',
+  'Reasoning',
+  'Deliberating',
+  'Synthesising',
+  'Conjuring'
 ]
 
 export function thinkingVerbAt(index: number): string {
   if (THINKING_VERBS.length === 0) {
-    return 'thinking'
+    return 'Thinking'
   }
-  return THINKING_VERBS[index % THINKING_VERBS.length] ?? 'thinking'
+  return THINKING_VERBS[index % THINKING_VERBS.length] ?? 'Thinking'
 }

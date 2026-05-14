@@ -5,7 +5,7 @@ import type { ToolGroupRecord } from './toolGroupStore.js'
 
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; ts: number }
-  | { kind: 'assistant'; id: string; text: string; streaming: boolean; ts: number }
+  | { kind: 'assistant'; id: string; runId: string; text: string; streaming: boolean; ts: number }
   | {
       kind: 'tool-call'
       id: string
@@ -36,7 +36,17 @@ export type ChatItem =
       group: ToolGroupRecord
       ts: number
     }
-  | { kind: 'note'; id: string; text: string; level: 'info' | 'warn' | 'error'; ts: number }
+  | {
+      kind: 'note'
+      id: string
+      text: string
+      // Mirrors Python `ui.py` `success/info/warn/error` helpers — each
+      // level has its own colour + icon glyph. 'success' is kept distinct
+      // from 'info' so positive confirmations ("started session", "model
+      // set") get the ✓ glyph rather than the ℹ generic info marker.
+      level: 'success' | 'info' | 'warn' | 'error'
+      ts: number
+    }
 
 let nextId = 1
 
@@ -67,13 +77,17 @@ export const chatActions = {
 
   appendAssistant(id: string, text: string): void {
     const items = chatItems.get()
-    const index = items.findIndex((item) => item.kind === 'assistant' && item.id === id)
+    const index = lastIndex(
+      items,
+      (item) => item.kind === 'assistant' && item.runId === id && item.streaming
+    )
     if (index === -1) {
       chatItems.set([
         ...items,
         {
           kind: 'assistant',
-          id,
+          id: makeId('assistant'),
+          runId: id,
           text,
           streaming: true,
           ts: Date.now()
@@ -85,6 +99,19 @@ export const chatActions = {
     const next = [...items]
     const existing = next[index]
     if (existing?.kind === 'assistant') {
+      if (index !== items.length - 1) {
+        next[index] = { ...existing, streaming: false }
+        next.push({
+          kind: 'assistant',
+          id: makeId('assistant'),
+          runId: id,
+          text,
+          streaming: true,
+          ts: Date.now()
+        })
+        chatItems.set(next)
+        return
+      }
       next[index] = { ...existing, text: `${existing.text}${text}`, streaming: true }
       chatItems.set(next)
     }
@@ -92,14 +119,18 @@ export const chatActions = {
 
   finishAssistant(id: string, finalText?: string): void {
     const items = chatItems.get()
-    const index = items.findIndex((item) => item.kind === 'assistant' && item.id === id)
-    if (index === -1) {
+    const indexes = items.flatMap((item, index) =>
+      item.kind === 'assistant' && item.runId === id ? [index] : []
+    )
+    const lastIndexForRun = indexes[indexes.length - 1] ?? -1
+    if (lastIndexForRun === -1) {
       if (finalText) {
         chatItems.set([
           ...items,
           {
             kind: 'assistant',
-            id,
+            id: makeId('assistant'),
+            runId: id,
             text: finalText,
             streaming: false,
             ts: Date.now()
@@ -110,10 +141,43 @@ export const chatActions = {
     }
 
     const next = [...items]
-    const existing = next[index]
+    const existing = next[lastIndexForRun]
     if (existing?.kind === 'assistant') {
+      const rendered = indexes
+        .map((index) => next[index])
+        .filter((item): item is Extract<ChatItem, { kind: 'assistant' }> => item?.kind === 'assistant')
+        .map((item) => item.text)
+        .join('')
+      const suffix =
+        finalText && finalText.startsWith(rendered)
+          ? finalText.slice(rendered.length)
+          : ''
+
+      if (suffix) {
+        if (lastIndexForRun !== next.length - 1) {
+          next[lastIndexForRun] = { ...existing, streaming: false }
+          next.push({
+            kind: 'assistant',
+            id: makeId('assistant'),
+            runId: id,
+            text: suffix,
+            streaming: false,
+            ts: Date.now()
+          })
+          chatItems.set(next)
+          return
+        }
+        next[lastIndexForRun] = {
+          ...existing,
+          text: `${existing.text}${suffix}`,
+          streaming: false
+        }
+        chatItems.set(next)
+        return
+      }
+
       const text = existing.text || finalText || ''
-      next[index] = { ...existing, text, streaming: false }
+      next[lastIndexForRun] = { ...existing, text, streaming: false }
       chatItems.set(next)
     }
   },
@@ -193,7 +257,10 @@ export const chatActions = {
     ])
   },
 
-  pushNote(text: string, level: 'info' | 'warn' | 'error' = 'info'): ChatItem {
+  pushNote(
+    text: string,
+    level: 'success' | 'info' | 'warn' | 'error' = 'info'
+  ): ChatItem {
     const item: ChatItem = {
       kind: 'note',
       id: makeId('note'),
@@ -218,6 +285,7 @@ export const chatActions = {
         items.push({
           kind: 'assistant',
           id: makeId('assistant'),
+          runId: makeId('assistant-run'),
           text,
           streaming: false,
           ts: Date.now()

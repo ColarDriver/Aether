@@ -2,6 +2,7 @@ import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState, type ReactElement } from 'react'
 
+import { theme } from '../lib/theme.js'
 import { activityState } from '../store/activityStore.js'
 import { reasoningState } from '../store/reasoningStore.js'
 
@@ -35,11 +36,16 @@ export function ReasoningLine(): ReactElement | null {
   if (stale && activity.status === 'idle') {
     return null
   }
+  const flat = reasoning.text.replace(/[\r\n]+/g, ' ').trim()
+  if (!flat) {
+    return null
+  }
 
   return (
-    <Box marginTop={1}>
-      <Text dimColor italic>
-        {reasoning.text}
+    <Box>
+      <Text dimColor>
+        {'  '}
+        {theme.icon('thinking') || '·'} thinking: {flat}
       </Text>
     </Box>
   )

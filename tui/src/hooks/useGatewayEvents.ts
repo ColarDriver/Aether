@@ -231,10 +231,9 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       flushAndPushGroup()
       activityActions.flushUsage()
       chatActions.finishAssistant(event.run_id, event.partial_text)
-      chatActions.pushNote(event.reason ? `cancelled: ${event.reason}` : 'cancelled', 'warn')
       sessionActions.setStatus('idle')
       const summary = activityActions.endTurn('cancelled')
-      pushTurnFooter('cancelled', summary, event.reason ?? null)
+      pushTurnFooter('cancelled', summary, sanitiseTurnExitReason(event.reason ?? null))
       reasoningActions.clear()
       lastError = null
       break
@@ -319,6 +318,17 @@ function pushTurnFooter(
   const level: 'info' | 'warn' | 'error' =
     mode === 'error' ? 'error' : mode === 'cancelled' ? 'warn' : 'info'
   chatActions.pushNote(parts.join(' · '), level)
+}
+
+function sanitiseTurnExitReason(exitReason: string | null): string | null {
+  if (!exitReason) {
+    return null
+  }
+  const normalised = exitReason.trim().toLowerCase().replace(/[_\s]+/g, '-')
+  if (normalised === 'user-interrupt') {
+    return null
+  }
+  return exitReason
 }
 
 function formatDurationShort(ms: number): string {

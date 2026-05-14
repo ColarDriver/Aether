@@ -34,7 +34,7 @@ export const resumeCommand: SlashCommand = {
             chatActions.replaceTranscript(messages)
             chatActions.pushNote(
               `resumed session ${info.session_id.slice(0, 8)}`,
-              'info'
+              'success'
             )
           }
         },
@@ -45,8 +45,17 @@ export const resumeCommand: SlashCommand = {
       return { kind: 'noop' }
     }
 
+    // Mirrors Python `_match_session` in `aether/cli/commands.py:394-404`:
+    // an exact session_id match wins outright (no ambiguity checks), then
+    // fall back to prefix matching where a unique prefix wins. Without
+    // the exact-match branch a user pasting their full session id from
+    // `/sessions` would hit the ambiguous-prefix error path when the id
+    // matches itself but also prefixes others.
     const sessions = await ctx.client.request<SessionListResult>('session.list', { limit: 100 })
-    const matches = sessions.sessions.filter((session) => session.session_id.startsWith(prefix))
+    const exact = sessions.sessions.find((session) => session.session_id === prefix)
+    const matches = exact
+      ? [exact]
+      : sessions.sessions.filter((session) => session.session_id.startsWith(prefix))
     if (matches.length === 0) {
       return { kind: 'note', level: 'warn', text: `session not found: ${prefix}` }
     }

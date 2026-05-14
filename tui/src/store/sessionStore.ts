@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { atom } from 'nanostores'
 
 import type { GatewayReady, SessionInfo, SlashCommandInfo } from '../gatewayTypes.js'
+import { envBaseUrl } from '../lib/sessionBaseUrl.js'
 
 export type RunStatus = 'starting' | 'idle' | 'thinking' | 'responding' | 'tool_use'
 
@@ -10,6 +11,11 @@ export type SessionState = {
   sessionId: string | null
   provider: string
   model: string
+  recentSessions: SessionInfo[]
+  bannerTools: string[]
+  bannerToolCount: number
+  bannerSkills: string[]
+  bannerSkillCount: number
   status: RunStatus
   statusDetail: string | null
   usage: {
@@ -69,10 +75,17 @@ function readSystemOverride(): string | null {
   }
 }
 
+const initialProvider = process.env.AETHER_PROVIDER || 'openai'
+
 const initialState: SessionState = {
   sessionId: null,
-  provider: process.env.AETHER_PROVIDER || 'openai',
+  provider: initialProvider,
   model: process.env.AETHER_MODEL || '',
+  recentSessions: [],
+  bannerTools: [],
+  bannerToolCount: 0,
+  bannerSkills: [],
+  bannerSkillCount: 0,
   status: 'starting',
   statusDetail: null,
   usage: {
@@ -89,7 +102,7 @@ const initialState: SessionState = {
   maxTokens: readPositiveInt('AETHER_MAX_TOKENS'),
   disableBuiltinTools: process.env.AETHER_NO_BUILTIN_TOOLS === '1',
   apiKey: process.env.AETHER_API_KEY || null,
-  baseUrl: process.env.AETHER_BASE_URL || null
+  baseUrl: envBaseUrl(initialProvider)
 }
 
 export const sessionState = atom<SessionState>(initialState)
@@ -105,6 +118,24 @@ export const sessionActions = {
 
   setCatalog(catalog: SlashCommandInfo[]): void {
     sessionState.set({ ...sessionState.get(), catalog })
+  },
+
+  setBannerData(input: {
+    recentSessions?: SessionInfo[]
+    bannerTools?: string[]
+    bannerToolCount?: number
+    bannerSkills?: string[]
+    bannerSkillCount?: number
+  }): void {
+    const current = sessionState.get()
+    sessionState.set({
+      ...current,
+      recentSessions: input.recentSessions ?? current.recentSessions,
+      bannerTools: input.bannerTools ?? current.bannerTools,
+      bannerToolCount: input.bannerToolCount ?? current.bannerToolCount,
+      bannerSkills: input.bannerSkills ?? current.bannerSkills,
+      bannerSkillCount: input.bannerSkillCount ?? current.bannerSkillCount
+    })
   },
 
   setSession(info: SessionInfo | null, sessionId?: string | null): void {

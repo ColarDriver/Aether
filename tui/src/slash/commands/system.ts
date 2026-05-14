@@ -1,3 +1,4 @@
+import { chatActions } from '../../store/chatStore.js'
 import type { SlashCommand } from '../dispatcher.js'
 
 export const systemCommand: SlashCommand = {
@@ -13,11 +14,16 @@ export const systemCommand: SlashCommand = {
         text: current ? `system override:\n${current}` : 'No system override set.'
       }
     }
+    // Mirrors Python `_cmd_system` in `aether/cli/commands.py:138-143`:
+    // setting a new system prompt clears the visible transcript so the
+    // next turn starts with a clean conversation context (the prior
+    // exchanges would be inconsistent with the new instruction).
     ctx.setSystemOverride(text)
+    chatActions.reset()
     return {
       kind: 'note',
-      level: 'info',
-      text: 'System override will be sent with the next agent.run request.'
+      level: 'success',
+      text: 'System override updated; cleared conversation history.'
     }
   }
 }

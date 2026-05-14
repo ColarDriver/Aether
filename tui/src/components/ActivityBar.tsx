@@ -2,7 +2,9 @@ import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, type ReactElement } from 'react'
 
+import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
 import { theme } from '../lib/theme.js'
+import { categoryFor, verbForCategory } from '../lib/toolCategory.js'
 import { activityActions, activityState, type ActivityStatus } from '../store/activityStore.js'
 import { sessionState } from '../store/sessionStore.js'
 
@@ -102,22 +104,30 @@ export function ActivityBar(): ReactElement {
   const isError = activity.status === 'error' || activity.status === 'cancelled'
   const colorName = isError ? 'error' : activity.status === 'idle' ? 'dim' : 'status'
   const colorProps = theme.colorProps(colorName)
+  // Mirror Python `_interrupt_visual_pending` — once the user requested an
+  // interrupt we drop the spinner/segments immediately and read as
+  // "cancelling" until the gateway's cancelled/error event lands. Without
+  // this latch the bar keeps spinning for the round-trip duration, which
+  // reads as "the interrupt didn't register".
+  if (activity.interruptPending) {
+    const dim = theme.colorProps('dim')
+    return (
+      <Box>
+        <Text {...dim} italic>
+          {ascii ? '...' : '…'} interrupting
+        </Text>
+      </Box>
+    )
+  }
   const isActive = ACTIVE_STATES.has(activity.status)
   const frames = ascii ? SPINNER_FRAMES_ASCII : SPINNER_FRAMES
   const icon = isActive
     ? frames[activity.animationTick % frames.length]
     : (ascii ? STATIC_ICON_ASCII : STATIC_ICON)[activity.status]
 
-  // Stable verb — never rotates while a turn is in flight. Earlier we tried
-  // pondering/forging/channelling/composing rotation (mirroring Python
-  // `THINKING_VERBS`) but during a long-blocked LLM call the verb word
-  // changing every ~3s reads as "the UI is doing something" rather than
-  // "the model is taking a while", which actively misleads the user. The
-  // spinner glyph + elapsed-second counter convey progress without the
-  // visual churn.
-  const verb = verbForStatus(activity.status)
-  const elapsed = activity.thinkingStartedAt
-    ? Math.max(0, Math.floor((Date.now() - activity.thinkingStartedAt) / 1000))
+  const verb = verbForStatus(activity)
+  const elapsedMs = activity.thinkingStartedAt
+    ? Math.max(0, Date.now() - activity.thinkingStartedAt)
     : null
 
   // Approximate token count from streamed chars when the gateway hasn't
@@ -133,23 +143,22 @@ export function ActivityBar(): ReactElement {
         : 0
 
   const segments: string[] = []
-  if (activity.iteration > 0) {
-    if (activity.maxIterations) {
-      segments.push(`iter ${activity.iteration}/${activity.maxIterations}`)
-    } else {
-      segments.push(`iter ${activity.iteration}`)
-    }
-  }
-  if (activity.tokensIn || tokensOutDisplay) {
-    segments.push(
-      `${formatTokens(activity.tokensIn)} in / ${formatTokens(tokensOutDisplay)} out`
-    )
+  // Mirrors Python `activity.py:236-241` — only the output (↓) count is
+  // surfaced in the live bar; input tokens stay in `/stats` and the
+  // per-turn footer. The `↓` arrow doubles as a flow-direction hint
+  // ("tokens flowing out of the model"), matching Claude Code's
+  // SpinnerAnimationRow convention.
+  if (tokensOutDisplay) {
+    segments.push(`↓ ${formatTokens(tokensOutDisplay)} tokens`)
   }
   if (session.sessionId) {
     segments.push(session.sessionId.slice(0, 8))
   }
   if (session.model) {
     segments.push(session.model)
+  }
+  if (activity.status === 'thinking' && activity.responseStartedAt === null) {
+    segments.push('thinking')
   }
   // "thought for Ns" — appears once the response has started and the
   // pre-response wait was long enough to be meaningful. Mirrors Python
@@ -173,40 +182,97 @@ export function ActivityBar(): ReactElement {
     segments.push(loopLabel)
   }
 
-  // No outer marginTop — Python pins the activity bar flush above the
-  // composer with no spacer. The bar already has enough visual weight
-  // (spinner glyph + colour) to read as a separate region.
+  // Width-budget the suffix the way Python `activity.py:262-285` does:
+  // build the verb+icon prefix first, then add elapsed/segments while
+  // budget remains; drop trailing fields when over budget so a narrow
+  // terminal doesn't wrap mid-row. The verb is always preserved.
+  const cols = process.stdout?.columns ?? 100
+  const prefix = `${icon ?? ' '} ${verb}`
+  const detail = detailForStatus(activity)
+  const detailSegment = detail ? ` · ${detail}` : ''
+  const baseWidth = prefix.length + detailSegment.length
+  const elapsedSegment =
+    elapsedMs !== null && elapsedMs >= 1000 ? ` · ${formatDurationMs(elapsedMs)}` : ''
+  // Build a flat list ordered by priority (most important kept first). Iter
+  // and model identifiers are useful context; thinking-time and loop label
+  // are nice-to-have. Order roughly matches Python's `suffix_fields`.
+  const orderedSegments = [...segments]
+  let runningWidth = baseWidth + elapsedSegment.length
+  const kept: string[] = []
+  for (const segment of orderedSegments) {
+    const addition = ` · ${segment}`.length
+    if (runningWidth + addition > cols - 2 && kept.length > 0) {
+      break
+    }
+    kept.push(segment)
+    runningWidth += addition
+  }
+
+  const shimmerSlices = isActive ? shimmer(verb, activity.animationTick) : null
+  const shimmerColor = theme.color('text') ?? 'white'
+
   return (
     <Box>
-      <Text {...colorProps}>
-        {icon ?? ' '} <Text bold>{verb}</Text>
-        {activity.statusDetail ? <Text dimColor> · {activity.statusDetail}</Text> : null}
-        {elapsed !== null && elapsed > 0 ? (
-          <Text dimColor> · {elapsed}s</Text>
-        ) : null}
-        {segments.length > 0 ? <Text dimColor> · {segments.join(' · ')}</Text> : null}
-      </Text>
+      <Text {...colorProps}>{icon ?? ' '} </Text>
+      {shimmerSlices ? (
+        <>
+          {shimmerSlices.before ? (
+            <Text bold {...colorProps}>{shimmerSlices.before}</Text>
+          ) : null}
+          {shimmerSlices.highlight ? (
+            <Text bold color={shimmerColor}>{shimmerSlices.highlight}</Text>
+          ) : null}
+          {shimmerSlices.after ? (
+            <Text bold {...colorProps}>{shimmerSlices.after}</Text>
+          ) : null}
+        </>
+      ) : (
+        <Text bold {...colorProps}>{verb}</Text>
+      )}
+      {detailSegment ? <Text dimColor>{detailSegment}</Text> : null}
+      {elapsedSegment ? <Text dimColor>{elapsedSegment}</Text> : null}
+      {kept.length > 0 ? <Text dimColor> · {kept.join(' · ')}</Text> : null}
     </Box>
   )
 }
 
-function verbForStatus(status: ActivityStatus): string {
-  switch (status) {
+function verbForStatus(activity: { status: ActivityStatus; statusDetail: string | null; turnVerbIndex: number }): string {
+  switch (activity.status) {
     case 'thinking':
-      return 'thinking'
     case 'responding':
-      return 'responding'
+      return thinkingVerbAt(activity.turnVerbIndex)
     case 'tool_use':
-      return 'tool use'
+      return presentVerbForTool(activity.statusDetail)
     case 'cancelled':
-      return 'cancelled'
+      return 'Cancelled'
     case 'error':
-      return 'error'
+      return 'Error'
     case 'idle':
-      return 'idle'
+      return 'Idle'
     case 'starting':
-      return 'starting'
+      return 'Starting'
   }
+}
+
+function detailForStatus(activity: {
+  status: ActivityStatus
+  statusDetail: string | null
+}): string | null {
+  if (!activity.statusDetail) {
+    return null
+  }
+  if (activity.status === 'tool_use') {
+    return null
+  }
+  return activity.statusDetail
+}
+
+function presentVerbForTool(toolName: string | null): string {
+  if (!toolName) {
+    return 'Working'
+  }
+  const category = categoryFor(toolName)
+  return verbForCategory(category, false)[0]
 }
 
 function formatTokens(value: number): string {
@@ -217,4 +283,21 @@ function formatTokens(value: number): string {
     return `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k`
   }
   return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+}
+
+/**
+ * Mirror of Python `activity.format_duration_ms`: `12s` / `2m 14s` / `1h 03m`.
+ * Activity bar reads from milliseconds, so this avoids the loss-of-precision
+ * Math.floor(ms/1000) introduces when an in-flight turn crosses a minute
+ * boundary mid-render.
+ */
+function formatDurationMs(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+  }
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}m`
 }

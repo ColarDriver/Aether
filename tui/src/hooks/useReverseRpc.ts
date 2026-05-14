@@ -159,7 +159,12 @@ export function defaultDeny(method: string): JsonObject {
     return { confirmed: false }
   }
   if (method === 'permission.request') {
-    return { type: 'deny', reason: 'overlay dismissed' }
+    // Mirrors Python `_reject_active_permission` / `_abort_all_permission_requests`
+    // in `aether/cli/app.py`: a non-user-driven dismiss (process exit, panel
+    // unmount, deadline) maps to ABORT with no user-supplied feedback.
+    // `feedback` is the wire field consumed by `_decision_from_wire`; the
+    // earlier `reason` key was simply dropped by Pydantic.
+    return { type: 'abort', feedback: 'overlay dismissed' }
   }
   return {}
 }

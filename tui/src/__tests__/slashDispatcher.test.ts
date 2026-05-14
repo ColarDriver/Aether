@@ -71,7 +71,7 @@ describe('slash dispatcher', () => {
 
     await expect(dispatchSlash('/interrupt', ctx)).resolves.toMatchObject({
       kind: 'note',
-      text: 'interrupt requested'
+      text: 'interrupt'
     })
     expect(request).toHaveBeenCalledWith('agent.cancel', { session_id: 's1' })
   })
@@ -145,6 +145,6 @@ function makeSessionInfo(input: Partial<SessionInfo> = {}): SessionInfo {
     updated_at: 0,
     provider: input.provider ?? 'openai',
     model: input.model ?? 'gpt-4o',
-    base_url: input.base_url
+    ...(input.base_url !== undefined ? { base_url: input.base_url } : {})
   }
 }

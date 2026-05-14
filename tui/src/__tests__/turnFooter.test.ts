@@ -83,11 +83,15 @@ describe('per-turn footer', () => {
       type: 'cancelled',
       session_id: 's',
       run_id: 'r',
-      reason: 'user'
+      reason: 'user-interrupt'
     })
     const list = footers()
     expect(list).toHaveLength(1)
     expect(list[0] ?? '').toMatch(/^[⏹] cancelled/)
+    expect(list[0] ?? '').not.toContain('user interrupt')
+    expect(
+      chatItems.get().filter((item) => item.kind === 'note').map((item) => item.text)
+    ).toEqual([expect.stringMatching(/^[⏹] cancelled/)])
   })
 
   it('error event prints a "failed" footer with the error counter', () => {

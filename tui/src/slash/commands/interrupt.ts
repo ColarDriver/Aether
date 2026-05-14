@@ -9,6 +9,6 @@ export const interruptCommand: SlashCommand = {
       return { kind: 'note', level: 'warn', text: 'No active session to interrupt.' }
     }
     await ctx.client.request('agent.cancel', { session_id: sessionId })
-    return { kind: 'note', level: 'warn', text: 'interrupt requested' }
+    return { kind: 'note', level: 'warn', text: 'interrupt' }
   }
 }

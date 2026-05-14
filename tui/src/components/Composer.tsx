@@ -1,9 +1,11 @@
 import { Box, Text, useInput } from 'ink'
 import { useStore } from '@nanostores/react'
+import stringWidth from 'string-width'
 import { useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 
 import { applyCompletion, buildCompleterState } from '../lib/slashCompleter.js'
 import { theme } from '../lib/theme.js'
+import { activityState } from '../store/activityStore.js'
 import { chatActions } from '../store/chatStore.js'
 import { composerActions, composerState } from '../store/composerStore.js'
 import { focusActions, focusOwner } from '../store/focusStore.js'
@@ -33,11 +35,18 @@ export function Composer(props: ComposerProps): ReactElement {
   const ctrlCTimerRef = useRef<number>(0)
   const [hint, setHint] = useState<string | null>(null)
   const [completerCursor, setCompleterCursor] = useState(0)
+  // Anchor the slash popup to the leading token at the moment cycling started,
+  // not to the current draft. Without this, Tab / Up / Down stamp the draft
+  // with the highlighted completion, which then re-narrows `matches` to that
+  // single command and the user gets stuck on the first cycle. Mirrors
+  // prompt_toolkit's "menu mode" Python uses: the buffer text updates while
+  // the candidate list stays pinned to the original prefix.
+  const [completerAnchor, setCompleterAnchor] = useState<string | null>(null)
 
-  const completer = useMemo(
-    () => buildCompleterState(state.draft, session.catalog),
-    [state.draft, session.catalog]
-  )
+  const completer = useMemo(() => {
+    const source = completerAnchor ?? state.draft
+    return buildCompleterState(source, session.catalog)
+  }, [completerAnchor, state.draft, session.catalog])
 
   function flashHint(message: string): void {
     setHint(message)
@@ -53,16 +62,48 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
 
+      // Helpers used by both ESC (close popup) and the editing branches
+      // below. Cycling keys (Tab / Up / Down) call cycleCompleter and
+      // leave the anchor in place; every other key that modifies the
+      // draft calls resetCompleterAnchor before its action so the popup
+      // returns to live mode.
+      const cycleCompleter = (delta: number): void => {
+        if (!(completer.active && completer.matches.length > 0)) {
+          return
+        }
+        // First cycle pins the popup to the current token so subsequent
+        // cycles see the same candidate list even after the draft is
+        // stamped with the highlighted command. Mirrors prompt_toolkit's
+        // "menu mode" Python uses.
+        if (completerAnchor === null) {
+          setCompleterAnchor(state.draft)
+        }
+        const nextCursor =
+          (completerCursor + delta + completer.matches.length) % completer.matches.length
+        setCompleterCursor(nextCursor)
+        const candidate = completer.matches[nextCursor]
+        if (candidate) {
+          composerActions.setDraft(applyCompletion(state.draft, candidate))
+        }
+      }
+      const resetCompleterAnchor = (): void => {
+        if (completerAnchor !== null) {
+          setCompleterAnchor(null)
+        }
+      }
+      const completerActive = completer.active && completer.matches.length > 0
+
       // ── Cancel / exit chord ────────────────────────────────────────
       if (key.ctrl && input === 'c') {
         const now = Date.now()
         const lastCtrlC = ctrlCTimerRef.current
-        if (state.draft) {
-          composerActions.clear()
-          return
-        }
         if (busy) {
           onCancel()
+          return
+        }
+        if (state.draft) {
+          resetCompleterAnchor()
+          composerActions.clear()
           return
         }
         if (now - lastCtrlC < DOUBLE_CTRL_C_MS) {
@@ -79,6 +120,7 @@ export function Composer(props: ComposerProps): ReactElement {
           return
         }
         // Ctrl-D in mid-draft deletes char forward (readline convention).
+        resetCompleterAnchor()
         composerActions.deleteForward()
         return
       }
@@ -93,14 +135,17 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
       if (key.ctrl && input === 'u') {
+        resetCompleterAnchor()
         composerActions.killToLineStart()
         return
       }
       if (key.ctrl && input === 'k') {
+        resetCompleterAnchor()
         composerActions.killToLineEnd()
         return
       }
       if (key.ctrl && input === 'w') {
+        resetCompleterAnchor()
         composerActions.deleteWordBackward()
         return
       }
@@ -119,6 +164,15 @@ export function Composer(props: ComposerProps): ReactElement {
         const lastEsc = escTimerRef.current
         if (busy) {
           onCancel()
+          return
+        }
+        // When the slash popup is anchored (user cycled), ESC closes the
+        // popup back to its live state without clearing the draft. Same
+        // behaviour as prompt_toolkit's completion-menu Python uses, so a
+        // user who cycled past the intended command can press ESC and
+        // keep the cycled draft for editing.
+        if (completerAnchor !== null) {
+          resetCompleterAnchor()
           return
         }
         if (state.draft) {
@@ -140,17 +194,9 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
 
-      // ── Tab: slash completion or focus hand-off ──────────────────
       if (key.tab) {
-        if (completer.active && completer.matches.length > 0) {
-          const direction = key.shift ? -1 : 1
-          const nextCursor =
-            (completerCursor + direction + completer.matches.length) % completer.matches.length
-          setCompleterCursor(nextCursor)
-          const candidate = completer.matches[nextCursor]
-          if (candidate) {
-            composerActions.setDraft(applyCompletion(state.draft, candidate))
-          }
+        if (completerActive) {
+          cycleCompleter(key.shift ? -1 : 1)
           return
         }
         focusActions.set('transcript')
@@ -175,6 +221,10 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
       if (key.upArrow) {
+        if (completerActive) {
+          cycleCompleter(-1)
+          return
+        }
         // In multiline mode, navigate within the buffer; otherwise walk history.
         if (state.multiline) {
           if (composerActions.moveLineUp()) {
@@ -185,6 +235,10 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
       if (key.downArrow) {
+        if (completerActive) {
+          cycleCompleter(1)
+          return
+        }
         if (state.multiline) {
           if (composerActions.moveLineDown()) {
             return
@@ -213,10 +267,12 @@ export function Composer(props: ComposerProps): ReactElement {
       // TODO about merging these in a future major version
       // (node_modules/ink/build/parse-keypress.js:431).
       if (key.backspace || key.delete) {
+        resetCompleterAnchor()
         composerActions.backspace()
         return
       }
       if (key.return) {
+        resetCompleterAnchor()
         if (state.multiline || key.meta) {
           composerActions.newline()
         } else {
@@ -225,6 +281,7 @@ export function Composer(props: ComposerProps): ReactElement {
         return
       }
       if (input) {
+        resetCompleterAnchor()
         composerActions.insert(input)
         setCompleterCursor(0)
       }
@@ -232,10 +289,10 @@ export function Composer(props: ComposerProps): ReactElement {
     { isActive }
   )
 
-  const borderColor = hasOverlay || owner !== 'composer' ? 'gray' : disabled ? 'gray' : 'cyan'
+  const borderColor = theme.color('border') ?? 'gray'
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       {completer.active && completer.matches.length > 0 ? (
         <SlashPopup
           matches={completer.matches}
@@ -243,7 +300,7 @@ export function Composer(props: ComposerProps): ReactElement {
           fullCount={completer.matches.length}
         />
       ) : null}
-      <Box borderStyle="single" borderColor={borderColor} paddingX={1}>
+      <Box width="100%" borderStyle="single" borderColor={borderColor} paddingX={1}>
         <Box flexDirection="column" flexGrow={1}>
           <ComposerLines draft={state.draft} cursor={state.cursor} active={isActive} />
         </Box>
@@ -259,15 +316,20 @@ export function Composer(props: ComposerProps): ReactElement {
 
 /**
  * Vertical popup rendered above the composer when the draft starts with `/`.
- * Mirrors the Python `SlashCompleter` floating menu (claude-code style) —
- * each row shows `/cmd` plus its description, with the focused row
- * highlighted. Tab cycles, Enter executes the highlighted command (handled
- * upstream in the composer's input handler).
+ * Mirrors Python `aether/cli/app.py` `completion-menu.*` styling exactly:
+ *
+ *   completion-menu.completion          → bg #1E293B, fg dim
+ *   completion-menu.completion.current  → bg AETHER_PRIMARY, fg white bold
+ *   completion-menu.meta                → bg #1E293B, fg dim italic
+ *   completion-menu.meta.current        → bg AETHER_PRIMARY, fg white italic
+ *
+ * No border, no marker, no in-popup key hints — the composer's main footer
+ * already advertises the keys. The selection is communicated entirely by
+ * background colour, same as prompt_toolkit's default completion menu.
  */
 function SlashPopup({
   matches,
-  cursor,
-  fullCount
+  cursor
 }: {
   matches: ReadonlyArray<{ name: string; description: string }>
   cursor: number
@@ -277,52 +339,74 @@ function SlashPopup({
   // Keep the focused row inside the visible window.
   const start = Math.max(0, Math.min(cursor - Math.floor(VISIBLE / 2), Math.max(0, matches.length - VISIBLE)))
   const slice = matches.slice(start, start + VISIBLE)
-  const nameWidth = Math.max(...slice.map((cmd) => cmd.name.length), 8)
-  const accent = theme.colorProps('accent')
-  const dim = theme.colorProps('dim')
-  const border = theme.color('border')
+  const popupWidth = Math.max(24, composerPopupWidth())
+  const nameWidth = Math.max(...slice.map((cmd) => stringWidth(cmd.name)), 8)
+  const descWidth = Math.max(...slice.map((cmd) => stringWidth(cmd.description)), 1)
+  const dimFg = theme.color('dim')
+  const brandBg = theme.color('brand')
+  const popupBg = theme.color('popup_bg')
+
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      {...(border ? { borderColor: border } : {})}
-      paddingX={1}
-    >
+    <Box flexDirection="column" width="100%">
       {slice.map((cmd, idx) => {
         const realIdx = start + idx
         const focused = realIdx === cursor
-        const namePadded = cmd.name.padEnd(nameWidth)
-        return focused ? (
-          <Box key={cmd.name}>
-            <Text {...accent}>{'▸ '}</Text>
-            <Text {...accent} bold>
-              {namePadded}
-            </Text>
-            <Text> </Text>
-            <Text>{cmd.description}</Text>
-          </Box>
-        ) : (
-          <Box key={cmd.name}>
-            <Text>{'  '}</Text>
-            <Text {...accent}>{namePadded}</Text>
-            <Text> </Text>
-            <Text {...dim}>{cmd.description}</Text>
+        const namePadded = padDisplayWidth(cmd.name, nameWidth)
+        const descPadded = padDisplayWidth(cmd.description, descWidth)
+        const filler = ' '.repeat(
+          Math.max(
+            0,
+            popupWidth -
+              stringWidth(` ${namePadded}  ${descPadded} `)
+          )
+        )
+        if (focused) {
+          // `completion-menu.completion.current` → bg=primary, fg=white bold
+          // `completion-menu.meta.current`       → bg=primary, fg=white italic
+          const bgProps = brandBg ? { backgroundColor: brandBg } : {}
+          return (
+            <Box key={cmd.name} width="100%">
+              <Text {...bgProps} color="white">{' '}</Text>
+              <Text {...bgProps} color="white" bold>{namePadded}</Text>
+              <Text {...bgProps} color="white">{'  '}</Text>
+              <Text {...bgProps} color="white" italic>{descPadded}</Text>
+              <Text {...bgProps} color="white">{' ' + filler}</Text>
+            </Box>
+          )
+        }
+        // `completion-menu.completion` → bg=#1E293B, fg=dim
+        // `completion-menu.meta`       → bg=#1E293B, fg=dim italic
+        const bgProps = popupBg ? { backgroundColor: popupBg } : {}
+        const fgProps = dimFg ? { color: dimFg } : {}
+        return (
+          <Box key={cmd.name} width="100%">
+            <Text {...bgProps} {...fgProps}>{' '}</Text>
+            <Text {...bgProps} {...fgProps}>{namePadded}</Text>
+            <Text {...bgProps} {...fgProps}>{'  '}</Text>
+            <Text {...bgProps} {...fgProps} italic>{descPadded}</Text>
+            <Text {...bgProps} {...fgProps}>{' ' + filler}</Text>
           </Box>
         )
       })}
-      {fullCount > VISIBLE ? (
-        <Box>
-          <Text {...dim}>
-            ↹ {cursor + 1}/{fullCount} · Tab next · Shift+Tab prev · Enter run · ESC close
-          </Text>
-        </Box>
-      ) : (
-        <Box>
-          <Text {...dim}>↹ Tab next · Enter run · ESC close</Text>
-        </Box>
-      )}
     </Box>
   )
+}
+
+function composerPopupWidth(): number {
+  const cols = process.stdout?.columns
+  if (!Number.isFinite(cols) || !cols) {
+    return 78
+  }
+  // App root uses `paddingX={1}`, so the composer spans roughly cols - 2.
+  return Math.max(24, cols - 2)
+}
+
+function padDisplayWidth(value: string, width: number): string {
+  const current = stringWidth(value)
+  if (current >= width) {
+    return value
+  }
+  return value + ' '.repeat(width - current)
 }
 
 /**
@@ -341,7 +425,7 @@ function ComposerLines({
   active: boolean
 }): ReactElement {
   const lines = draft.split('\n')
-  const accentProps = theme.colorProps('accent')
+  const promptProps = theme.colorProps('brand')
 
   // Compute (lineIndex, columnIndex) for the cursor.
   let remaining = cursor
@@ -364,7 +448,7 @@ function ComposerLines({
         const isCursorLine = active && idx === cursorLine
         return (
           <Text key={idx}>
-            <Text {...accentProps}>{prefix}</Text>
+            <Text {...promptProps}>{prefix}</Text>
             {isCursorLine ? renderCursorLine(line, cursorCol) : <Text>{line || ' '}</Text>}
           </Text>
         )
@@ -386,6 +470,10 @@ function renderCursorLine(line: string, col: number): ReactNode {
   )
 }
 
+// Mirrors Python `app.py:1165-1238` keymap fragments — kept visible at all
+// times so users always know which keys map to which actions. State-conditional
+// segments (queued count, "running…", "interrupting…", flash hint) layer on
+// top of the static keymap rather than replacing it.
 function ComposerFooter({
   hint,
   queued,
@@ -394,15 +482,53 @@ function ComposerFooter({
   hint: string | null
   queued: number
   busy: boolean
-}): ReactElement | null {
-  if (!hint && queued === 0 && !busy) {
-    return null
-  }
+}): ReactElement {
+  const activity = useStore(activityState)
+  const dim = theme.colorProps('dim')
+  const accent = theme.colorProps('accent')
+  const escLabel = activity.interruptPending
+    ? ' interrupted'
+    : busy
+      ? ' interrupt'
+      : queued > 0
+        ? ' pop queued'
+        : ' clear'
   return (
-    <Box paddingX={1}>
-      {queued > 0 ? <Text color="magenta">▸ queued ({queued}) </Text> : null}
-      {busy ? <Text dimColor>· turn running · ESC cancel </Text> : null}
-      {hint ? <Text dimColor>· {hint}</Text> : null}
+    <Box paddingX={1} flexDirection="column">
+      <Box>
+        <Text {...dim}>
+          <Text {...accent}>Enter</Text> send
+          {'  '}
+          <Text {...dim}>·</Text>{' '}
+          <Text {...accent}>Shift+Enter</Text> newline
+          {'  '}
+          <Text {...dim}>·</Text>{' '}
+          <Text {...accent}>ESC</Text>{escLabel}
+          {'  '}
+          <Text {...dim}>·</Text>{' '}
+          <Text {...accent}>/help</Text> commands
+          {'  '}
+          <Text {...dim}>·</Text>{' '}
+          <Text {...accent}>Ctrl-D</Text> exit
+        </Text>
+      </Box>
+      {queued > 0 || busy || hint || activity.interruptPending ? (
+        <Box>
+          {queued > 0 ? (
+            <Text bold color="magenta">
+              ▸ queued ({queued}){' '}
+            </Text>
+          ) : null}
+          {/* Interrupt-pending takes precedence over the plain busy hint — */}
+          {/* mirrors Python `app.py:1222` priority order. */}
+          {activity.interruptPending ? (
+            <Text {...dim} italic>interrupting… </Text>
+          ) : busy ? (
+            <Text {...dim} italic>running… </Text>
+          ) : null}
+          {hint ? <Text {...dim}>· {hint}</Text> : null}
+        </Box>
+      ) : null}
     </Box>
   )
 }

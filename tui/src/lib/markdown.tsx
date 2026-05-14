@@ -1,7 +1,13 @@
 import { Box, Text } from 'ink'
 import { marked, type Token, type Tokens } from 'marked'
+import stringWidth from 'string-width'
 import { useMemo, type ReactElement, type ReactNode } from 'react'
 
+import {
+  parseMarkdownLite,
+  type InlineSegment,
+  type MarkdownBlock
+} from './markdownLite.js'
 import { theme } from './theme.js'
 
 let highlightCache: ((code: string, language?: string) => string) | null = null
@@ -52,6 +58,7 @@ function tokenise(text: string): Token[] {
 
 export interface MarkdownProps {
   text: string
+  streaming?: boolean
 }
 
 /**
@@ -65,8 +72,27 @@ export interface MarkdownProps {
  * blocks, blockquotes, lists. Tables fall back to a row-per-row plain text
  * rendering — Ink does not have a great table primitive.
  */
-export function Markdown({ text }: MarkdownProps): ReactElement {
-  const tokens = useMemo(() => tokenise(text || ''), [text])
+export function Markdown({ text, streaming = false }: MarkdownProps): ReactElement {
+  const tokens = useMemo(
+    () => (streaming ? [] : tokenise(text || '')),
+    [streaming, text]
+  )
+  const liteBlocks = useMemo(
+    () => (streaming ? parseMarkdownLite(text || '') : []),
+    [streaming, text]
+  )
+
+  if (streaming) {
+    if (liteBlocks.length === 0) {
+      return <Text dimColor>...</Text>
+    }
+    return (
+      <Box flexDirection="column">
+        {liteBlocks.map((block, idx) => renderLiteBlock(block, idx))}
+      </Box>
+    )
+  }
+
   if (tokens.length === 0) {
     return <Text dimColor>...</Text>
   }
@@ -75,6 +101,111 @@ export function Markdown({ text }: MarkdownProps): ReactElement {
       {tokens.map((token, idx) => renderToken(token, idx))}
     </Box>
   )
+}
+
+function renderLiteBlock(block: MarkdownBlock, key: number): ReactElement {
+  switch (block.kind) {
+    case 'heading':
+      return (
+        <Box key={key} marginTop={key === 0 ? 0 : 1}>
+          <Text bold underline={block.depth <= 2}>
+            {renderLiteInline(block.segments)}
+          </Text>
+        </Box>
+      )
+    case 'paragraph':
+      return (
+        <Box key={key} marginTop={key === 0 ? 0 : 1}>
+          <Text>{renderLiteInline(block.segments)}</Text>
+        </Box>
+      )
+    case 'list':
+      return (
+        <Box key={key} flexDirection="column" marginLeft={2} marginTop={key === 0 ? 0 : 1}>
+          {block.items.map((item, idx) => (
+            <Box key={idx}>
+              <Text dimColor>{block.ordered ? `${block.start + idx}.` : '•'} </Text>
+              <Box flexDirection="column">
+                <Text>{renderLiteInline(item)}</Text>
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      )
+    case 'hr':
+      return renderHorizontalRule(key)
+    case 'table':
+      return renderLiteTable(block, key)
+    case 'code':
+      return renderLiteCodeBlock(block, key)
+  }
+}
+
+function renderLiteCodeBlock(
+  block: Extract<MarkdownBlock, { kind: 'code' }>,
+  key: number
+): ReactElement {
+  const highlighted = getHighlight()(block.text, block.language ?? undefined)
+  return (
+    <Box
+      key={key}
+      borderStyle="single"
+      {...(theme.color('border') ? { borderColor: theme.color('border')! } : {})}
+      paddingX={1}
+      flexDirection="column"
+      marginTop={key === 0 ? 0 : 1}
+    >
+      {block.language ? <Text dimColor>{block.language}</Text> : null}
+      <Text>{highlighted}</Text>
+    </Box>
+  )
+}
+
+function renderLiteTable(
+  block: Extract<MarkdownBlock, { kind: 'table' }>,
+  key: number
+): ReactElement {
+  const headers = block.headers.map((segments, idx) => ({
+    key: `h_${idx}`,
+    display: flattenLiteInline(segments)
+  }))
+  const rows = block.rows.map((row, rowIdx) =>
+    row.map((segments, cellIdx) => ({
+      key: `r_${rowIdx}_${cellIdx}`,
+      display: flattenLiteInline(segments)
+    }))
+  )
+  return renderTableGrid(headers, rows, key)
+}
+
+function renderLiteInline(segments: InlineSegment[]): ReactNode {
+  return segments.map((segment, index) => {
+    switch (segment.kind) {
+      case 'text':
+        return segment.text
+      case 'bold':
+        return (
+          <Text key={index} bold>
+            {segment.text}
+          </Text>
+        )
+      case 'italic':
+        return (
+          <Text key={index} italic>
+            {segment.text}
+          </Text>
+        )
+      case 'code':
+        return (
+          <Text
+            key={index}
+            {...(theme.color('dim') ? { color: theme.color('dim')! } : {})}
+          >
+            {segment.text}
+          </Text>
+        )
+    }
+  })
 }
 
 function renderToken(token: Token, key: number): ReactElement | null {
@@ -90,11 +221,7 @@ function renderToken(token: Token, key: number): ReactElement | null {
     case 'list':
       return renderList(token as Tokens.List, key)
     case 'hr':
-      return (
-        <Box key={key}>
-          <Text dimColor>──────────────</Text>
-        </Box>
-      )
+      return renderHorizontalRule(key)
     case 'space':
       return null
     case 'text':
@@ -121,11 +248,10 @@ function renderToken(token: Token, key: number): ReactElement | null {
 }
 
 function renderHeading(token: Tokens.Heading, key: number): ReactElement {
-  const colorProps = theme.colorProps('brand')
   return (
     <Box key={key} marginTop={key === 0 ? 0 : 1}>
-      <Text bold {...colorProps}>
-        {'#'.repeat(token.depth)} {renderInlineNodes(token.tokens)}
+      <Text bold underline={token.depth <= 2}>
+        {renderInlineNodes(token.tokens)}
       </Text>
     </Box>
   )
@@ -133,7 +259,9 @@ function renderHeading(token: Tokens.Heading, key: number): ReactElement {
 
 function renderParagraph(token: Tokens.Paragraph, key: number): ReactElement {
   return (
-    <Text key={key}>{renderInlineNodes(token.tokens)}</Text>
+    <Box key={key} marginTop={key === 0 ? 0 : 1}>
+      <Text>{renderInlineNodes(token.tokens)}</Text>
+    </Box>
   )
 }
 
@@ -159,7 +287,7 @@ function renderCodeBlock(token: Tokens.Code, key: number): ReactElement {
 
 function renderBlockquote(token: Tokens.Blockquote, key: number): ReactElement {
   return (
-    <Box key={key} flexDirection="column" marginLeft={2}>
+    <Box key={key} flexDirection="column" marginLeft={2} marginTop={key === 0 ? 0 : 1}>
       {(token.tokens ?? []).map((child, idx) => {
         const inner = renderToken(child, idx)
         return inner === null ? null : (
@@ -175,15 +303,18 @@ function renderBlockquote(token: Tokens.Blockquote, key: number): ReactElement {
 
 function renderList(token: Tokens.List, key: number): ReactElement {
   return (
-    <Box key={key} flexDirection="column" marginLeft={1}>
+    <Box key={key} flexDirection="column" marginLeft={2} marginTop={key === 0 ? 0 : 1}>
       {token.items.map((item, idx) => {
         const start = typeof token.start === 'number' ? token.start : 1
         const marker = token.ordered ? `${start + idx}.` : '•'
         return (
-          <Box key={idx}>
+          <Box key={idx} alignItems="flex-start">
             <Text dimColor>{marker} </Text>
             <Box flexDirection="column">
-              <Text>{renderInlineNodes(item.tokens ?? [])}</Text>
+              {(item.tokens ?? []).map((child, childIdx) => {
+                const rendered = renderToken(child, childIdx)
+                return rendered === null ? null : rendered
+              })}
             </Box>
           </Box>
         )
@@ -193,22 +324,17 @@ function renderList(token: Tokens.List, key: number): ReactElement {
 }
 
 function renderTable(token: Tokens.Table, key: number): ReactElement {
-  const headers = token.header.map((cell) => cellText(cell.tokens))
-  const rows = token.rows.map((row) => row.map((cell) => cellText(cell.tokens)))
-  const widths = headers.map((header, idx) =>
-    Math.max(header.length, ...rows.map((row) => row[idx]?.length ?? 0))
+  const headers = token.header.map((cell, idx) => ({
+    key: `h_${idx}`,
+    display: inlineDisplay(cell.tokens)
+  }))
+  const rows = token.rows.map((row, rowIdx) =>
+    row.map((cell, cellIdx) => ({
+      key: `r_${rowIdx}_${cellIdx}`,
+      display: inlineDisplay(cell.tokens)
+    }))
   )
-  const formatRow = (cells: string[]): string =>
-    cells.map((cell, idx) => cell.padEnd(widths[idx] ?? cell.length)).join('  ')
-  return (
-    <Box key={key} flexDirection="column" marginTop={key === 0 ? 0 : 1}>
-      <Text bold>{formatRow(headers)}</Text>
-      <Text dimColor>{widths.map((w) => '─'.repeat(w)).join('  ')}</Text>
-      {rows.map((row, idx) => (
-        <Text key={idx}>{formatRow(row)}</Text>
-      ))}
-    </Box>
-  )
+  return renderTableGrid(headers, rows, key, token.align ?? [])
 }
 
 function renderInlineNodes(tokens: Token[] | undefined): ReactNode {
@@ -228,8 +354,14 @@ function renderInlineNodes(tokens: Token[] | undefined): ReactNode {
 
 function InlineToken({ token }: { token: Token }): ReactElement {
   switch (token.type) {
-    case 'text':
-      return <Text>{(token as Tokens.Text).text}</Text>
+    case 'text': {
+      const textToken = token as Tokens.Text
+      const nested = textToken.tokens ?? []
+      if (nested.length > 0) {
+        return <>{renderInlineNodes(nested)}</>
+      }
+      return <>{textToken.text}</>
+    }
     case 'strong':
       return (
         <Text bold>{renderInlineNodes((token as Tokens.Strong).tokens)}</Text>
@@ -241,7 +373,7 @@ function InlineToken({ token }: { token: Token }): ReactElement {
     case 'codespan':
       return (
         <Text {...(theme.color('dim') ? { color: theme.color('dim')! } : {})}>
-          `{(token as Tokens.Codespan).text}`
+          {(token as Tokens.Codespan).text}
         </Text>
       )
     case 'del':
@@ -275,17 +407,282 @@ function InlineToken({ token }: { token: Token }): ReactElement {
   }
 }
 
-function cellText(tokens: Token[] | undefined): string {
-  if (!tokens) {
+interface TableRenderCell {
+  key: string
+  display: string
+}
+
+function renderTableGrid(
+  headers: TableRenderCell[],
+  rows: TableRenderCell[][],
+  key: number,
+  alignments: Array<'left' | 'center' | 'right' | null> = []
+): ReactElement {
+  const layout = computeTableLayout(headers, rows, availableMarkdownWidth())
+  const borderProps = theme.colorProps('dim')
+
+  return (
+    <Box key={key} flexDirection="column" marginTop={key === 0 ? 0 : 1}>
+      <Text {...borderProps}>{tableBorder('┌', '┬', '┐', layout.widths)}</Text>
+      <TableContentRow
+        cells={headers}
+        widths={layout.widths}
+        hardWrap={layout.hardWrap}
+        alignments={alignments}
+        header
+      />
+      <Text {...borderProps}>{tableBorder('├', '┼', '┤', layout.widths)}</Text>
+      {rows.map((row, idx) => (
+        <TableContentRow
+          key={idx}
+          cells={row}
+          widths={layout.widths}
+          hardWrap={layout.hardWrap}
+          alignments={alignments}
+        />
+      ))}
+      <Text {...borderProps}>{tableBorder('└', '┴', '┘', layout.widths)}</Text>
+    </Box>
+  )
+}
+
+function TableContentRow({
+  cells,
+  widths,
+  hardWrap,
+  alignments,
+  header = false
+}: {
+  cells: TableRenderCell[]
+  widths: number[]
+  hardWrap: boolean
+  alignments: Array<'left' | 'center' | 'right' | null>
+  header?: boolean
+}): ReactElement {
+  const borderProps = theme.colorProps('dim')
+  const wrappedCells = cells.map((cell, idx) =>
+    wrapPlainText(cell.display, Math.max(1, widths[idx] ?? 1), hardWrap)
+  )
+  const rowHeight = Math.max(1, ...wrappedCells.map((lines) => lines.length))
+
+  return (
+    <Box flexDirection="column">
+      {Array.from({ length: rowHeight }, (_, lineIdx) => (
+        <Text key={lineIdx}>
+          <Text {...borderProps}>│ </Text>
+          {cells.map((cell, idx) => {
+            const width = widths[idx] ?? 1
+            const line = wrappedCells[idx]?.[lineIdx] ?? ''
+            const align = header ? 'center' : (alignments[idx] ?? 'left')
+            const padded = padAligned(line, width, align)
+            return (
+              <Text key={cell.key + '_' + lineIdx}>
+                <Text bold={header}>{padded}</Text>
+                <Text {...borderProps}>
+                  {idx === cells.length - 1 ? ' │' : ' │ '}
+                </Text>
+              </Text>
+            )
+          })}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+function tableBorder(left: string, join: string, right: string, widths: number[]): string {
+  return (
+    left +
+    widths.map((width) => '─'.repeat(Math.max(1, width + 2))).join(join) +
+    right
+  )
+}
+
+function flattenLiteInline(segments: InlineSegment[]): string {
+  return segments.map((segment) => segment.text).join('')
+}
+
+function renderHorizontalRule(key: number): ReactElement {
+  return (
+    <Box key={key} marginTop={key === 0 ? 0 : 1}>
+      <Text {...theme.colorProps('dim')}>{'─'.repeat(availableMarkdownWidth())}</Text>
+    </Box>
+  )
+}
+
+function inlineDisplay(tokens: Token[] | undefined): string {
+  if (!tokens || tokens.length === 0) {
     return ''
   }
   let out = ''
   for (const token of tokens) {
-    if ('text' in token && typeof (token as { text?: unknown }).text === 'string') {
-      out += (token as { text: string }).text
-    } else if ('tokens' in token && (token as { tokens?: unknown }).tokens) {
-      out += cellText((token as { tokens?: Token[] }).tokens)
+    if (!token) {
+      continue
+    }
+    switch (token.type) {
+      case 'text':
+      case 'escape':
+        out += (token as Tokens.Text | Tokens.Escape).text
+        break
+      case 'strong':
+      case 'em':
+      case 'del':
+        out += inlineDisplay((token as Tokens.Strong | Tokens.Em | Tokens.Del).tokens)
+        break
+      case 'codespan':
+        out += (token as Tokens.Codespan).text
+        break
+      case 'link':
+        out += (token as Tokens.Link).text || (token as Tokens.Link).href
+        break
+      case 'image':
+        out += (token as Tokens.Image).text || (token as Tokens.Image).href
+        break
+      case 'html':
+        out += (token as Tokens.HTML).text
+        break
+      case 'br':
+        out += ' '
+        break
+      default:
+        out += (token as { raw?: string }).raw ?? ''
+        break
     }
   }
-  return out
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+function availableMarkdownWidth(): number {
+  const columns = process.stdout?.columns
+  if (!Number.isFinite(columns) || !columns) {
+    return 72
+  }
+  return Math.max(12, columns - 8)
+}
+
+function longestWordWidth(value: string): number {
+  const words = value.split(/\s+/).filter(Boolean)
+  if (words.length === 0) {
+    return 3
+  }
+  return Math.max(...words.map((word) => stringWidth(word)), 3)
+}
+
+function computeTableLayout(
+  headers: TableRenderCell[],
+  rows: TableRenderCell[][],
+  maxWidth: number
+): { widths: number[]; hardWrap: boolean } {
+  const columns = headers.length
+  const minWidths = headers.map((header, idx) =>
+    Math.max(
+      longestWordWidth(header.display),
+      ...rows.map((row) => longestWordWidth(row[idx]?.display ?? ''))
+    )
+  )
+  const idealWidths = headers.map((header, idx) =>
+    Math.max(
+      3,
+      stringWidth(header.display),
+      ...rows.map((row) => stringWidth(row[idx]?.display ?? ''))
+    )
+  )
+  const borderOverhead = 1 + columns * 3
+  const available = Math.max(columns * 3, maxWidth - borderOverhead)
+  const totalMin = minWidths.reduce((sum, width) => sum + width, 0)
+  const totalIdeal = idealWidths.reduce((sum, width) => sum + width, 0)
+
+  if (totalIdeal <= available) {
+    return { widths: idealWidths, hardWrap: false }
+  }
+
+  if (totalMin <= available) {
+    const extra = available - totalMin
+    const overflow = idealWidths.map((ideal, idx) => ideal - minWidths[idx]!)
+    const totalOverflow = overflow.reduce((sum, width) => sum + width, 0)
+    const widths = minWidths.map((min, idx) => {
+      if (totalOverflow <= 0) {
+        return min
+      }
+      return min + Math.floor((overflow[idx]! / totalOverflow) * extra)
+    })
+    let remaining = available - widths.reduce((sum, width) => sum + width, 0)
+    for (let idx = 0; remaining > 0 && idx < widths.length; idx += 1, remaining -= 1) {
+      widths[idx] = (widths[idx] ?? 0) + 1
+    }
+    return { widths, hardWrap: false }
+  }
+
+  const scale = available / totalMin
+  const widths = minWidths.map((width) => Math.max(3, Math.floor(width * scale)))
+  let remaining = available - widths.reduce((sum, width) => sum + width, 0)
+  for (let idx = 0; remaining > 0 && idx < widths.length; idx += 1, remaining -= 1) {
+    widths[idx] = (widths[idx] ?? 0) + 1
+  }
+  return { widths, hardWrap: true }
+}
+
+function padAligned(
+  text: string,
+  width: number,
+  align: 'left' | 'center' | 'right' | null
+): string {
+  const gap = Math.max(0, width - stringWidth(text))
+  if (align === 'right') {
+    return ' '.repeat(gap) + text
+  }
+  if (align === 'center') {
+    const left = Math.floor(gap / 2)
+    const right = gap - left
+    return ' '.repeat(left) + text + ' '.repeat(right)
+  }
+  return text + ' '.repeat(gap)
+}
+
+function wrapPlainText(text: string, width: number, hardWrap: boolean): string[] {
+  const source = text.trimEnd()
+  if (!source) {
+    return ['']
+  }
+  return source.split('\n').flatMap((line) => wrapPlainLine(line, width, hardWrap))
+}
+
+function wrapPlainLine(line: string, width: number, hardWrap: boolean): string[] {
+  if (stringWidth(line) <= width) {
+    return [line]
+  }
+  const lines: string[] = []
+  let remaining = line
+  while (remaining && stringWidth(remaining) > width) {
+    const breakIndex = findWrapIndex(remaining, width, hardWrap)
+    const head = remaining.slice(0, breakIndex).trimEnd()
+    lines.push(head || remaining.slice(0, breakIndex))
+    remaining = remaining.slice(breakIndex)
+    if (!hardWrap) {
+      remaining = remaining.replace(/^\s+/, '')
+    }
+  }
+  if (remaining) {
+    lines.push(remaining)
+  }
+  return lines.length > 0 ? lines : ['']
+}
+
+function findWrapIndex(text: string, width: number, hardWrap: boolean): number {
+  let total = 0
+  let lastWhitespace = -1
+  for (let idx = 0; idx < text.length; idx++) {
+    const char = text[idx] ?? ''
+    total += stringWidth(char)
+    if (/\s/.test(char)) {
+      lastWhitespace = idx
+    }
+    if (total > width) {
+      if (!hardWrap && lastWhitespace > 0) {
+        return lastWhitespace + 1
+      }
+      return Math.max(1, idx)
+    }
+  }
+  return text.length
 }

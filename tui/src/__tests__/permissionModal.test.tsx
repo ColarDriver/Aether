@@ -57,6 +57,7 @@ const DIFF_PARAMS: PermissionRequestParams = {
     risk: 'high',
     preview: {
       title: 'Edit src/foo/bar.ts',
+      path: 'src/foo/bar.ts',
       diff: '--- a/src/foo/bar.ts\n+++ b/src/foo/bar.ts\n@@ -1 +1 @@\n-old\n+new\n'
     },
     allow_session: true
@@ -75,121 +76,197 @@ describe('PermissionModal — shell command preview', () => {
     permissionRulesActions.resetForTests()
   })
 
-  it('Y commits allow_once', async () => {
+  it('renders the Python-style question + numbered options', () => {
+    const overlay = makeOverlay(SHELL_PARAMS)
+    const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const frame = lastFrame()
+    expect(frame).toContain('Run shell command')
+    expect(frame).toContain('$ ls -la /tmp')
+    expect(frame).toContain('Do you want to run this command?')
+    expect(frame).toContain('1. Yes')
+    expect(frame).toContain('2. Yes, allow this command prefix in this session')
+    expect(frame).toContain('3. No')
+    expect(frame).not.toContain('Permission · shell')
+    unmount()
+  })
+
+  it('Enter on the default selection commits allow_once', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(SHELL_PARAMS, dismiss)
-    const { stdin, lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
-    expect(lastFrame()).toContain('Permission · shell')
-    expect(lastFrame()).toContain('$ ls -la /tmp')
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
 
-    stdin.write('y')
+    stdin.write('\r')
     await flush()
 
     expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_once' })
     unmount()
   })
 
-  it('N commits deny', async () => {
+  it('number key 1 picks allow_once immediately', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(SHELL_PARAMS, dismiss)
     const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
-    stdin.write('n')
+
+    stdin.write('1')
     await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_once' })
+    unmount()
+  })
+
+  it('number key 3 commits deny', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(SHELL_PARAMS, dismiss)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
+
+    stdin.write('3')
+    await flush()
+
     expect(dismiss).toHaveBeenCalledWith('commit', { type: 'deny' })
     unmount()
   })
 
-  it('ESC commits deny', async () => {
+  it('ESC commits abort (matches Python user_abort branch)', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(SHELL_PARAMS, dismiss)
     const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
-    stdin.write('\u001B')
+
+    stdin.write('')
     await flush()
-    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'deny' })
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'abort' })
     unmount()
   })
 
-  it('S opens the prefix editor; Enter confirms with the suggested prefix and writes the cache', async () => {
+  it('Ctrl-C commits abort', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(SHELL_PARAMS, dismiss)
-    const { stdin, lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
 
-    stdin.write('s')
+    stdin.write('')
     await flush()
-    expect(lastFrame()).toContain('Allow for session matching:')
-    expect(lastFrame()).toContain('command prefix:')
 
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'abort' })
+    unmount()
+  })
+
+  it('Down arrow navigates to allow_session; Enter commits it with no rule on the wire', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(SHELL_PARAMS, dismiss)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
+
+    stdin.write('[B')
+    await flush()
     stdin.write('\r')
     await flush()
 
     expect(dismiss).toHaveBeenCalledOnce()
-    const args = dismiss.mock.calls[0]
-    expect(args).toBeDefined()
-    expect(args?.[0]).toBe('commit')
-    expect(args?.[1]).toMatchObject({
-      type: 'allow_session',
-      rule: {
-        tool_name: 'shell',
-        behavior: 'allow',
-        scope: 'session',
-        command_prefix: 'ls'
-      }
-    })
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_session' })
 
-    expect(permissionRulesState.get().rules).toHaveLength(1)
-    expect(permissionRulesState.get().rules[0]).toMatchObject({
-      toolName: 'shell',
-      commandPrefix: 'ls'
-    })
+    // Local cache still derives a sensible rule so the banner can fire on the
+    // next prompt before the engine round-trips its own session rule. The
+    // prefix `ls -la` mirrors Python `_shell_command_prefix` taking the first
+    // two whitespace-separated tokens.
+    expect(permissionRulesState.get().rules).toEqual([
+      { toolName: 'shell', commandPrefix: 'ls -la' }
+    ])
     unmount()
   })
 
-  it('ESC inside the prefix editor returns to the choice footer instead of denying', async () => {
+  it('Up arrow wraps to the last option', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(SHELL_PARAMS, dismiss)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
+
+    stdin.write('[A')
+    await flush()
+    stdin.write('\r')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'deny' })
+    unmount()
+  })
+
+  it('Left/Right arrows still navigate', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(SHELL_PARAMS, dismiss)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
+
+    stdin.write('[C') // right
+    await flush()
+    stdin.write('\r')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_session' })
+    unmount()
+  })
+
+  it('number key 2 picks allow_session immediately without opening an editor', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(SHELL_PARAMS, dismiss)
     const { stdin, lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
 
-    stdin.write('s')
+    stdin.write('2')
     await flush()
-    expect(lastFrame()).toContain('command prefix:')
 
-    stdin.write('\u001B')
-    await flush()
-    expect(lastFrame()).toContain('allow once')
-    expect(dismiss).not.toHaveBeenCalled()
+    expect(dismiss).toHaveBeenCalledOnce()
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_session' })
+    expect(lastFrame()).not.toContain('Allow for session matching:')
+    expect(lastFrame()).not.toContain('command prefix:')
     unmount()
   })
 })
 
-describe('PermissionModal — diff preview', () => {
+describe('PermissionModal — file_edit question', () => {
   beforeEach(() => {
     overlayActions.resetForTests()
     permissionRulesActions.resetForTests()
     nextCreatedAt = 1
   })
-  afterEach(() => {
-    overlayActions.resetForTests()
-    permissionRulesActions.resetForTests()
-  })
 
-  it('renders coloured diff lines from preview.diff', () => {
-    const dismiss = vi.fn()
-    const overlay = makeOverlay(DIFF_PARAMS, dismiss)
+  it('renders the tool-specific edit question with the basename', () => {
+    const overlay = makeOverlay(DIFF_PARAMS)
     const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    expect(lastFrame()).toContain('Do you want to make this edit to bar.ts?')
     expect(lastFrame()).toContain('-old')
     expect(lastFrame()).toContain('+new')
+    expect(lastFrame()).toContain('2. Yes, allow edits in this path during this session')
     unmount()
   })
 
-  it('S in a diff request suggests the parent directory as path prefix', async () => {
+  it('allow_session on a file_edit caches a path-prefix rule', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(DIFF_PARAMS, dismiss)
-    const { stdin, lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const { stdin, unmount } = render(<PermissionModal overlay={overlay} />)
 
-    stdin.write('s')
+    stdin.write('2')
     await flush()
-    expect(lastFrame()).toContain('path prefix:')
-    expect(lastFrame()).toContain('src/foo/')
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_session' })
+    expect(permissionRulesState.get().rules).toEqual([
+      { toolName: 'file_edit', pathPrefix: 'src/foo/bar.ts' }
+    ])
+    unmount()
+  })
+})
+
+describe('PermissionModal — allow_session is hidden when allow_session=false', () => {
+  beforeEach(() => {
+    overlayActions.resetForTests()
+    permissionRulesActions.resetForTests()
+    nextCreatedAt = 1
+  })
+
+  it('shows only Yes / No when the request opts out of session-allow', () => {
+    const overlay = makeOverlay({
+      ...SHELL_PARAMS,
+      request: { ...SHELL_PARAMS.request, allow_session: false }
+    })
+    const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const frame = lastFrame()
+    expect(frame).toContain('1. Yes')
+    expect(frame).toContain('2. No')
+    expect(frame).not.toContain('allow this command prefix in this session')
     unmount()
   })
 })

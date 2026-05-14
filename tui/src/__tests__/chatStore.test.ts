@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { applyGatewayEvent } from '../hooks/useGatewayEvents.js'
+import { applyGatewayEvent, resetGatewayEventDedupeForTests } from '../hooks/useGatewayEvents.js'
 import { chatActions, chatItems } from '../store/chatStore.js'
 import { sessionActions, sessionState } from '../store/sessionStore.js'
 
@@ -8,6 +8,7 @@ describe('chat store event mapping', () => {
   beforeEach(() => {
     chatActions.resetForTests()
     sessionActions.resetForTests()
+    resetGatewayEventDedupeForTests()
   })
 
   it('appends streaming text deltas and marks done', () => {
@@ -36,7 +37,7 @@ describe('chat store event mapping', () => {
     const items = chatItems.get()
     expect(items[0]).toMatchObject({
       kind: 'assistant',
-      id: 'r1',
+      runId: 'r1',
       text: 'hello',
       streaming: false
     })
@@ -45,6 +46,121 @@ describe('chat store event mapping', () => {
       items.some((item) => item.kind === 'note' && /^[✓⏹✗] done\b/.test(item.text))
     ).toBe(true)
     expect(sessionState.get().status).toBe('idle')
+  })
+
+  it('keeps later assistant streaming below interleaved shell output', () => {
+    applyGatewayEvent({
+      type: 'text.delta',
+      session_id: 's1',
+      run_id: 'r1',
+      text: 'before ',
+      sequence: 0
+    })
+    applyGatewayEvent({
+      type: 'tool.call',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'tc1',
+      tool_name: 'shell',
+      arguments: { command: 'echo hi' },
+      iteration: 1
+    })
+    applyGatewayEvent({
+      type: 'tool.result',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'tc1',
+      tool_name: 'shell',
+      content: 'hi',
+      is_error: false,
+      iteration: 1
+    })
+    applyGatewayEvent({
+      type: 'text.delta',
+      session_id: 's1',
+      run_id: 'r1',
+      text: 'after',
+      sequence: 1
+    })
+    applyGatewayEvent({
+      type: 'done',
+      session_id: 's1',
+      run_id: 'r1',
+      final_text: 'before after',
+      exit_reason: 'done'
+    })
+
+    const items = chatItems.get()
+    expect(items[0]).toMatchObject({
+      kind: 'assistant',
+      runId: 'r1',
+      text: 'before ',
+      streaming: false
+    })
+    expect(items[1]).toMatchObject({
+      kind: 'tool-call',
+      toolCallId: 'tc1'
+    })
+    expect(items[2]).toMatchObject({
+      kind: 'assistant',
+      runId: 'r1',
+      text: 'after',
+      streaming: false
+    })
+  })
+
+  it('appends the final assistant suffix below interleaved shell output even without a post-tool delta', () => {
+    applyGatewayEvent({
+      type: 'text.delta',
+      session_id: 's1',
+      run_id: 'r1',
+      text: 'before ',
+      sequence: 0
+    })
+    applyGatewayEvent({
+      type: 'tool.call',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'tc1',
+      tool_name: 'shell',
+      arguments: { command: 'echo hi' },
+      iteration: 1
+    })
+    applyGatewayEvent({
+      type: 'tool.result',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'tc1',
+      tool_name: 'shell',
+      content: 'hi',
+      is_error: false,
+      iteration: 1
+    })
+    applyGatewayEvent({
+      type: 'done',
+      session_id: 's1',
+      run_id: 'r1',
+      final_text: 'before after',
+      exit_reason: 'done'
+    })
+
+    const items = chatItems.get()
+    expect(items[0]).toMatchObject({
+      kind: 'assistant',
+      runId: 'r1',
+      text: 'before ',
+      streaming: false
+    })
+    expect(items[1]).toMatchObject({
+      kind: 'tool-call',
+      toolCallId: 'tc1'
+    })
+    expect(items[2]).toMatchObject({
+      kind: 'assistant',
+      runId: 'r1',
+      text: 'after',
+      streaming: false
+    })
   })
 
   it('maps status and usage events into session state', () => {

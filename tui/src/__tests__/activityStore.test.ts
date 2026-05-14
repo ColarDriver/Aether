@@ -18,6 +18,15 @@ describe('activityStore', () => {
     expect(state.status).toBe('thinking')
     expect(state.thinkingStartedAt).not.toBeNull()
     expect(state.iteration).toBe(0)
+    expect(state.turnVerbIndex).toBe(0)
+  })
+
+  it('beginTurn advances the per-turn verb seed', () => {
+    activityActions.beginTurn()
+    const first = activityState.get().turnVerbIndex
+    activityActions.endTurn('done')
+    activityActions.beginTurn()
+    expect(activityState.get().turnVerbIndex).toBe(first + 1)
   })
 
   it('setStatus transitions update timestamps appropriately', () => {

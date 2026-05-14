@@ -106,6 +106,28 @@ describe('ApprovalModal — plan kind', () => {
     expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
     unmount()
   })
+
+  it('Ctrl-C dismisses with cancel', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(
+      {
+        kind: 'plan',
+        session_id: 's',
+        run_id: 'r',
+        plan_text: 'do x',
+        questions: [],
+        deadline_ms: 0
+      },
+      dismiss
+    )
+    const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
+
+    stdin.write('\u0003')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
+    unmount()
+  })
 })
 
 describe('ApprovalModal — questions kind', () => {
@@ -219,6 +241,27 @@ describe('ApprovalModal — questions kind', () => {
     await flush()
 
     expect(dismiss).toHaveBeenCalledWith('commit', { confirmed: true, answers: {} })
+    unmount()
+  })
+
+  it('questions flow: Ctrl-C dismisses with cancel', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(
+      {
+        kind: 'questions',
+        session_id: 's',
+        run_id: 'r',
+        questions: [{ id: 'q1', text: 'first?', kind: 'open', options: [] }],
+        deadline_ms: 0
+      },
+      dismiss
+    )
+    const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
+
+    stdin.write('\u0003')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
     unmount()
   })
 })

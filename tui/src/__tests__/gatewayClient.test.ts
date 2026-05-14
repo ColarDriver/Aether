@@ -196,6 +196,38 @@ describe('GatewayClient', () => {
     })
   })
 
+  it('silently drops gateway acks for reverse-RPC responses we sent', async () => {
+    // After the TUI writes a response to a server-initiated request
+    // (`srv_app_*` / `srv_perm_*`), the gateway dispatcher synthesises an
+    // ack response back. Those acks must not show up as protocol errors in
+    // the transcript, since `srv_*` ids are not in our `#pending` map.
+    const { client, proc } = await makeStartedClient()
+    const protocolErrors: GatewayEvent[] = []
+    client.on('event', (event) => {
+      if (event.type === 'gateway.protocol_error') {
+        protocolErrors.push(event)
+      }
+    })
+
+    proc.writeStdout({ jsonrpc: '2.0', id: 'srv_perm_1', result: { ok: true } })
+    proc.writeStdout({ jsonrpc: '2.0', id: 'srv_app_2', result: { ok: true } })
+    await tick()
+
+    expect(protocolErrors).toEqual([])
+  })
+
+  it('honours timeoutMs:null by disabling the client-side wall clock', async () => {
+    // agent.run can legitimately take many minutes; the Python CLI calls the
+    // engine synchronously with no client-side timer at all. We mirror that
+    // by letting callers opt out per-request.
+    const { client, proc } = await makeStartedClient({ requestTimeoutMs: 5 })
+    const request = client.request('agent.run', undefined, { timeoutMs: null })
+    const frame = await readClientFrame(proc)
+    await sleep(20)
+    proc.writeStdout({ jsonrpc: '2.0', id: frame.id, result: { exit_reason: 'done' } })
+    await expect(request).resolves.toMatchObject({ exit_reason: 'done' })
+  })
+
   it('emits protocol errors for malformed stdout and unknown response ids', async () => {
     const { client, proc } = await makeStartedClient()
     const firstError = waitForEvent(client, 'gateway.protocol_error')

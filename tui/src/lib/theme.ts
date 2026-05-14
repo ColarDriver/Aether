@@ -16,6 +16,11 @@ const PALETTE = {
   dim: '#64748B',
   border: '#334155',
   panel: '#0F172A',
+  // `popupBg` matches the `bg:#1E293B` background Python's slash completion
+  // menu paints (`completion-menu.*` styles in `aether/cli/app.py`). Kept
+  // separate from `panel` so the popup retains its visual identity even if
+  // the broader panel colour shifts.
+  popupBg: '#1E293B',
   success: '#22C55E',
   warning: '#F59E0B',
   error: '#EF4444',
@@ -31,6 +36,7 @@ type SemanticName =
   | 'dim'
   | 'text'
   | 'border'
+  | 'popup_bg'
   | 'user'
   | 'assistant'
   | 'system'
@@ -50,7 +56,8 @@ const SEMANTIC_COLORS: Record<SemanticName, string> = {
   dim: PALETTE.dim,
   text: PALETTE.text,
   border: PALETTE.border,
-  user: PALETTE.accent,
+  popup_bg: PALETTE.popupBg,
+  user: PALETTE.primary,
   assistant: PALETTE.primary,
   system: PALETTE.dim,
   tool: PALETTE.toolAccent,

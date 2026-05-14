@@ -29,7 +29,7 @@ export function OverlayFrame(): ReactElement | null {
     return null
   }
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} width="100%">
       {renderOverlay(top)}
     </Box>
   )

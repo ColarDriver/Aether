@@ -1,4 +1,6 @@
 import type { ModelInfo, SessionInfo } from '../../gatewayTypes.js'
+import { resolveDiscoveredBaseUrl } from '../../lib/sessionBaseUrl.js'
+import { theme } from '../../lib/theme.js'
 import { OVERLAY_PRIORITY, overlayActions } from '../../store/overlayStore.js'
 import { chatActions } from '../../store/chatStore.js'
 import { sessionActions } from '../../store/sessionStore.js'
@@ -55,12 +57,12 @@ export const modelCommand: SlashCommand = {
       }))
       const overlayId = `picker_model_${Date.now()}`
       const payload: PickerPayload<ModelInfo> = {
-        title: formatPickerTitle(provider, models.length, discovery),
+        title: formatPickerTitle(provider, models.length),
         items,
         ...(state.model ? { currentId: state.model } : {}),
         pendingVerb: 'switching',
-        renderRow(item) {
-          return renderModelRow(item.value)
+        renderRow(item, _focused, current) {
+          return renderModelRow(item.value, current)
         },
         async onSelect(item) {
           await applyModel(ctx, provider, item.id, discovery)
@@ -108,7 +110,7 @@ async function applyModel(
   sessionActions.setSession(info)
   chatActions.pushNote(
     `model set to ${modelId}; session ${info.session_id.slice(0, 8)}`,
-    'info'
+    'success'
   )
 }
 
@@ -122,7 +124,7 @@ async function switchModel(
     key: `last_model_by_provider.${provider}`,
     value: modelId
   })
-  const baseUrl = discovery?.suggested_base_url || discovery?.base_url || null
+  const baseUrl = resolveDiscoveredBaseUrl(null, discovery)
   const state = ctx.getSession()
   if (!state.sessionId) {
     return ctx.createSession({ provider, model: modelId, baseUrl })
@@ -139,33 +141,23 @@ async function switchModel(
   return result.info
 }
 
-function renderModelRow(model: ModelInfo): ReactElement {
+function renderModelRow(model: ModelInfo, current: boolean): ReactElement {
+  const accent = theme.colorProps('accent')
   // Match the Python picker layout: just the model id, no display-name
   // column. Most live providers (Kimi, DeepSeek, vLLM, etc.) only have an
   // id anyway, and the cluttered two-column look from the previous
   // revision did not match the screenshot the user sent.
   return (
     <Box>
-      <Text>{model.id}</Text>
+      <Text {...(current ? accent : {})} bold={current}>
+        {model.id}
+      </Text>
     </Box>
   )
 }
 
-function formatPickerTitle(
-  provider: string,
-  count: number,
-  discovery: ModelDiscovery | undefined
-): string {
-  if (!discovery) {
-    return `Select model · ${provider} · ${count} available`
-  }
-  if (discovery.kind === 'live') {
-    const baseUrl = discovery.base_url ? ` · ${discovery.base_url}` : ''
-    return `Select model · ${provider}${baseUrl} · ${count} live`
-  }
-  // Static fallback — make it visible in the title so the user does not
-  // think the 4 gpt-* entries are what their endpoint actually offers.
-  return `Select model · ${provider} · ${count} (static fallback)`
+function formatPickerTitle(provider: string, count: number): string {
+  return `Select model  ·  ${provider}  ·  ${count} available`
 }
 
 function formatDiscoveryFallbackNote(discovery: ModelDiscovery): string {

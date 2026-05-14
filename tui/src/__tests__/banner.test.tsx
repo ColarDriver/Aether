@@ -14,12 +14,33 @@ describe('Banner', () => {
     delete process.env.AETHER_NO_BANNER
   })
 
-  it('renders title, tagline, provider, model, session, gateway rows', () => {
+  it('renders grouped provider, session, tools, and skills rows', () => {
     sessionState.set({
       ...sessionState.get(),
       sessionId: 'ses_abcdef12',
       provider: 'claude',
-      model: 'claude-sonnet-4-6'
+      model: 'claude-sonnet-4-6',
+      baseUrl: 'http://localhost:8000/v1',
+      recentSessions: [
+        {
+          session_id: 'ses_other01',
+          created_at: 0,
+          updated_at: 0,
+          provider: 'openai',
+          model: 'gpt-4o',
+          summary: 'first recent session'
+        }
+      ],
+      bannerTools: ['read_file', 'list_directory', 'search_code'],
+      bannerToolCount: 3,
+      bannerSkills: ['dogfood'],
+      bannerSkillCount: 1,
+      gatewayReady: {
+        type: 'gateway.ready',
+        version: '0.5.0',
+        capabilities: [],
+        methods: ['a', 'b', 'c']
+      }
     })
     const { lastFrame, unmount } = render(<Banner />)
     const frame = lastFrame() ?? ''
@@ -29,9 +50,21 @@ describe('Banner', () => {
     expect(frame).toContain('claude')
     expect(frame).toContain('model')
     expect(frame).toContain('claude-sonnet-4-6')
+    expect(frame).toContain('http://localhost:8000/v1')
     expect(frame).toContain('session')
     expect(frame).toContain('ses_abcd')
-    expect(frame).toContain('gateway')
+    expect(frame).toContain('ses_othe')
+    expect(frame).toContain('first recent session')
+    expect(frame).toContain('tools')
+    expect(frame).toContain('3')
+    expect(frame).toContain('read_file')
+    expect(frame).toContain('list_directory')
+    expect(frame).toContain('search_code')
+    expect(frame).toContain('skills')
+    expect(frame).toContain('dogfood')
+    expect(frame).toContain('cwd')
+    expect(frame).not.toContain('0.5.0')
+    expect(frame).not.toContain('Type your message')
     unmount()
   })
 

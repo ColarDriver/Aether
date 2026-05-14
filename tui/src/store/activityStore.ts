@@ -12,6 +12,8 @@ export type ActivityStatus =
 export interface ActivityState {
   status: ActivityStatus
   statusDetail: string | null
+  /** Stable per-turn seed used to pick the Python-style spinner verb. */
+  turnVerbIndex: number
   iteration: number
   maxIterations: number | null
   tokensIn: number
@@ -46,11 +48,20 @@ export interface ActivityState {
    * survives turn boundaries so `/stats` can show last-turn metrics.
    */
   lastTurn: TurnSummary | null
+  /**
+   * Latch set the moment the user requests an interrupt (ESC during a busy
+   * turn). Mirrors Python `app.py:_interrupt_visual_pending` — the gateway
+   * confirmation (cancelled/error event) takes time to round-trip, so we
+   * hide the activity-bar spinner and surface an "interrupting…" hint in
+   * the footer immediately. Cleared by the next `beginTurn` / `endTurn`.
+   */
+  interruptPending: boolean
 }
 
 const initialState: ActivityState = {
   status: 'starting',
   statusDetail: null,
+  turnVerbIndex: 0,
   iteration: 0,
   maxIterations: null,
   tokensIn: 0,
@@ -66,7 +77,8 @@ const initialState: ActivityState = {
   turnTools: 0,
   turnErrors: 0,
   responseChars: 0,
-  lastTurn: null
+  lastTurn: null,
+  interruptPending: false
 }
 
 export interface TurnSummary {
@@ -97,6 +109,7 @@ let pendingTokens: { input: number; output: number; cacheRead: number; cacheWrit
   cacheWrite: 0
 }
 let flushTimer: NodeJS.Timeout | null = null
+let nextTurnVerbIndex = 0
 
 function scheduleTokenFlush(): void {
   if (flushTimer) {
@@ -124,6 +137,7 @@ export const activityActions = {
       flushTimer = null
     }
     pendingTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    nextTurnVerbIndex = 0
     activityState.set(initialState)
   },
 
@@ -134,6 +148,7 @@ export const activityActions = {
       ...current,
       status: 'thinking',
       statusDetail: null,
+      turnVerbIndex: nextTurnVerbIndex++,
       thinkingStartedAt: now,
       responseStartedAt: null,
       iteration: 0,
@@ -142,8 +157,17 @@ export const activityActions = {
       turnIterations: 0,
       turnTools: 0,
       turnErrors: 0,
-      responseChars: 0
+      responseChars: 0,
+      interruptPending: false
     })
+  },
+
+  markInterruptPending(): void {
+    const current = activityState.get()
+    if (current.interruptPending) {
+      return
+    }
+    activityState.set({ ...current, interruptPending: true })
   },
 
   addResponseChars(count: number): void {
@@ -176,6 +200,10 @@ export const activityActions = {
       thinkingStartedAt: null,
       responseStartedAt: null,
       turnStartedAt: null,
+      // Clear the latch — the server has confirmed terminal state, so the
+      // "interrupting…" hint should fall away and the activity bar can show
+      // the canonical cancelled/error/idle status instead.
+      interruptPending: false,
       lastTurn: summary
     })
     return summary

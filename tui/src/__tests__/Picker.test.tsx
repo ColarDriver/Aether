@@ -49,7 +49,7 @@ describe('Picker (generic overlay)', () => {
     const { lastFrame, unmount } = render(<Picker overlay={overlay} />)
     const frame = lastFrame() ?? ''
     expect(frame).toContain('Select model')
-    expect(frame).toContain('3 entries')
+    expect(frame).toContain('↑↓ navigate')
     expect(frame).toContain('model gpt-4o')
     expect(frame).toContain('model claude-sonnet-4-6')
     unmount()
@@ -66,7 +66,7 @@ describe('Picker (generic overlay)', () => {
     const { lastFrame, unmount } = render(<Picker overlay={overlay} />)
     const frame = lastFrame() ?? ''
     expect(frame).toContain('No models found')
-    expect(frame).toContain('ESC close')
+    expect(frame).toContain('Esc cancel')
     unmount()
   })
 

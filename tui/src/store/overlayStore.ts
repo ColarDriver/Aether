@@ -111,3 +111,17 @@ export function topOverlay(): OverlayState | null {
 export function hasOverlay(): boolean {
   return overlayStack.get().length > 0
 }
+
+/**
+ * Pure helper for `useStore(overlayStack)` callers — returns true iff the
+ * snapshot contains an overlay of the given kind. Used by `app.tsx` to gate
+ * the activity bar / reasoning line / composer the same way Python
+ * `_has_permission_prompt` gates `_has_activity`, `_has_reasoning`, and
+ * `_has_input_frame` in `aether/cli/app.py`.
+ */
+export function snapshotHasKind(
+  stack: readonly OverlayState[],
+  kind: OverlayKind
+): boolean {
+  return stack.some((entry) => entry.kind === kind)
+}

@@ -119,6 +119,18 @@ class AgentTool(ToolExecutor):
                             "with fields foo/bar')."
                         ),
                     },
+                    "model": {
+                        "type": "string",
+                        "enum": ["sonnet", "opus", "haiku", "inherit"],
+                        "default": "inherit",
+                        "description": (
+                            "Optional model override for this subagent. "
+                            "Takes precedence over the agent type "
+                            "definition's model. If omitted (or "
+                            "'inherit'), uses the type definition's model "
+                            "or inherits from the parent."
+                        ),
+                    },
                 },
                 "required": ["prompt"],
             },
@@ -134,6 +146,15 @@ class AgentTool(ToolExecutor):
         expected_output = args.get("expected_output")
         if expected_output is not None and not isinstance(expected_output, str):
             return _error(call, "'expected_output' must be a string when provided")
+
+        model_arg = args.get("model")
+        if model_arg is not None and not isinstance(model_arg, str):
+            return _error(call, "'model' must be a string when provided")
+        model_override: str | None = None
+        if isinstance(model_arg, str):
+            normalized_model = model_arg.strip()
+            if normalized_model and normalized_model.lower() != "inherit":
+                model_override = normalized_model
 
         registry = self._agent_type_registry or (
             context.metadata.get("_agent_type_registry") if context.metadata else None
@@ -187,16 +208,19 @@ class AgentTool(ToolExecutor):
             },
             interrupt_signal=context.interrupt_signal,
         )
+        task_metadata: Dict[str, Any] = {
+            "subagent_type": subagent_type,
+            "expected_output": expected_output,
+            "run_in_background": False,
+            "_agent_type_def": definition,
+        }
+        if model_override is not None:
+            task_metadata["model_override"] = model_override
         task = SubagentTask(
             task_id=task_id,
             goal=goal,
             request=request,
-            metadata={
-                "subagent_type": subagent_type,
-                "expected_output": expected_output,
-                "run_in_background": False,
-                "_agent_type_def": definition,
-            },
+            metadata=task_metadata,
         )
 
         try:

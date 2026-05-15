@@ -15,6 +15,52 @@ if TYPE_CHECKING:
     from aether.agents.core.agent import AgentEngine
 
 
+# Tools every typed subagent gets by default when the type sets a
+# whitelist (``tools=...``).  These are the meta-tools a child needs to
+# stay controllable: ``task_stop`` so the parent can interrupt it,
+# ``task_output`` so it can read peer task results, ``send_message`` so
+# it can talk back, and ``skill`` so it can load on-demand playbooks.
+# Not adding them to the whitelist would silently strand the child.
+#
+# A type can still ban them explicitly via ``disallowed_tools`` —
+# ``Verifier`` does this for ``send_message`` since "verdict IS the
+# message".  Explicit deny always wins over default allow.
+META_TOOLS_DEFAULT_ALLOWED: frozenset[str] = frozenset({
+    "task",
+    "task_stop",
+    "task_output",
+    "send_message",
+    "skill",
+})
+
+
+# Public aliases the model can pass to ``task(model="sonnet")``.  Resolved
+# to a concrete model string before being forwarded to the provider via
+# ``ModelCallConfig.extra["model"]``.  Unknown values pass through as-is
+# so callers that already know the exact model id can use it directly.
+_MODEL_ALIAS_MAP: dict[str, str] = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-7",
+    "haiku":  "claude-haiku-4-5-20251001",
+}
+
+
+def _resolve_model_alias(name: str) -> str:
+    return _MODEL_ALIAS_MAP.get(name.strip().lower(), name.strip())
+
+
+def _format_preloaded_skills_hint(skill_names: tuple[str, ...]) -> str:
+    bullets = "\n".join(f"- {name}" for name in skill_names)
+    return (
+        "<system-reminder>\n"
+        "You have been hand-picked for this task because the following "
+        "skills are likely relevant. Consider invoking them early via "
+        "the `skill` tool:\n"
+        f"{bullets}\n"
+        "</system-reminder>"
+    )
+
+
 class DefaultSubagentBuilder(SubagentBuilder):
     """Build child agents by inheriting parent dependencies and config."""
 
@@ -48,10 +94,47 @@ class DefaultSubagentBuilder(SubagentBuilder):
                 else system_prompt.strip()
             )
 
-        child_config = EngineConfig(
-            max_iterations=task.max_iterations
+        type_skills = tuple(getattr(agent_type_def, "skills", ()) or ())
+        if type_skills:
+            hint = _format_preloaded_skills_hint(type_skills)
+            existing = task.request.system_message
+            task.request.system_message = (
+                f"{existing.rstrip()}\n\n{hint}"
+                if isinstance(existing, str) and existing.strip()
+                else hint
+            )
+
+        # Model override: caller-supplied ``model`` arg (set by
+        # ``AgentTool``) wins over the type definition's own model.
+        # Both are forwarded via ``ModelCallConfig.extra["model"]`` so
+        # the Claude provider picks them up at request-build time
+        # without mutating the shared provider instance.
+        caller_model = task.metadata.get("model_override")
+        type_model = getattr(agent_type_def, "model", None)
+        effective_model = (
+            caller_model
+            if isinstance(caller_model, str) and caller_model.strip() and caller_model.strip().lower() != "inherit"
+            else type_model
+        )
+        if isinstance(effective_model, str) and effective_model.strip():
+            resolved = _resolve_model_alias(effective_model)
+            if task.request.model_config is not None:
+                task.request.model_config.extra["model"] = resolved
+
+        # ``max_turns`` clamps the child's iteration budget but never
+        # raises it above the inherited ceiling — type definitions only
+        # tighten, never loosen.
+        max_iterations = (
+            task.max_iterations
             if task.max_iterations is not None
-            else parent.config.max_iterations,
+            else parent.config.max_iterations
+        )
+        type_max_turns = getattr(agent_type_def, "max_turns", None)
+        if isinstance(type_max_turns, int) and type_max_turns > 0:
+            max_iterations = min(max_iterations, type_max_turns)
+
+        child_config = EngineConfig(
+            max_iterations=max_iterations,
             fail_on_tool_error=parent.config.fail_on_tool_error,
             raise_on_middleware_error=parent.config.raise_on_middleware_error,
             fail_on_unknown_tool=parent.config.fail_on_unknown_tool,
@@ -116,7 +199,16 @@ def _filter_tool_registry(
     allowed_tools: tuple[str, ...] | None,
     disallowed_tools: tuple[str, ...],
 ) -> ToolRegistry:
-    allowed = set(allowed_tools) if allowed_tools is not None else set(registry.list_names())
+    available = set(registry.list_names())
+    if allowed_tools is None:
+        # No whitelist: keep everything except explicit denies.
+        allowed = set(available)
+    else:
+        # Whitelist set: union with the meta-tool default-allow set so a
+        # forgotten ``task_stop`` / ``task_output`` / ``send_message`` /
+        # ``skill`` doesn't silently strand the child.  Only inject meta
+        # tools that actually exist in the source registry.
+        allowed = set(allowed_tools) | (META_TOOLS_DEFAULT_ALLOWED & available)
     denied = set(disallowed_tools)
     filtered = ToolRegistry()
     for name in registry.list_names():

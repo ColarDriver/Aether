@@ -427,6 +427,13 @@ class EngineConfig:
     # than this are marked KILLED at root engine startup so a crashed
     # gateway never leaves "still running" zombies in the store.
     task_store_stale_seconds: float = 60.0
+    # Async subagent lifecycle (PR 10.5).  When enabled, ``task`` tool
+    # calls with ``run_in_background=true`` (or types whose definition
+    # has ``background=True``) spawn the child on a background thread
+    # tracked via TaskStore.  ``max_concurrent_background`` bounds the
+    # ThreadPoolExecutor that hosts these long-lived workers.
+    subagent_async_enabled: bool = True
+    max_concurrent_background: int = 8
     # LSP tool gate.  ``True`` by default
     # because the tool degrades gracefully (it returns a friendly
     # "language server not installed" message when no LSP binary is

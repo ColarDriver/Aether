@@ -163,6 +163,8 @@ class DefaultSubagentBuilder(SubagentBuilder):
             task_store_enabled=parent.config.task_store_enabled,
             task_store_path=parent.config.task_store_path,
             task_store_stale_seconds=parent.config.task_store_stale_seconds,
+            subagent_async_enabled=parent.config.subagent_async_enabled,
+            max_concurrent_background=parent.config.max_concurrent_background,
         )
 
         child = AgentEngine(

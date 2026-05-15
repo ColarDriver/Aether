@@ -208,18 +208,27 @@ function renderLiteInline(segments: InlineSegment[]): ReactNode {
   })
 }
 
-function renderToken(token: Token, key: number): ReactElement | null {
+interface RenderOpts {
+  // True when this token is being rendered inside a list_item. List items
+  // already produce one visual row per child, so we suppress the inter-block
+  // marginTop that paragraphs/lists/headings normally use — otherwise a
+  // nested sub-list shows a blank line between the parent text and the
+  // first sub-bullet (open-claude-code packs these tightly in `formatToken`).
+  nested?: boolean
+}
+
+function renderToken(token: Token, key: number, opts: RenderOpts = {}): ReactElement | null {
   switch (token.type) {
     case 'heading':
-      return renderHeading(token as Tokens.Heading, key)
+      return renderHeading(token as Tokens.Heading, key, opts)
     case 'paragraph':
-      return renderParagraph(token as Tokens.Paragraph, key)
+      return renderParagraph(token as Tokens.Paragraph, key, opts)
     case 'code':
-      return renderCodeBlock(token as Tokens.Code, key)
+      return renderCodeBlock(token as Tokens.Code, key, opts)
     case 'blockquote':
-      return renderBlockquote(token as Tokens.Blockquote, key)
+      return renderBlockquote(token as Tokens.Blockquote, key, opts)
     case 'list':
-      return renderList(token as Tokens.List, key)
+      return renderList(token as Tokens.List, key, opts)
     case 'hr':
       return renderHorizontalRule(key)
     case 'space':
@@ -233,7 +242,7 @@ function renderToken(token: Token, key: number): ReactElement | null {
         </Text>
       )
     case 'table':
-      return renderTable(token as Tokens.Table, key)
+      return renderTable(token as Tokens.Table, key, opts)
     case 'html':
       return (
         <Text key={key} dimColor>
@@ -247,9 +256,16 @@ function renderToken(token: Token, key: number): ReactElement | null {
   }
 }
 
-function renderHeading(token: Tokens.Heading, key: number): ReactElement {
+function blockMarginTop(key: number, opts: RenderOpts): 0 | 1 {
+  if (opts.nested) {
+    return 0
+  }
+  return key === 0 ? 0 : 1
+}
+
+function renderHeading(token: Tokens.Heading, key: number, opts: RenderOpts = {}): ReactElement {
   return (
-    <Box key={key} marginTop={key === 0 ? 0 : 1}>
+    <Box key={key} marginTop={blockMarginTop(key, opts)}>
       <Text bold underline={token.depth <= 2}>
         {renderInlineNodes(token.tokens)}
       </Text>
@@ -257,15 +273,15 @@ function renderHeading(token: Tokens.Heading, key: number): ReactElement {
   )
 }
 
-function renderParagraph(token: Tokens.Paragraph, key: number): ReactElement {
+function renderParagraph(token: Tokens.Paragraph, key: number, opts: RenderOpts = {}): ReactElement {
   return (
-    <Box key={key} marginTop={key === 0 ? 0 : 1}>
+    <Box key={key} marginTop={blockMarginTop(key, opts)}>
       <Text>{renderInlineNodes(token.tokens)}</Text>
     </Box>
   )
 }
 
-function renderCodeBlock(token: Tokens.Code, key: number): ReactElement {
+function renderCodeBlock(token: Tokens.Code, key: number, opts: RenderOpts = {}): ReactElement {
   const language = token.lang || ''
   const highlighted = getHighlight()(token.text, language)
   return (
@@ -275,7 +291,7 @@ function renderCodeBlock(token: Tokens.Code, key: number): ReactElement {
       {...(theme.color('border') ? { borderColor: theme.color('border')! } : {})}
       paddingX={1}
       flexDirection="column"
-      marginTop={key === 0 ? 0 : 1}
+      marginTop={blockMarginTop(key, opts)}
     >
       {language ? (
         <Text dimColor>{language}</Text>
@@ -285,11 +301,11 @@ function renderCodeBlock(token: Tokens.Code, key: number): ReactElement {
   )
 }
 
-function renderBlockquote(token: Tokens.Blockquote, key: number): ReactElement {
+function renderBlockquote(token: Tokens.Blockquote, key: number, opts: RenderOpts = {}): ReactElement {
   return (
-    <Box key={key} flexDirection="column" marginLeft={2} marginTop={key === 0 ? 0 : 1}>
+    <Box key={key} flexDirection="column" marginLeft={2} marginTop={blockMarginTop(key, opts)}>
       {(token.tokens ?? []).map((child, idx) => {
-        const inner = renderToken(child, idx)
+        const inner = renderToken(child, idx, { nested: true })
         return inner === null ? null : (
           <Box key={idx} flexDirection="row">
             <Text dimColor>│ </Text>
@@ -301,9 +317,9 @@ function renderBlockquote(token: Tokens.Blockquote, key: number): ReactElement {
   )
 }
 
-function renderList(token: Tokens.List, key: number): ReactElement {
+function renderList(token: Tokens.List, key: number, opts: RenderOpts = {}): ReactElement {
   return (
-    <Box key={key} flexDirection="column" marginLeft={2} marginTop={key === 0 ? 0 : 1}>
+    <Box key={key} flexDirection="column" marginLeft={2} marginTop={blockMarginTop(key, opts)}>
       {token.items.map((item, idx) => {
         const start = typeof token.start === 'number' ? token.start : 1
         const marker = token.ordered ? `${start + idx}.` : '•'
@@ -312,7 +328,7 @@ function renderList(token: Tokens.List, key: number): ReactElement {
             <Text dimColor>{marker} </Text>
             <Box flexDirection="column">
               {(item.tokens ?? []).map((child, childIdx) => {
-                const rendered = renderToken(child, childIdx)
+                const rendered = renderToken(child, childIdx, { nested: true })
                 return rendered === null ? null : rendered
               })}
             </Box>
@@ -323,7 +339,7 @@ function renderList(token: Tokens.List, key: number): ReactElement {
   )
 }
 
-function renderTable(token: Tokens.Table, key: number): ReactElement {
+function renderTable(token: Tokens.Table, key: number, opts: RenderOpts = {}): ReactElement {
   const headers = token.header.map((cell, idx) => ({
     key: `h_${idx}`,
     display: inlineDisplay(cell.tokens)
@@ -334,7 +350,7 @@ function renderTable(token: Tokens.Table, key: number): ReactElement {
       display: inlineDisplay(cell.tokens)
     }))
   )
-  return renderTableGrid(headers, rows, key, token.align ?? [])
+  return renderTableGrid(headers, rows, key, token.align ?? [], opts)
 }
 
 function renderInlineNodes(tokens: Token[] | undefined): ReactNode {
@@ -416,13 +432,14 @@ function renderTableGrid(
   headers: TableRenderCell[],
   rows: TableRenderCell[][],
   key: number,
-  alignments: Array<'left' | 'center' | 'right' | null> = []
+  alignments: Array<'left' | 'center' | 'right' | null> = [],
+  opts: RenderOpts = {}
 ): ReactElement {
   const layout = computeTableLayout(headers, rows, availableMarkdownWidth())
   const borderProps = theme.colorProps('dim')
 
   return (
-    <Box key={key} flexDirection="column" marginTop={key === 0 ? 0 : 1}>
+    <Box key={key} flexDirection="column" marginTop={blockMarginTop(key, opts)}>
       <Text {...borderProps}>{tableBorder('┌', '┬', '┐', layout.widths)}</Text>
       <TableContentRow
         cells={headers}

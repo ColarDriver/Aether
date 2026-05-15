@@ -149,6 +149,29 @@ describe('Markdown', () => {
     unmount()
   })
 
+  it('does not insert a blank line between a list item and its nested sub-list', () => {
+    // Regression: previously the inner list got marginTop=1 because it was
+    // the second non-null child of its list_item (after `text`), producing
+    // an ugly gap in nested bullet lists.
+    const { lastFrame, unmount } = render(
+      <Markdown
+        text={'1. parent item\n\n   - 新增 `a.py`\n     - 实现 X\n     - 后续修正 Y\n\n2. next item'}
+      />
+    )
+    const frame = lastFrame() ?? ''
+    const lines = frame.split('\n')
+    const findIdx = (needle: string): number =>
+      lines.findIndex((line) => line.includes(needle))
+    const parentIdx = findIdx('新增')
+    const childIdx = findIdx('实现 X')
+    expect(parentIdx).toBeGreaterThanOrEqual(0)
+    expect(childIdx).toBeGreaterThan(parentIdx)
+    // No blank line between the parent text and the first nested bullet —
+    // childIdx should be exactly the line below parentIdx.
+    expect(childIdx).toBe(parentIdx + 1)
+    unmount()
+  })
+
   it('renders horizontal rules during streaming instead of raw --- text', () => {
     const { lastFrame, unmount } = render(<Markdown text={'上文\n\n---\n\n下文'} streaming />)
     const frame = lastFrame() ?? ''

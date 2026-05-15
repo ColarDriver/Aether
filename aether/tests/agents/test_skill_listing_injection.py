@@ -76,7 +76,16 @@ class SkillListingInjectionTests(unittest.TestCase):
         provider = RecordingProvider()
         engine = AgentEngine(
             provider,
-            config=EngineConfig(use_builtin_tools=False, skill_listing_enabled=False),
+            # Disable verification and faithful-reporting directives
+            # so this test asserts skill-listing behaviour in
+            # isolation, not directive injection.
+            config=EngineConfig(
+                use_builtin_tools=False,
+                skill_listing_enabled=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
             skill_catalog=self._catalog(),
         )
 
@@ -91,7 +100,12 @@ class SkillListingInjectionTests(unittest.TestCase):
         provider = RecordingProvider()
         engine = AgentEngine(
             provider,
-            config=EngineConfig(use_builtin_tools=False),
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
             skill_catalog=_StaticCatalog([]),
         )
 

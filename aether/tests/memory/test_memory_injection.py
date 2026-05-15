@@ -137,7 +137,15 @@ def test_memory_injection_only_affects_provider_payload() -> None:
     engine = AgentEngine(
         provider,
         memory_provider=memory,
-        config=EngineConfig(use_builtin_tools=False),
+        # Disable directive injection so result.messages[0] is the
+        # caller-supplied user message. Mirrors the existing
+        # use_builtin_tools=False switch.
+        config=EngineConfig(
+            use_builtin_tools=False,
+            verification_directive_enabled=False,
+            faithful_reporting_enabled=False,
+            verifier_gate_enabled=False,
+        ),
     )
 
     result = engine.run_turn(

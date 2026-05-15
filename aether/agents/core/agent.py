@@ -14,10 +14,10 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, cast
 
+from aether.agents.types import AgentTypeRegistry
 from aether.runtime.tools.skill_catalog import SkillCatalog
 
 from aether.agents.core.phantom_tool import (
-    PhantomToolIntent,
     build_corrective_user_message,
     detect_phantom_tool_intent,
     synthesize_tool_calls_from_phantom,
@@ -32,7 +32,6 @@ from aether.memory import (
     MemoryQuery,
     ProjectMemoryStore,
     RetrievalMemoryProvider,
-    TaskMemoryProvider,
     append_memory_context,
     default_memory_metadata,
     estimate_text_tokens,
@@ -58,7 +57,7 @@ from aether.runtime.core.contracts import (
 )
 from aether.runtime.recovery.error_classifier import FailoverReason
 from aether.runtime.core.exceptions import EngineInterrupted
-from aether.runtime.control.interrupt_messages import FETCH_INTERRUPTED_MESSAGE, select_interrupt_marker
+from aether.runtime.control.interrupt_messages import select_interrupt_marker
 from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.runtime.recovery.fallback_chain import FallbackChain
 from aether.runtime.core.hooks import EngineHooks, HookOutcome
@@ -98,7 +97,6 @@ from aether.runtime.session.session_runtime import (
     TURN_KEY_TRUNCATED_RESPONSE_PREFIX,
     TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES,
     SessionRuntimeRegistry,
-    SessionRuntimeState,
 )
 from aether.runtime.session.session_store import InMemorySessionStore, SessionStore
 from aether.runtime.recovery.schema_sanitizer import sanitize_tool_descriptors
@@ -113,6 +111,10 @@ from aether.runtime.observability.unicode_sanitizer import (
     strip_surrogates,
 )
 from aether.runtime.observability.usage import CanonicalUsage, normalize_usage
+from aether.runtime.diagnostics.attachments import (
+    collect_pending_diagnostics,
+    render_diagnostics_block,
+)
 from aether.runtime.tools.skill_listing import format_skill_listing
 from aether.runtime.tools.tool_error_format import (
     FormattedToolError,
@@ -187,11 +189,14 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # live SkillCatalog reference used by
     # ``SkillTool`` when no catalog was injected via constructor.
     "_skill_catalog",
+    "_agent_type_registry",
     # live LSPManager reference for
     # :class:`LSPTool`.  Same rationale as the other live-object
     # keys above: must never leak into the JSON-serialised
     # ``EngineResult.metadata['turn']`` snapshot.
     "_lsp_manager",
+    # live DiagnosticTracker reference. Same rationale.
+    "_diagnostic_tracker",
     # live BrowserManager reference for
     # :class:`WebBrowserTool`.
     "_browser_manager",
@@ -272,10 +277,12 @@ class AgentEngine:
         recovery_strategy: RecoveryStrategy | None = None,
         fallback_chain: FallbackChain | None = None,
         skill_catalog: SkillCatalog | None = None,
+        agent_type_registry: AgentTypeRegistry | None = None,
         lsp_manager: "object | None" = None,
         browser_manager: "object | None" = None,
         steer_inbox: SteerInbox | None = None,
         memory_provider: MemoryProvider | None = None,
+        diagnostic_tracker: "object | None" = None,
     ) -> None:
         self.config = config or EngineConfig()
         if tool_registry is None:
@@ -286,7 +293,9 @@ class AgentEngine:
                 # their own registry.
                 from aether.tools.builtins import build_default_tool_registry
 
-                tool_registry = build_default_tool_registry()
+                tool_registry = build_default_tool_registry(
+                    agent_type_registry=agent_type_registry,
+                )
             else:
                 tool_registry = ToolRegistry()
         # pick the default recovery strategy:
@@ -363,12 +372,22 @@ class AgentEngine:
         # an explicit catalog.  Stored on the engine so subagents can
         # inherit (see DefaultSubagentBuilder).
         self._skill_catalog = skill_catalog
+        self._agent_type_registry: AgentTypeRegistry | None = agent_type_registry
+        if self._agent_type_registry is None and bool(getattr(self.config, "agent_type_registry_enabled", True)):
+            search_paths = tuple(
+                getattr(self.config, "agent_type_search_paths", ())
+                or self._default_agent_type_search_paths()
+            )
+            self._agent_type_registry = AgentTypeRegistry(search_paths=search_paths)
         # Optional shared LSP and browser managers. Both default to
         # ``None`` so callers that
         # never use the corresponding tool pay zero cost (no LSP
         # binary lookup, no Playwright import).  When set, they're
         # forwarded into ``TurnContext.metadata`` for tools to pick up.
         self._lsp_manager = lsp_manager
+        # Diagnostic baseline tracker. Optional; when None every
+        # edit-tool diagnostic path degenerates to a no-op.
+        self._diagnostic_tracker = diagnostic_tracker
         self._browser_manager = browser_manager
         self._compaction_pipeline: CompactionPipeline | None = None
         self._compaction_pipeline_provider: ModelProvider | None = None
@@ -378,6 +397,12 @@ class AgentEngine:
         self._active_children_lock = RLock()
         self._session_store = session_store or InMemorySessionStore()
         self._hooks = hooks or EngineHooks()
+
+    @staticmethod
+    def _default_agent_type_search_paths() -> tuple[Path, ...]:
+        user = Path.home() / ".aether" / "agents"
+        project = Path.cwd() / ".claude" / "agents"
+        return (user, project)
 
     @property
     def delegate_depth(self) -> int:
@@ -526,6 +551,18 @@ class AgentEngine:
 
                     self._register_skill_nudge(context)
                     messages = self._maybe_inject_skill_nudge(messages, context)
+                    # Drain the diagnostic tracker and inject a
+                    # ``<diagnostics>`` block so the model sees errors
+                    # introduced by its most recent edits.
+                    messages = self._maybe_inject_diagnostic_attachment(
+                        messages, context
+                    )
+                    # Nudge the model to spawn a Verifier once it has
+                    # edited a threshold number of files this session
+                    # without one.
+                    messages = self._maybe_inject_verifier_reminder(
+                        messages, context
+                    )
 
                     hook_outcome = self._collect_pre_llm_hook_outcome(
                         "pre_llm_call",
@@ -905,6 +942,8 @@ class AgentEngine:
                                 else:
                                     tool_call = pre_tool
 
+                            dispatch_error: BaseException | None = None
+                            dispatch_t0: float = time.perf_counter()
                             if not isinstance(permission_checked, ToolResult) and tool_call is not None:
                                 assert tool_call is not None
                                 # Track active call so middleware on_error handlers can build
@@ -924,7 +963,7 @@ class AgentEngine:
                                 )
                                 try:
                                     result = self.services.tool_registry.dispatch(tool_call, context)
-                                except UnknownToolError:
+                                except UnknownToolError as exc:
                                     # repair already
                                     # ran and produced no match; this
                                     # branch is now hit only if the
@@ -932,7 +971,19 @@ class AgentEngine:
                                     # Honour ``fail_on_unknown_tool`` for
                                     # backward compat with callers that
                                     # explicitly want hard failure.
+                                    dispatch_error = exc
                                     if self.config.fail_on_unknown_tool:
+                                        # Fire the failure hook *before* breaking so observers
+                                        # see the failed dispatch even when the engine bails.
+                                        self._fire_post_tool_hook(
+                                            tool_call=tool_call,
+                                            result=None,
+                                            dispatch_error=dispatch_error,
+                                            elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                                            session_id=request.session_id,
+                                            iteration=iterations + 1,
+                                            context=context,
+                                        )
                                         error_text = f"Unknown tool: {tool_call.name}"
                                         exit_reason = ExitReason.UNKNOWN_TOOL
                                         state_machine.transition(LoopState.FAILED)
@@ -958,12 +1009,22 @@ class AgentEngine:
                                         else {},
                                     )
                                 except Exception as exc:
+                                    dispatch_error = exc
                                     if self.config.fail_on_tool_error:
                                         # If strict mode is enabled, middleware may still recover
                                         # by providing a synthetic ToolResult in metadata.
                                         self._handle_pipeline_error(exc, state_machine.state, context)
                                         recovered_tool_result = context.metadata.pop("tool_error_result", None)
                                         if not isinstance(recovered_tool_result, ToolResult):
+                                            self._fire_post_tool_hook(
+                                                tool_call=tool_call,
+                                                result=None,
+                                                dispatch_error=dispatch_error,
+                                                elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                                                session_id=request.session_id,
+                                                iteration=iterations + 1,
+                                                context=context,
+                                            )
                                             error_text = str(exc)
                                             exit_reason = ExitReason.TOOL_ERROR
                                             state_machine.transition(LoopState.FAILED)
@@ -985,12 +1046,41 @@ class AgentEngine:
                                 # after_tool middleware stage for redaction, auditing, or shaping.
                                 result = self.services.middleware_pipeline.run_after_tool(result, context)
                             except Exception as exc:
+                                # Middleware-induced failures do NOT route through
+                                # the post_tool_use hooks: the tool itself completed;
+                                # only post-processing broke.
                                 self._handle_pipeline_error(exc, state_machine.state, context)
                                 error_text = str(exc)
                                 exit_reason = ExitReason.MIDDLEWARE_ERROR
                                 state_machine.transition(LoopState.FAILED)
                                 tool_failed = True
                                 break
+
+                            # Hook fires once per tool call, after middleware has
+                            # processed the final ToolResult.  ``dispatch_error``
+                            # routes to post_tool_use_failure; success → post_tool_use.
+                            if tool_call is not None:
+                                # Capture ``edited_paths`` so the diagnostic
+                                # attachment producer scopes the next drain to
+                                # files the model actually touched this turn.
+                                self._accumulate_edited_paths(result, context)
+                                # Clear the verifier-gate soft reminder once the
+                                # model actually spawns a ``Verifier`` subagent.
+                                self._maybe_mark_verifier_invoked(tool_call, context)
+                                self._fire_post_tool_hook(
+                                    tool_call=tool_call,
+                                    result=result,
+                                    dispatch_error=dispatch_error,
+                                    elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                                    session_id=request.session_id,
+                                    iteration=iterations + 1,
+                                    context=context,
+                                )
+                                self._dispatch_internal_diagnostic_update(
+                                    tool_call=tool_call,
+                                    result=result,
+                                    context=context,
+                                )
 
                             self._record_tool_result_error(context, result)
                             self._append_tool_result_message(messages, result)
@@ -1509,11 +1599,13 @@ class AgentEngine:
             enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
         )
         context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
+        context.metadata["_agent_type_registry"] = getattr(self, "_agent_type_registry", None)
         # LSP and browser manager references. Tools fetch them lazily;
         # passing the live
         # objects (not config snapshots) keeps subagents and parent
         # sharing one warm subprocess pool.
         context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
+        context.metadata["_diagnostic_tracker"] = getattr(self, "_diagnostic_tracker", None)
         context.metadata["_browser_manager"] = getattr(self, "_browser_manager", None)
         context.metadata["_project_memory_store"] = getattr(self, "_project_memory_store", None)
         context.metadata["empty_recovery"] = {}
@@ -1540,23 +1632,34 @@ class AgentEngine:
         requested_prompt = self._sanitize_text(request.system_message) if request.system_message else None
         selected_prompt = requested_prompt or stored_prompt
 
-        # Augment the prompt with a registry-derived
-        # <tool_use_contract> block before injecting it into messages.
-        # We deliberately do NOT mutate ``selected_prompt`` itself —
-        # storage / metadata / EngineResult should reflect what the
-        # caller passed in, not the engine's boilerplate.  The contract
-        # is regenerated each turn from the live registry, so resuming
-        # a session with a different toolset still produces an accurate
-        # block.
+        # Augment the prompt with registry-derived blocks before
+        # injecting it into messages.  We deliberately do NOT mutate
+        # ``selected_prompt`` itself — storage / metadata /
+        # EngineResult should reflect what the caller passed in, not
+        # the engine's boilerplate.  The blocks are regenerated each
+        # turn from the live registry, so resuming a session with a
+        # different toolset still produces an accurate prompt.
         prompt_for_messages = selected_prompt
-        if self.config.tool_use_contract_enabled:
+        if (
+            self.config.tool_use_contract_enabled
+            or self.config.verification_directive_enabled
+            or self.config.faithful_reporting_enabled
+            or self.config.verifier_gate_enabled
+        ):
             from aether.agents.core.system_prompt import (
-                augment_system_with_tool_contract,
+                SystemPromptOptions,
+                augment_system_prompt,
             )
 
-            prompt_for_messages = augment_system_with_tool_contract(
+            prompt_for_messages = augment_system_prompt(
                 selected_prompt,
                 self.services.tool_registry.list_descriptors(),
+                SystemPromptOptions(
+                    include_tool_contract=self.config.tool_use_contract_enabled,
+                    include_verification_directive=self.config.verification_directive_enabled,
+                    include_faithful_reporting=self.config.faithful_reporting_enabled,
+                    include_verifier_gate=self.config.verifier_gate_enabled,
+                ),
             )
 
         if self.config.skill_listing_enabled and self._skill_catalog is not None:
@@ -1646,7 +1749,6 @@ class AgentEngine:
         """Re-inject the skill listing as a user-role system reminder."""
         if not context.metadata.get("should_review_skills"):
             return messages
-        context.metadata["should_review_skills"] = False
         if not self.config.skill_listing_enabled or self._skill_catalog is None:
             return messages
         listing = format_skill_listing(
@@ -1655,6 +1757,7 @@ class AgentEngine:
         )
         if not listing:
             return messages
+        context.metadata["should_review_skills"] = False
         nudged_messages = list(messages)
         nudged_messages.append(
             {
@@ -1664,6 +1767,109 @@ class AgentEngine:
             }
         )
         return nudged_messages
+
+    def _maybe_inject_diagnostic_attachment(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
+        """Drain the diagnostic tracker and inject a ``<diagnostics>`` block.
+
+        Parity with ``open-claude-code`` ``getDiagnosticAttachments``.
+        The block is appended as a user-role message so the model sees
+        it inline in the next prompt; it is consumed (one delivery per
+        diagnostic) by :meth:`DiagnosticTracker.get_new_diagnostics`,
+        which means the model won't see the same diagnostic twice
+        unless the engine calls :meth:`DiagnosticTracker.clear_delivered`.
+
+        Scope rule: when the most recent turn produced an
+        ``edited_paths`` metadata list (recorded by the
+        post_tool_use accumulator below), we drain only those paths so
+        edits-elsewhere don't show up out of band.  When the model has
+        not edited anything but the tracker holds undelivered
+        diagnostics from prior turns, we drain everything.
+        """
+        tracker = getattr(self, "_diagnostic_tracker", None)
+        if tracker is None or not getattr(tracker, "enabled", False):
+            return messages
+        edited_raw = context.metadata.get("_last_edited_paths") or []
+        # Consume regardless of whether anything is found below — we
+        # don't want a stale list to leak into the next turn.
+        context.metadata["_last_edited_paths"] = []
+        edited_paths: list[str] | None = None
+        if isinstance(edited_raw, list) and edited_raw:
+            edited_paths = [str(p) for p in edited_raw if p]
+        files = collect_pending_diagnostics(tracker, paths=edited_paths)
+        block = render_diagnostics_block(files)
+        if not block:
+            return messages
+        attached = list(messages)
+        attached.append(
+            {
+                "role": "user",
+                "content": block,
+                "metadata": {"source": "diagnostics"},
+            }
+        )
+        return attached
+
+    def _maybe_inject_verifier_reminder(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
+        """Soft gate: nudge the model to spawn a Verifier once the
+        session has edited ``verifier_gate_file_threshold`` files.
+
+        The reminder is injected exactly once per session — once the
+        model spawns a Verifier (``_verifier_invoked``) or we've already
+        sent the reminder (``_verifier_reminder_sent``), subsequent
+        PRE_LLM boundaries skip it.
+
+        This is an *advisory* gate: the engine doesn't refuse to emit
+        the final answer if the model ignores it.  But it leaves a
+        loud audit trail (the reminder is in the history) and a
+        log line via the engine logger so misuse is visible.
+        """
+        if not bool(getattr(self.config, "verifier_gate_enabled", False)):
+            return messages
+        if context.metadata.get("_verifier_invoked"):
+            return messages
+        if context.metadata.get("_verifier_reminder_sent"):
+            return messages
+        threshold = max(
+            1, int(getattr(self.config, "verifier_gate_file_threshold", 3))
+        )
+        edited = context.metadata.get("_session_edited_paths")
+        edited_count = len(edited) if isinstance(edited, (set, list)) else 0
+        if edited_count < threshold:
+            return messages
+        context.metadata["_verifier_reminder_sent"] = True
+        self.services.logger.info(
+            "verifier.gate_reminder_sent edited_files=%d threshold=%d",
+            edited_count,
+            threshold,
+        )
+        reminder = (
+            "<system-reminder>\n"
+            f"You have edited {edited_count} files this session and have "
+            "not yet spawned a Verifier subagent. Per "
+            "``<verifier_gate>``, non-trivial changes require an "
+            "independent PASS verdict before you may report completion. "
+            "Spawn one now via "
+            "``task(subagent_type=\"Verifier\", ...)`` — or explain why "
+            "this change is trivial enough to skip the gate.\n"
+            "</system-reminder>"
+        )
+        attached = list(messages)
+        attached.append(
+            {
+                "role": "user",
+                "content": reminder,
+                "metadata": {"source": "verifier_gate"},
+            }
+        )
+        return attached
 
     def _maybe_recover_phantom_tool_intent(
         self,
@@ -1882,6 +2088,8 @@ class AgentEngine:
                 else:
                     tool_call = pre_tool
 
+            dispatch_error: BaseException | None = None
+            dispatch_t0: float = time.perf_counter()
             if not isinstance(permission_checked, ToolResult) and tool_call is not None:
                 context.metadata.pop("tool_error_result", None)
                 context.metadata["_active_tool_call"] = tool_call
@@ -1898,8 +2106,18 @@ class AgentEngine:
                 )
                 try:
                     result = self.services.tool_registry.dispatch(tool_call, context)
-                except UnknownToolError:
+                except UnknownToolError as exc:
+                    dispatch_error = exc
                     if self.config.fail_on_unknown_tool:
+                        self._fire_post_tool_hook(
+                            tool_call=tool_call,
+                            result=None,
+                            dispatch_error=dispatch_error,
+                            elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                            session_id=request.session_id,
+                            iteration=int(context.iteration or 1),
+                            context=context,
+                        )
                         state_machine.transition(LoopState.FAILED)
                         return (
                             "failed",
@@ -1913,10 +2131,20 @@ class AgentEngine:
                         is_error=True,
                     )
                 except Exception as exc:
+                    dispatch_error = exc
                     if self.config.fail_on_tool_error:
                         self._handle_pipeline_error(exc, state_machine.state, context)
                         recovered_tool_result = context.metadata.pop("tool_error_result", None)
                         if not isinstance(recovered_tool_result, ToolResult):
+                            self._fire_post_tool_hook(
+                                tool_call=tool_call,
+                                result=None,
+                                dispatch_error=dispatch_error,
+                                elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                                session_id=request.session_id,
+                                iteration=int(context.iteration or 1),
+                                context=context,
+                            )
                             state_machine.transition(LoopState.FAILED)
                             return "failed", ExitReason.TOOL_ERROR, str(exc)
                         result = recovered_tool_result
@@ -1934,9 +2162,32 @@ class AgentEngine:
             try:
                 result = self.services.middleware_pipeline.run_after_tool(result, context)
             except Exception as exc:
+                # Middleware-induced failures do NOT route through the
+                # post_tool_use hooks.
                 self._handle_pipeline_error(exc, state_machine.state, context)
                 state_machine.transition(LoopState.FAILED)
                 return "failed", ExitReason.MIDDLEWARE_ERROR, str(exc)
+
+            if tool_call is not None:
+                # See _accumulate_edited_paths docstring.
+                self._accumulate_edited_paths(result, context)
+                # Clear the verifier-gate soft reminder when the model
+                # actually spawns a ``Verifier``.
+                self._maybe_mark_verifier_invoked(tool_call, context)
+                self._fire_post_tool_hook(
+                    tool_call=tool_call,
+                    result=result,
+                    dispatch_error=dispatch_error,
+                    elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
+                    session_id=request.session_id,
+                    iteration=int(context.iteration or 1),
+                    context=context,
+                )
+                self._dispatch_internal_diagnostic_update(
+                    tool_call=tool_call,
+                    result=result,
+                    context=context,
+                )
 
             self._append_tool_result_message(messages, result)
             if bool(result.metadata.get("interrupted")):
@@ -2063,6 +2314,162 @@ class AgentEngine:
         except Exception:
             self.services.logger.exception("Engine hook failed: %s", name)
             return None
+
+    @staticmethod
+    def _accumulate_edited_paths(
+        result: ToolResult | None,
+        context: TurnContext,
+    ) -> None:
+        """Capture ``ToolResult.metadata['edited_paths']`` for the next turn.
+
+        Two consumers read from the resulting state:
+
+        * :meth:`_maybe_inject_diagnostic_attachment` reads the
+          *per-turn* ``_last_edited_paths`` list (consumed and cleared
+          on the next PRE_LLM boundary).
+        * :meth:`_maybe_inject_verifier_reminder` reads the
+          *session-level* ``_session_edited_paths`` set, which
+          accumulates across turns and is never cleared mid-session.
+
+        Edit tools write their target paths into the result metadata;
+        this method is the single place that promotes those per-call
+        paths into engine state.
+        """
+        if result is None:
+            return
+        edited = (result.metadata or {}).get("edited_paths")
+        if not isinstance(edited, list) or not edited:
+            return
+        bucket = context.metadata.get("_last_edited_paths")
+        if not isinstance(bucket, list):
+            bucket = []
+        session_bucket = context.metadata.get("_session_edited_paths")
+        if not isinstance(session_bucket, set):
+            session_bucket = set()
+        for entry in edited:
+            if isinstance(entry, str) and entry:
+                bucket.append(entry)
+                session_bucket.add(entry)
+        context.metadata["_last_edited_paths"] = bucket
+        context.metadata["_session_edited_paths"] = session_bucket
+
+    @staticmethod
+    def _maybe_mark_verifier_invoked(
+        tool_call: ToolCall,
+        context: TurnContext,
+    ) -> None:
+        """Set ``_verifier_invoked`` when ``task(subagent_type="Verifier")`` fires.
+
+        The detection lives at the tool-dispatch boundary so it sees
+        every call without needing to thread state through the
+        subagent stack.  ``subagent_type`` is matched
+        case-insensitively because users sometimes spell builtin types
+        in lowercase even though the registry stores them as
+        configured (here: ``Verifier``).
+        """
+        if tool_call.name != "task":
+            return
+        args = tool_call.arguments or {}
+        subagent_type = args.get("subagent_type")
+        if not isinstance(subagent_type, str):
+            return
+        from aether.agents.types import VERIFIER_AGENT_TYPE
+
+        if subagent_type.strip().lower() == VERIFIER_AGENT_TYPE.lower():
+            context.metadata["_verifier_invoked"] = True
+
+    def _fire_post_tool_hook(
+        self,
+        *,
+        tool_call: ToolCall,
+        result: ToolResult | None,
+        dispatch_error: BaseException | None,
+        elapsed_ms: float,
+        session_id: str,
+        iteration: int,
+        context: TurnContext,
+    ) -> None:
+        """Fire post_tool_use OR post_tool_use_failure on the engine hook.
+
+        Exactly one variant fires per tool call:
+
+        - ``post_tool_use_failure`` when ``dispatch_error is not None``
+          (the registry dispatch itself raised, even if the engine then
+          recovered with a synthetic error ToolResult).
+        - ``post_tool_use`` otherwise — ``result`` is the ToolResult
+          after the ``after_tool`` middleware chain has run.
+
+        Both hooks are fire-and-forget; ``_safe_call_hook`` swallows any
+        exception they raise.  Middleware-induced failures do NOT route
+        through here; call sites simply skip firing when the
+        after_tool middleware raised.
+        """
+        if dispatch_error is not None:
+            self._safe_call_hook(
+                "post_tool_use_failure",
+                session_id=session_id,
+                iteration=iteration,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                tool_args=dict(tool_call.arguments or {}),
+                error=dispatch_error,
+                elapsed_ms=elapsed_ms,
+                context_metadata=context.metadata,
+            )
+            return
+        if result is None:
+            return
+        self._safe_call_hook(
+            "post_tool_use",
+            session_id=session_id,
+            iteration=iteration,
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+            tool_args=dict(tool_call.arguments or {}),
+            result=result,
+            elapsed_ms=elapsed_ms,
+            context_metadata=context.metadata,
+        )
+
+    def _dispatch_internal_diagnostic_update(
+        self,
+        *,
+        tool_call: ToolCall,
+        result: ToolResult,
+        context: TurnContext,
+    ) -> None:
+        """Forward successful write results to the diagnostic tracker.
+
+        This internal hook always runs after user ``post_tool_use`` hooks so
+        those hooks observe the final ToolResult first. Any failure here is
+        logged and swallowed because diagnostics must never break a successful
+        tool execution path.
+        """
+        tracker = context.metadata.get("_diagnostic_tracker")
+        if tracker is None or not bool(getattr(tracker, "enabled", False)):
+            return
+        edited = (result.metadata or {}).get("edited_paths")
+        if not isinstance(edited, list) or not edited:
+            return
+        notify = getattr(tracker, "notify_file_changed", None)
+        if not callable(notify):
+            return
+        try:
+            for raw_path in edited:
+                if not isinstance(raw_path, str) or not raw_path:
+                    continue
+                path = Path(raw_path)
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                notify(path, content)
+        except Exception:
+            self.services.logger.exception(
+                "internal_hook.diagnostic_dispatch tool_name=%s edited_paths_count=%d",
+                tool_call.name,
+                len(edited),
+            )
 
     def _collect_pre_llm_hook_outcome(self, name: str, **kwargs: Any) -> HookOutcome:
         outcome = self._safe_call_hook(name, **kwargs)

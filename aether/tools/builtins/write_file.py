@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.diagnostics.tracker import DiagnosticTracker
 from aether.runtime.tools.tool_permissions import ToolPermissionPreview
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
@@ -149,6 +150,9 @@ class WriteFileTool(ToolExecutor):
                     stale,
                     metadata={"path": str(plan.path), "stale_preview": True},
                 )
+        tracker = context.metadata.get("_diagnostic_tracker")
+        if isinstance(tracker, DiagnosticTracker) and tracker.enabled:
+            tracker.before_file_edited(plan.path)
         return self._apply_plan(call, plan)
 
     def plan_write(self, call: ToolCall) -> WriteFilePlan | ToolResult:
@@ -240,6 +244,7 @@ class WriteFileTool(ToolExecutor):
         diff_text, lines_added, lines_removed, hunks = self._build_diff_with_stats(plan)
         result_metadata: dict[str, Any] = {
             "path": str(path),
+            "edited_paths": [str(path)],
             "size_bytes": len(encoded),
             "sha256": digest,
             "existed": plan.existed,

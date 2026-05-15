@@ -221,7 +221,15 @@ class ImageShrinkEngineTests(unittest.TestCase):
         provider = _CapturingImageProvider(failures_before_success=1)
         engine = AgentEngine(
             provider,
-            config=EngineConfig(use_builtin_tools=False, max_iterations=2),
+            # Disable directive injection so provider.calls[0][0] is
+            # the image-bearing user message.
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+                max_iterations=2,
+            ),
             recovery_strategy=ClassifiedRecoveryStrategy(
                 max_attempts=3,
                 base_wait_seconds=0.0,

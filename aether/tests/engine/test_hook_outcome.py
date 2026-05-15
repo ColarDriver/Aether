@@ -130,7 +130,14 @@ class HookOutcomeTests(unittest.TestCase):
         engine = AgentEngine(
             provider,
             hooks=UserContextHook(),
-            config=EngineConfig(use_builtin_tools=False),
+            # Disable directive injection so canonical messages remain
+            # pristine; this test asserts hook context isolation.
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
         )
 
         result = engine.run_turn(
@@ -150,7 +157,13 @@ class HookOutcomeTests(unittest.TestCase):
         engine = AgentEngine(
             provider,
             hooks=SystemAddendumHook(),
-            config=EngineConfig(use_builtin_tools=False),
+            # See note in test_inject_user_context_only_affects_provider_payload.
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
         )
 
         result = engine.run_turn(
@@ -191,7 +204,15 @@ class HookOutcomeTests(unittest.TestCase):
         engine = AgentEngine(
             provider,
             hooks=hooks,
-            config=EngineConfig(use_builtin_tools=False),
+            # Disable directives so message_count is exactly 1 (the user
+            # message), matching the original expectation.  Directive
+            # blocks would add a system message and bump the count to 2.
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
         )
 
         result = engine.run_turn(

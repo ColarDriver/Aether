@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.diagnostics.tracker import DiagnosticTracker
 from aether.runtime.tools.tool_permissions import ToolPermissionPreview
 from aether.runtime.tools.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.base import ToolDescriptor, ToolExecutor
@@ -187,6 +188,10 @@ class FileEditTool(ToolExecutor):
                     metadata={"path": str(plan.path), "stale_preview": True},
                 )
 
+        tracker = context.metadata.get("_diagnostic_tracker")
+        if isinstance(tracker, DiagnosticTracker) and tracker.enabled:
+            tracker.before_file_edited(plan.path)
+
         try:
             plan.path.write_text(plan.modified, encoding="utf-8")
         except OSError as exc:
@@ -205,6 +210,7 @@ class FileEditTool(ToolExecutor):
         )
         result_metadata: dict[str, Any] = {
             "path": str(plan.path),
+            "edited_paths": [str(plan.path)],
             "change_count": plan.change_count,
             "replace_all": plan.replace_all,
             "bytes_before": len(plan.original.encode("utf-8")),

@@ -64,10 +64,18 @@ class EngineTests(unittest.TestCase):
         # use_builtin_tools=False so this test stays focused on message
         # routing — with builtins on, the engine prepends a
         # <tool_use_contract> system block that would push the first
-        # ``user`` role to position 1.
+        # ``user`` role to position 1. Verification and
+        # faithful-reporting blocks have the same effect, so disable
+        # them here too.
         engine = AgentEngine(
             provider,
-            config=EngineConfig(max_iterations=4, use_builtin_tools=False),
+            config=EngineConfig(
+                max_iterations=4,
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
         )
 
         result = engine.run_turn(EngineRequest(session_id="s1", user_message="hi"))
@@ -83,12 +91,17 @@ class EngineTests(unittest.TestCase):
 
     def test_system_message_injected_as_first_message(self) -> None:
         provider = ScriptedProvider([NormalizedResponse(content="ok")])
-        # See note in test_completes_with_text_response: disable
-        # builtins so the only ``system`` message in messages[0] is
-        # the one we explicitly passed in.
+        # See note in test_completes_with_text_response: disable every
+        # engine-prepended block so the only ``system`` message in
+        # messages[0] is the one we explicitly passed in.
         engine = AgentEngine(
             provider,
-            config=EngineConfig(use_builtin_tools=False),
+            config=EngineConfig(
+                use_builtin_tools=False,
+                verification_directive_enabled=False,
+                faithful_reporting_enabled=False,
+                verifier_gate_enabled=False,
+            ),
         )
 
         result = engine.run_turn(

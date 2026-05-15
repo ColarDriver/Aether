@@ -30,6 +30,7 @@ import threading
 from pathlib import Path
 from typing import Mapping, Optional
 
+from aether.runtime.diagnostics.types import Diagnostic
 from aether.runtime.resources.lsp_client import LSPClient
 from aether.runtime.resources.lsp_servers import language_for, resolve_server_for
 
@@ -123,6 +124,85 @@ class LSPManager:
     def known_running_languages(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(sorted(lang for lang, c in self._clients.items() if c.is_running))
+
+    # ------------------------------------------------- high-level helpers
+    #
+    # These wrap the ``LSPClient`` document-sync primitives in a
+    # "no LSP available → silent no-op" envelope so callers (the
+    # :class:`DiagnosticTracker` and edit-tool hooks can invoke them
+    # unconditionally.
+
+    def change_file(self, path: Path, content: str) -> None:
+        """Notify the appropriate LSP server that *path* has new content.
+
+        Sends ``textDocument/didOpen`` the first time, ``didChange`` on
+        subsequent calls.  Silently returns when no language server is
+        configured for this file's language or when the server cannot
+        be launched — the model still gets the edited file via the
+        tool result; we just won't be able to surface diagnostics.
+        """
+        client = self.get_client_for(path)
+        if client is None:
+            return
+        try:
+            if client.is_open(path):
+                client.did_change(path, content)
+            else:
+                client.did_open(path, content)
+        except Exception:
+            logger.warning(
+                "lsp[%s] change_file failed for %s",
+                getattr(client, "language", "?"),
+                path,
+                exc_info=True,
+            )
+
+    def save_file(self, path: Path, *, content: str | None = None) -> None:
+        """Notify the LSP server that *path* has been saved on disk.
+
+        Many servers (pyright, tsserver) only run a full re-lint pass on
+        ``didSave``, not ``didChange`` — so this notification is what
+        actually surfaces newly-introduced diagnostics most of the time.
+        """
+        client = self.get_client_for(path)
+        if client is None:
+            return
+        try:
+            client.did_save(path, content=content)
+        except Exception:
+            logger.warning(
+                "lsp[%s] save_file failed for %s",
+                getattr(client, "language", "?"),
+                path,
+                exc_info=True,
+            )
+
+    def pull_diagnostics(
+        self,
+        path: Path,
+        *,
+        deadline: float,
+    ) -> list[Diagnostic]:
+        """Block (with deadline) for the next ``publishDiagnostics`` push.
+
+        *deadline* is a ``time.perf_counter()`` value; this method
+        returns no later than that moment.  Returns the freshest known
+        diagnostic snapshot — possibly empty when no LSP server exists,
+        when the push hasn't happened yet, or when the file is clean.
+        """
+        client = self.get_client_for(path)
+        if client is None:
+            return []
+        try:
+            return client.wait_for_diagnostics(path, deadline=deadline)
+        except Exception:
+            logger.warning(
+                "lsp[%s] pull_diagnostics failed for %s",
+                getattr(client, "language", "?"),
+                path,
+                exc_info=True,
+            )
+            return []
 
     def shutdown_all(self) -> None:
         with self._lock:

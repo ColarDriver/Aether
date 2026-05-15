@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.diagnostics.tracker import DiagnosticTracker
 from aether.runtime.tools.tool_result_storage import DEFAULT_SPILL_ROOT
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
@@ -239,6 +240,9 @@ class NotebookEditTool(ToolExecutor):
             )
 
         notebook["cells"] = cells
+        tracker = context.metadata.get("_diagnostic_tracker")
+        if isinstance(tracker, DiagnosticTracker) and tracker.enabled:
+            tracker.before_file_edited(path)
         try:
             # ``indent=1`` matches Jupyter's default save format and
             # keeps diffs sane in version control.
@@ -256,6 +260,7 @@ class NotebookEditTool(ToolExecutor):
             is_error=False,
             metadata={
                 "path": str(path),
+                "edited_paths": [str(path)],
                 "edit_mode": edit_mode,
                 "cell_count": len(cells),
             },

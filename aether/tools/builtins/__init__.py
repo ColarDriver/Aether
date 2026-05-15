@@ -72,6 +72,7 @@ def build_default_tool_registry(
     *,
     cwd: Path | None = None,
     skill_catalog: Any | None = None,
+    agent_type_registry: Any | None = None,
     approval_prompter: Any | None = None,
     lsp_manager: Any | None = None,
     browser_manager: Any | None = None,
@@ -90,6 +91,10 @@ def build_default_tool_registry(
         falls back to ``context.metadata['_skill_catalog']`` (set by
         the engine) or builds a lazy default from
         ``EngineConfig.skill_search_paths``.
+    agent_type_registry:
+        Optional registry injected into :class:`AgentTool` so the
+        ``subagent_type`` schema can expose an enum and runtime
+        dispatch can validate requested types.
     approval_prompter:
         Optional CLI prompter pre-bound onto ``ExitPlanModeTool`` /
         ``AskUserQuestionTool``.  In production the engine forwards
@@ -118,7 +123,7 @@ def build_default_tool_registry(
     # Web, subagent, interaction, and skill tools.
     registry.register(WebFetchTool())
     registry.register(WebSearchTool())
-    registry.register(AgentTool())
+    registry.register(AgentTool(agent_type_registry=agent_type_registry))
     registry.register(TaskOutputTool())
     registry.register(TaskStopTool())
     registry.register(EnterPlanModeTool())

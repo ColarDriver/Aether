@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from aether.config.schema import ModelCallConfig
 from aether.runtime.core.contracts import EngineRequest, ToolCall, ToolResult, TurnContext
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
 from aether.tools.base import ToolDescriptor, ToolExecutor, maybe_spill_for_tool
+
+if TYPE_CHECKING:
+    from aether.agents.types import AgentTypeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +49,47 @@ class AgentTool(ToolExecutor):
         *,
         parent_agent: Any | None = None,
         subagent_manager: Any | None = None,
+        agent_type_registry: "AgentTypeRegistry | None" = None,
     ) -> None:
         self._parent_agent = parent_agent
         self._subagent_manager = subagent_manager
-        self._descriptor = ToolDescriptor(
+        self._agent_type_registry = agent_type_registry
+        self._descriptor: ToolDescriptor | None = None
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        if self._descriptor is None:
+            self._descriptor = self._build_descriptor()
+        return self._descriptor
+
+    def _build_descriptor(self) -> ToolDescriptor:
+        registry = self._agent_type_registry
+        if registry is not None:
+            types = registry.list_all()
+            type_names = sorted({t.agent_type for t in types})
+            type_desc_lines = "\n".join(
+                f"  - {t.agent_type}: {t.description}"
+                for t in sorted(types, key=lambda x: x.agent_type)
+            )
+            subagent_type_field: dict[str, Any] = {
+                "type": "string",
+                "default": "general-purpose",
+                "enum": type_names,
+                "description": (
+                    "Which subagent persona to use. Available:\n" + type_desc_lines
+                ),
+            }
+        else:
+            subagent_type_field = {
+                "type": "string",
+                "default": "general-purpose",
+                "description": (
+                    "Which subagent persona to use. Defaults to "
+                    "'general-purpose'."
+                ),
+            }
+
+        return ToolDescriptor(
             name=self.NAME,
             description=(
                 "Dispatch a subagent to handle an isolated, self-contained "
@@ -63,14 +103,7 @@ class AgentTool(ToolExecutor):
             parameters={
                 "type": "object",
                 "properties": {
-                    "subagent_type": {
-                        "type": "string",
-                        "default": "general-purpose",
-                        "description": (
-                            "Which subagent persona to use. Defaults to "
-                            "'general-purpose'."
-                        ),
-                    },
+                    "subagent_type": subagent_type_field,
                     "prompt": {
                         "type": "string",
                         "description": (
@@ -92,10 +125,6 @@ class AgentTool(ToolExecutor):
             required=["prompt"],
         )
 
-    @property
-    def descriptor(self) -> ToolDescriptor:
-        return self._descriptor
-
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
         args = call.arguments or {}
         prompt = args.get("prompt")
@@ -105,6 +134,19 @@ class AgentTool(ToolExecutor):
         expected_output = args.get("expected_output")
         if expected_output is not None and not isinstance(expected_output, str):
             return _error(call, "'expected_output' must be a string when provided")
+
+        registry = self._agent_type_registry or (
+            context.metadata.get("_agent_type_registry") if context.metadata else None
+        )
+        definition = None
+        if registry is not None:
+            definition = registry.get(subagent_type)
+            if definition is None:
+                available = ", ".join(sorted(t.agent_type for t in registry.list_all()))
+                return _error(
+                    call,
+                    f"unknown subagent_type: {subagent_type!r}. Available: {available}",
+                )
 
         config = context.metadata.get("_engine_config") if context.metadata else None
         if not bool(getattr(config, "allow_subagent_dispatch", True)):
@@ -153,6 +195,7 @@ class AgentTool(ToolExecutor):
                 "subagent_type": subagent_type,
                 "expected_output": expected_output,
                 "run_in_background": False,
+                "_agent_type_def": definition,
             },
         )
 

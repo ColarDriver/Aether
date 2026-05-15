@@ -127,6 +127,27 @@ class EngineConfig:
     # models that hallucinate tool calls in ``content``.  Suppressed
     # automatically when the registry is empty (no tools to advertise).
     tool_use_contract_enabled: bool = True
+    # When ``True`` the engine prepends a ``<verification_directive>``
+    # system block instructing the model to verify its work (re-read,
+    # type-check, grep callers) before reporting a task complete.
+    # Parity with open-claude-code/src/constants/prompts.ts:211 — see
+    # ``aether/agents/core/system_prompt.py``.
+    verification_directive_enabled: bool = True
+    # When ``True`` the engine prepends a ``<faithful_reporting>``
+    # system block banning defensive hedging and dishonest summaries
+    # when a verification step fails.  Parity with
+    # open-claude-code/src/constants/prompts.ts:240.
+    faithful_reporting_enabled: bool = True
+    # When ``True`` the engine prepends a ``<verifier_gate>`` system
+    # block AND fires the in-loop soft gate that nudges the model to
+    # spawn an independent ``Verifier`` subagent once the session has
+    # edited ``verifier_gate_file_threshold`` distinct files.  Parity
+    # with open-claude-code/src/constants/prompts.ts:394.
+    verifier_gate_enabled: bool = True
+    # Number of distinct files edited in a single session before the
+    # soft gate fires a reminder.  Three is the OCC default; raise it
+    # for chatty refactors, drop to 1 in CI guardrail mode.
+    verifier_gate_file_threshold: int = 3
     # Master switch for the classifier-aware recovery composite
     # (rate-limit / context-overflow / payload / thinking-signature /
     # response-invalid strategies). When ``False`` the engine falls
@@ -392,6 +413,8 @@ class EngineConfig:
     skill_tool_enabled: bool = True
     skill_search_paths: tuple[Path, ...] = ()
     skill_list_in_system_prompt: bool = False
+    agent_type_search_paths: tuple[Path, ...] = ()
+    agent_type_registry_enabled: bool = True
     # LSP tool gate.  ``True`` by default
     # because the tool degrades gracefully (it returns a friendly
     # "language server not installed" message when no LSP binary is

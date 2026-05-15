@@ -17,6 +17,7 @@ from typing import Any
 from aether.agents.core.agent import AgentEngine
 from aether.agents.middlewares.base import EngineMiddleware
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
+from aether.agents.types import AgentTypeRegistry
 from aether.cli.sessions import (
     SessionRecord,
     load_session,
@@ -301,6 +302,10 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
         approval_prompter = GatewayPrompter(session_id=session_id, run_id=run_id)
         permission_prompter = GatewayToolPermissionPrompter(run_id=run_id)
         skill_catalog = build_default_skill_catalog(config)
+        agent_type_registry = AgentTypeRegistry(
+            search_paths=config.agent_type_search_paths
+            or AgentEngine._default_agent_type_search_paths()
+        )
         engine = AgentEngine(
             provider,
             tool_registry=tool_registry,
@@ -308,6 +313,7 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
             config=config,
             hooks=_GatewayEventHooks(sink),
             skill_catalog=skill_catalog,
+            agent_type_registry=agent_type_registry,
         )
         request = EngineRequest(
             session_id=session_id,
@@ -456,6 +462,7 @@ def _build_engine_config(max_iterations: Any) -> EngineConfig:
         config.max_iterations = max_iterations
     config.tool_permissions_enabled = True
     config.skill_listing_enabled = True
+    config.agent_type_registry_enabled = True
     return config
 
 

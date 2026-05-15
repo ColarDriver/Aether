@@ -101,8 +101,13 @@ class ReasoningObservabilityTests(unittest.TestCase):
             provider = DumpFailingProvider(RuntimeError("provider boom"))
             engine = AgentEngine(
                 provider,
+                # Disable directive injection so the dumped request
+                # payload's first message is "hello" verbatim.
                 config=EngineConfig(
                     use_builtin_tools=False,
+                    verification_directive_enabled=False,
+                    faithful_reporting_enabled=False,
+                    verifier_gate_enabled=False,
                     dump_failed_requests=True,
                     request_dump_dir=Path(tmp),
                 ),

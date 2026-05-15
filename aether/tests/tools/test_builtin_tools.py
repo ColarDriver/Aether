@@ -1,4 +1,4 @@
-"""Sprint 1.5 / P0-9 — bundled tool kit coverage.
+"""Bundled tool kit coverage.
 
 Pins the contract of each :mod:`aether.tools.builtins` executor: happy
 path, error path, output capping, and the JSON-schema-style
@@ -60,11 +60,8 @@ def _call(name: str, **args) -> ToolCall:
 
 class FactoryTests(unittest.TestCase):
     def test_factory_registers_canonical_tools(self) -> None:
-        # Sprint 3.5 / PR-3 grew the kit from eighteen to twenty
-        # tools.  The new block adds semantic code navigation
-        # (``lsp``) and headless Chromium navigation (``web_browser``).
-        # Asserting the full sorted list documents the contract and
-        # trips loudly if someone drops a tool by accident.
+        # Asserting the full sorted list documents the default bundled
+        # tool contract and trips loudly if a tool is dropped or renamed.
         reg = build_default_tool_registry()
         names = sorted(d.name for d in reg.list_descriptors())
         self.assertEqual(
@@ -78,6 +75,11 @@ class FactoryTests(unittest.TestCase):
                 "grep",
                 "list_dir",
                 "lsp",
+                "memory_forget",
+                "memory_list",
+                "memory_read",
+                "memory_update",
+                "memory_write",
                 "notebook_edit",
                 "read_file",
                 "shell",
@@ -129,12 +131,9 @@ class ShellToolTests(unittest.TestCase):
         self.assertIn("non-empty string", result.content)
 
     def test_oversize_stdout_spills_to_disk(self) -> None:
-        # Sprint 3.5 / PR 3.5.1 \u2014 the head+tail truncation has been
-        # replaced with disk spill.  Lower the threshold so a tiny
-        # printf still trips it.  We don't care about the exact spill
-        # path here (covered by test_tool_result_spill); only that the
-        # content truncates with the canonical notice and metadata
-        # records the fact.
+        # Lower the threshold so a tiny printf still spills to disk.
+        # The exact spill path is covered by test_tool_result_spill;
+        # this test only asserts the notice and metadata contract.
         with tempfile.TemporaryDirectory() as spill_root:
             tool = ShellTool(max_result_chars=128)
             big = "abcdefgh" * 200  # 1600 bytes
@@ -200,12 +199,9 @@ class ReadFileToolTests(unittest.TestCase):
         self.assertIn("list_dir", result.content)
 
     def test_oversize_file_spills_to_disk(self) -> None:
-        # Sprint 3.5 / PR 3.5.1 \u2014 the pre-3.5 hard 256 KB cap (which
-        # raised ``is_error=True`` and refused to read) has been
-        # replaced with disk spill.  A file exceeding ``max_result_chars``
-        # is still **read** successfully; the response just carries a
-        # truncation notice and the full output lives on disk for the
-        # model to retrieve via ``read_file <spilled-path>``.
+        # Files exceeding ``max_result_chars`` are still read
+        # successfully; the response carries a truncation notice and
+        # the full output lives on disk for retrieval via ``read_file``.
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as spill_root:
             path = Path(tmp) / "big.bin"
             path.write_bytes(b"x" * 2048)

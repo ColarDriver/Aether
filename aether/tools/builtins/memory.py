@@ -153,6 +153,7 @@ class MemoryListTool(ToolExecutor):
                         "description": "Optional topic filter.",
                     },
                 },
+                "required": [],
             },
         )
 

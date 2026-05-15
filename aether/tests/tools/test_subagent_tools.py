@@ -192,15 +192,17 @@ class AgentToolTests(unittest.TestCase):
 
 
 class TaskOutputTests(unittest.TestCase):
-    def test_b1_always_returns_not_supported(self) -> None:
+    def test_b1_no_store_configured_returns_error(self) -> None:
+        # Default-constructed TaskOutputTool with no store + no
+        # context fallback should return a clear configuration error
+        # instead of crashing on a None reference.
         tool = TaskOutputTool()
         result = tool.execute(
             ToolCall(id="c1", name="task_output", arguments={"task_id": "t-1"}),
             _ctx(),
         )
         self.assertTrue(result.is_error)
-        self.assertIn("not supported in synchronous", result.content)
-        self.assertEqual(result.metadata["task_id"], "t-1")
+        self.assertIn("TaskStore", result.content)
 
     def test_b2_missing_task_id_rejected(self) -> None:
         tool = TaskOutputTool()

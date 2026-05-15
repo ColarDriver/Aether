@@ -1,19 +1,9 @@
 """``commands.catalog`` RPC method.
 
-Exposes the slash-command registry from :mod:`aether.cli.commands` as
-a flat list of ``{name, description, category}`` entries.  The
-handler does NOT execute the registry's ``_cmd_*`` handlers — those
-operate on ``ReplState`` (prompt_toolkit-bound state) which has no
-meaning across a process boundary. The TS slash dispatcher pulls
-this catalog and decides per-command whether to handle locally or
-fan out to ``session.*`` / ``prefs.*`` / ``providers.*`` / ``agent.*``
-RPC methods.
-
-The import of :mod:`aether.cli.commands` is deferred to the handler
-body so importing this module does not transitively pull
-``prompt_toolkit`` / ``rich`` (the cli commands module pulls both at
-import time).  Lazy import keeps gateway startup fast and isolates
-any environment issue to the one method that needs them.
+Exposes the slash-command metadata from :mod:`aether.cli.commands` as a flat
+list of ``{name, description, category}`` entries. The TS slash dispatcher
+pulls this catalog and decides per-command whether to handle locally or fan
+out to ``session.*`` / ``prefs.*`` / ``providers.*`` / ``agent.*`` RPC methods.
 """
 
 from __future__ import annotations
@@ -47,8 +37,6 @@ def _categorise(name: str) -> str:
 
 
 def commands_catalog(_params: dict[str, Any] | None) -> dict[str, Any]:
-    # Lazy import: aether.cli.commands pulls in rich/prompt_toolkit at
-    # module import; we don't want those on every gateway boot.
     from aether.cli.commands import REGISTRY
 
     entries = sorted(REGISTRY.values(), key=lambda c: c.name)
@@ -65,7 +53,7 @@ def commands_catalog(_params: dict[str, Any] | None) -> dict[str, Any]:
 
 def register() -> None:
     """Register ``commands.catalog`` on the dispatcher.  Idempotent."""
-    method("commands.catalog", long=False)(commands_catalog)
+    _ = method("commands.catalog", long=False)(commands_catalog)
 
 
 __all__ = [

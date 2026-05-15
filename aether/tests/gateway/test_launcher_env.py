@@ -7,16 +7,17 @@ bridge between the Python CLI surface and the gateway-backed TS TUI.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import unittest
 from unittest import mock
 
-from aether.cli.launcher import _build_env, _resolve_tui_entry
-from aether.cli.main import _build_parser
+from aether.cli.launcher import _build_env, _resolve_tui_entry, main as launcher_main
+from aether.cli.parser import build_parser
 
 
 class LauncherEnvTranslation(unittest.TestCase):
     def _parse(self, *flags: str):
-        parser = _build_parser()
+        parser = build_parser()
         return parser.parse_args(list(flags))
 
     def test_forwards_provider_model_temperature(self) -> None:
@@ -101,6 +102,30 @@ class LauncherEnvTranslation(unittest.TestCase):
             cmd, cwd = resolved
             self.assertIsInstance(cmd, list)
             self.assertTrue(cwd.is_dir())
+
+    def test_non_chat_subcommand_dispatches_locally(self) -> None:
+        with (
+            mock.patch("aether.cli.launcher.cmd_version") as cmd_version,
+            mock.patch("aether.cli.launcher._resolve_tui_entry") as resolve_tui,
+        ):
+            exit_code = launcher_main(["version"])
+        self.assertEqual(exit_code, 0)
+        cmd_version.assert_called_once()
+        resolve_tui.assert_not_called()
+
+    def test_chat_command_launches_tui_process(self) -> None:
+        proc = mock.Mock()
+        proc.wait.return_value = 0
+        with (
+            mock.patch(
+                "aether.cli.launcher._resolve_tui_entry",
+                return_value=(["node", "dist/entry.js"], Path("/tmp/tui")),
+            ),
+            mock.patch("aether.cli.launcher.subprocess.Popen", return_value=proc) as popen,
+        ):
+            exit_code = launcher_main(["chat", "--model", "gpt-5.5"])
+        self.assertEqual(exit_code, 0)
+        popen.assert_called_once()
 
 
 if __name__ == "__main__":  # pragma: no cover

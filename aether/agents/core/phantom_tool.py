@@ -24,11 +24,10 @@ Design notes
   caches anything in this module.  Tests can call the helpers directly
   without a fixture.
 
-* **Shared with the CLI.**  ``aether.cli.ui`` imports the same
-  primitives so the user-visible "└ attempted: $ <cmd>" hint and the
-  engine's corrective message stay in lock-step.  Drift between the
-  two would silently confuse users — the diagnostic might list 3
-  attempted commands while the engine retried with a 2-command list.
+* **Shared with presentation layers.**  UI clients can reuse the same
+  primitives so user-visible phantom-tool hints and the engine's
+  corrective message stay in lock-step. Drift between the two would
+  silently confuse users.
 
 * **Conservative.**  We only detect *clear* phantom intent (fenced
   shell block, ``<function=>`` tag, or ``<invoke>`` XML).  A polite
@@ -60,8 +59,7 @@ if TYPE_CHECKING:
 # Fenced shell-block extraction (multi-block, language-tag aware)
 # ---------------------------------------------------------------------------
 #
-# The regex is shared with ``aether.cli.ui._COMMAND_FENCE_RE``.  Body
-# capture is non-greedy and ends at the *earliest* of:
+# Body capture is non-greedy and ends at the *earliest* of:
 #   1. ``\u0060\u0060\u0060`` *not* followed by a shell-language tag — a real
 #      closing fence; consume it (so ``sub`` also drops the fence text).
 #   2. (lookahead) a blank line — paragraph break, treated as the

@@ -160,6 +160,9 @@ class DefaultSubagentBuilder(SubagentBuilder):
             memory_debug_log_content=parent.config.memory_debug_log_content,
             agent_type_search_paths=parent.config.agent_type_search_paths,
             agent_type_registry_enabled=parent.config.agent_type_registry_enabled,
+            task_store_enabled=parent.config.task_store_enabled,
+            task_store_path=parent.config.task_store_path,
+            task_store_stale_seconds=parent.config.task_store_stale_seconds,
         )
 
         child = AgentEngine(
@@ -178,6 +181,7 @@ class DefaultSubagentBuilder(SubagentBuilder):
             memory_provider=parent.services.memory_provider,
             skill_catalog=parent._skill_catalog,
             agent_type_registry=parent._agent_type_registry,
+            task_store=parent._task_store,
             diagnostic_tracker=getattr(parent, "_diagnostic_tracker", None),
         )
         parent_signal = None

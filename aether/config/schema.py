@@ -415,6 +415,18 @@ class EngineConfig:
     skill_list_in_system_prompt: bool = False
     agent_type_search_paths: tuple[Path, ...] = ()
     agent_type_registry_enabled: bool = True
+    # On-disk task store for subagent lifecycle persistence (PR 10.4).
+    # When enabled, subagent task records, message streams, and final
+    # results land under ``task_store_path`` (defaults to
+    # ``~/.aether/tasks``).  Disable to opt out entirely — the engine
+    # falls back to in-memory state and ``task_output`` becomes
+    # equivalent to "no such task" for any historical lookup.
+    task_store_enabled: bool = True
+    task_store_path: Path | None = None
+    # Heartbeat staleness threshold (seconds).  RUNNING records older
+    # than this are marked KILLED at root engine startup so a crashed
+    # gateway never leaves "still running" zombies in the store.
+    task_store_stale_seconds: float = 60.0
     # LSP tool gate.  ``True`` by default
     # because the tool degrades gracefully (it returns a friendly
     # "language server not installed" message when no LSP binary is

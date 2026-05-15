@@ -115,6 +115,7 @@ from aether.runtime.diagnostics.attachments import (
     collect_pending_diagnostics,
     render_diagnostics_block,
 )
+from aether.runtime.tasks import TaskStore, recover_task_store
 from aether.runtime.tools.skill_listing import format_skill_listing
 from aether.runtime.tools.tool_error_format import (
     FormattedToolError,
@@ -190,6 +191,11 @@ _METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
     # ``SkillTool`` when no catalog was injected via constructor.
     "_skill_catalog",
     "_agent_type_registry",
+    # live TaskStore reference for the on-disk subagent task store.
+    # Forwarded into ``TurnContext.metadata`` so ``task_output`` /
+    # ``send_message`` (PR 10.6 / 10.7) can fall back to it when no
+    # explicit store was passed via constructor.
+    "_task_store",
     # live LSPManager reference for
     # :class:`LSPTool`.  Same rationale as the other live-object
     # keys above: must never leak into the JSON-serialised
@@ -278,6 +284,7 @@ class AgentEngine:
         fallback_chain: FallbackChain | None = None,
         skill_catalog: SkillCatalog | None = None,
         agent_type_registry: AgentTypeRegistry | None = None,
+        task_store: TaskStore | None = None,
         lsp_manager: "object | None" = None,
         browser_manager: "object | None" = None,
         steer_inbox: SteerInbox | None = None,
@@ -379,6 +386,43 @@ class AgentEngine:
                 or self._default_agent_type_search_paths()
             )
             self._agent_type_registry = AgentTypeRegistry(search_paths=search_paths)
+        # On-disk task store (PR 10.4).  Subagents share the parent's
+        # store; only the root engine constructs a default and runs
+        # recovery, otherwise we'd mark sibling tasks as orphans every
+        # time a subagent is built.
+        self._task_store: TaskStore | None = task_store
+        if (
+            self._task_store is None
+            and bool(getattr(self.config, "task_store_enabled", True))
+            and self._delegate_depth == 0
+        ):
+            try:
+                self._task_store = TaskStore(
+                    root=getattr(self.config, "task_store_path", None)
+                )
+            except Exception:  # pragma: no cover - defensive
+                logging.getLogger(__name__).warning(
+                    "task store init failed; running without persistence",
+                    exc_info=True,
+                )
+                self._task_store = None
+        if self._task_store is not None and self._delegate_depth == 0:
+            try:
+                report = recover_task_store(
+                    self._task_store,
+                    stale_after=float(getattr(self.config, "task_store_stale_seconds", 60.0)),
+                )
+                if report.orphaned_count or report.active_count:
+                    logging.getLogger(__name__).info(
+                        "task store recovered: orphaned=%d completed=%d active=%d",
+                        report.orphaned_count,
+                        report.completed_count,
+                        report.active_count,
+                    )
+            except Exception:  # pragma: no cover - defensive
+                logging.getLogger(__name__).exception(
+                    "task store recovery failed; continuing without report"
+                )
         # Optional shared LSP and browser managers. Both default to
         # ``None`` so callers that
         # never use the corresponding tool pay zero cost (no LSP
@@ -1600,6 +1644,7 @@ class AgentEngine:
         )
         context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
         context.metadata["_agent_type_registry"] = getattr(self, "_agent_type_registry", None)
+        context.metadata["_task_store"] = getattr(self, "_task_store", None)
         # LSP and browser manager references. Tools fetch them lazily;
         # passing the live
         # objects (not config snapshots) keeps subagents and parent

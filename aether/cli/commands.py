@@ -33,6 +33,7 @@ REGISTRY: dict[str, SlashCommand] = {
     "/verbose": SlashCommand("/verbose", "Toggle per-turn verbose output"),
     "/stats": SlashCommand("/stats", "Show stats from the last turn"),
     "/interrupt": SlashCommand("/interrupt", "Interrupt the active turn"),
+    "/plan": SlashCommand("/plan", "Enable plan mode or view the current session plan"),
 }
 
 

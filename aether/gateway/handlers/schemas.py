@@ -34,6 +34,11 @@ class SessionInfo(BaseModel):
     system_prompt: str | None = None
     message_count: int = 0
     summary: str | None = None
+    # PR 12.1: surface the current ``agent`` / ``plan`` mode so the TUI
+    # can render the plan badge without an extra ``plan.mode_get`` round
+    # trip on session resume.  Optional + additive so older wire
+    # consumers continue to validate.
+    mode: str | None = None
 
 
 class TranscriptToolCall(BaseModel):

@@ -58,6 +58,10 @@ def _iso_to_epoch(iso: str) -> float:
 
 
 def _to_info(record: SessionRecord) -> dict[str, Any]:
+    # Local import to avoid a circular: session_methods is imported by
+    # gateway/handlers/__init__ which session_state does not depend on.
+    from aether.runtime.session.session_state import get_mode
+
     return SessionInfo(
         session_id=record.session_id,
         created_at=_iso_to_epoch(record.created_at),
@@ -68,6 +72,9 @@ def _to_info(record: SessionRecord) -> dict[str, Any]:
         system_prompt=record.system_prompt,
         message_count=len(record.messages),
         summary=record.first_user_message or None,
+        # PR 12.1: include current plan mode so the TUI doesn't need a
+        # follow-up plan.mode_get on every session.current call.
+        mode=get_mode(record.session_id),
     ).model_dump(mode="json", exclude_none=True)
 
 

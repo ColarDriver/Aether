@@ -20,7 +20,7 @@ from aether.gateway.handlers.schemas import SlashCommandInfo
 # informational.
 
 _SESSION_COMMANDS = frozenset(
-    {"/new", "/session", "/sessions", "/resume", "/system", "/model"}
+    {"/new", "/session", "/sessions", "/resume", "/system", "/model", "/plan"}
 )
 _CONTROL_COMMANDS = frozenset({"/interrupt"})
 _REMOTE_COMMANDS = frozenset({"/tools"})

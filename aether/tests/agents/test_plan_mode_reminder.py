@@ -10,6 +10,7 @@ from aether import AgentEngine
 from aether.agents.core.system_prompt import (
     _PLAN_MODE_REMINDER,  # noqa: PLC2701 - test wants the exact text
     append_plan_mode_reminder,
+    build_plan_mode_reminder,
 )
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
@@ -105,6 +106,8 @@ class InjectionTests(unittest.TestCase):
         system = provider.calls[0]["messages"][0]
         self.assertEqual(system["role"], "system")
         self.assertIn("<plan_mode_reminder>", system["content"])
+        self.assertIn("Plan file:", system["content"])
+        self.assertIn("The only file you may write or edit", system["content"])
         self.assertIn("exit_plan_mode", system["content"])
 
     def test_agent_mode_does_not_inject_reminder(self) -> None:
@@ -169,7 +172,15 @@ class InjectionTests(unittest.TestCase):
         first = provider.calls[0]["messages"][0]["content"]
         second = provider.calls[1]["messages"][0]["content"]
         self.assertEqual(first, second)
-        self.assertIn(_PLAN_MODE_REMINDER, first)
+        self.assertIn("<plan_mode_reminder>", first)
+        self.assertIn("Plan file:", first)
+
+    def test_build_reminder_mentions_plan_path(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
+        out = build_plan_mode_reminder(self.session_id)
+        self.assertIn(str(get_plan_path(self.session_id)), out)
+        self.assertIn("no plan file exists yet", out)
 
     def test_plan_mode_active_metadata_set(self) -> None:
         # context.metadata['plan_mode_active'] should be set so the

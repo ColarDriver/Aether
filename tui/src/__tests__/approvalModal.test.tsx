@@ -63,7 +63,26 @@ describe('ApprovalModal — plan kind', () => {
     unmount()
   })
 
-  it('N dismisses with confirmed:false (cancel)', async () => {
+  it('renders markdown plan content', () => {
+    const overlay = makeOverlay({
+      kind: 'plan',
+      session_id: 's',
+      run_id: 'r',
+      plan_text: '# Plan\n- add auth\n\n```ts\nconst ok = true\n```',
+      plan_path: '/tmp/plan.md',
+      questions: [],
+      deadline_ms: 0
+    })
+    const { lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Plan approval')
+    expect(frame).toContain('/tmp/plan.md')
+    expect(frame).toContain('add auth')
+    expect(frame).toContain('const ok = true')
+    unmount()
+  })
+
+  it('N dismisses with confirmed:false', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(
       {
@@ -81,11 +100,11 @@ describe('ApprovalModal — plan kind', () => {
     stdin.write('n')
     await flush()
 
-    expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
+    expect(dismiss).toHaveBeenCalledWith('commit', { confirmed: false, answers: {} })
     unmount()
   })
 
-  it('ESC dismisses with cancel', async () => {
+  it('ESC dismisses with confirmed:false', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(
       {
@@ -103,7 +122,7 @@ describe('ApprovalModal — plan kind', () => {
     stdin.write('\u001B') // ESC
     await flush()
 
-    expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
+    expect(dismiss).toHaveBeenCalledWith('commit', { confirmed: false, answers: {} })
     unmount()
   })
 

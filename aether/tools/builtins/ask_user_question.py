@@ -41,7 +41,11 @@ class AskUserQuestionTool(ToolExecutor):
                 "Ask the user one or more structured questions. Use only "
                 "when you genuinely need user input to proceed (e.g. an "
                 "ambiguous requirement). Each question may be free-text "
-                "or multiple-choice. Not allowed inside subagent contexts."
+                "or multiple-choice. In plan mode, use this only to "
+                "clarify requirements or choose between approaches; do "
+                "not ask whether the plan is approved or whether to "
+                "proceed. Use exit_plan_mode for plan approval. Not "
+                "allowed inside subagent contexts."
             ),
             parameters={
                 "type": "object",

@@ -230,4 +230,21 @@ describe('chat store event mapping', () => {
       cacheWrite: 1
     })
   })
+
+  it('syncs session mode from tool result metadata', () => {
+    sessionActions.setMode('plan')
+    applyGatewayEvent({
+      type: 'tool.result',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'tc1',
+      tool_name: 'exit_plan_mode',
+      content: 'Plan approved. Returning to agent mode.',
+      is_error: false,
+      iteration: 1,
+      metadata: { new_mode: 'agent' }
+    })
+
+    expect(sessionState.get().mode).toBe('agent')
+  })
 })

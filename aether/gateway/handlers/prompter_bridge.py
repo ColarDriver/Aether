@@ -56,7 +56,14 @@ class GatewayPrompter:
     def is_interactive(self) -> bool:
         return True
 
-    def confirm_plan(self, plan: str, *, context: Any | None = None) -> bool:
+    def confirm_plan(
+        self,
+        plan: str,
+        *,
+        context: Any | None = None,
+        plan_path: str | None = None,
+    ) -> dict[str, Any]:
+        del context
         timeout = self.request_timeout
         params = ApprovalRequest(
             kind="plan",
@@ -64,13 +71,14 @@ class GatewayPrompter:
             run_id=self.run_id,
             tool_call_id=None,
             plan_text=plan,
+            plan_path=plan_path,
             deadline_ms=_deadline_ms(timeout),
         ).model_dump(mode="json", exclude_none=False)
         try:
             result = reverse_rpc.call("approval.request", params, timeout=timeout)
         except OSError as exc:
             raise GatewayPromptDisconnected("peer disconnected") from exc
-        return bool(result.get("confirmed"))
+        return result
 
     def ask_questions(
         self,
@@ -218,7 +226,7 @@ def _rule_from_wire(payload: Any) -> ToolPermissionRule | None:
     if isinstance(payload, ToolPermissionRule):
         return payload
     if is_dataclass(payload):
-        payload = asdict(payload)
+        payload = asdict(payload)  # pyright: ignore[reportArgumentType]
     if not isinstance(payload, Mapping):
         return None
     tool_name = payload.get("tool_name")

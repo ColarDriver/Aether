@@ -7,7 +7,7 @@ import { shouldClearTodos, todosFromArgs } from '../lib/todos.js'
 import { activityActions, type TurnSummary } from '../store/activityStore.js'
 import { chatActions, verboseMode } from '../store/chatStore.js'
 import { reasoningActions } from '../store/reasoningStore.js'
-import { sessionActions } from '../store/sessionStore.js'
+import { normaliseMode, sessionActions } from '../store/sessionStore.js'
 import { toolGroupActions } from '../store/toolGroupStore.js'
 
 // The gateway can fire two events for the same root cause when an LLM call
@@ -162,6 +162,12 @@ export function applyGatewayEvent(event: GatewayEvent): void {
         toolCallId: event.tool_call_id,
         isError: Boolean(event.is_error)
       })
+      if (event.metadata) {
+        const mode = normaliseMode(event.metadata.new_mode)
+        if (mode) {
+          sessionActions.setMode(mode)
+        }
+      }
       chatActions.pushToolResult({
         toolCallId: event.tool_call_id,
         toolName: event.tool_name,

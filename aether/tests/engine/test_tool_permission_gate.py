@@ -70,6 +70,7 @@ class _AfterToolSpy(EngineMiddleware):
 class ToolPermissionGateTests(unittest.TestCase):
     def tearDown(self) -> None:
         clear_mode("perm-plan")
+        clear_mode("perm-plan-file")
 
     def _engine_for(self, provider: ScriptedProvider, tool: _WriteSpyTool) -> AgentEngine:
         registry = ToolRegistry()
@@ -296,6 +297,45 @@ class ToolPermissionGateTests(unittest.TestCase):
         self.assertEqual(prompter.requests, [])
         tool_messages = [m for m in result.messages if m.get("role") == "tool"]
         self.assertTrue(tool_messages[0]["metadata"]["plan_mode_blocked"])
+
+    def test_plan_mode_plan_file_write_bypasses_permission_prompt(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
+        tool = _WriteSpyTool()
+        plan_path = str(get_plan_path("perm-plan-file"))
+        provider = ScriptedProvider(
+            [
+                NormalizedResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="c1",
+                            name="write_file",
+                            arguments={"path": plan_path, "content": "x"},
+                        )
+                    ]
+                ),
+                NormalizedResponse(content="allowed"),
+            ]
+        )
+        engine = self._engine_for(provider, tool)
+        prompter = _PermissionPrompter(
+            [ToolPermissionDecision(type=ToolPermissionDecisionType.DENY)]
+        )
+        set_mode("perm-plan-file", SessionMode.PLAN)
+
+        result = engine.run_turn(
+            EngineRequest(
+                session_id="perm-plan-file",
+                user_message="write plan",
+                tool_permission_prompter=prompter,
+            )
+        )
+
+        self.assertEqual(len(tool.execute_calls), 1)
+        self.assertEqual(prompter.requests, [])
+        tool_messages = [m for m in result.messages if m.get("role") == "tool"]
+        self.assertTrue(tool_messages[0]["metadata"]["plan_mode_plan_file_write"])
+        self.assertEqual(result.final_response, "allowed")
 
 
 if __name__ == "__main__":

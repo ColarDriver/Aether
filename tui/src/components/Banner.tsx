@@ -49,7 +49,6 @@ export function Banner(): ReactElement | null {
   const toolCount = session.bannerToolCount
   const skillCount = session.bannerSkillCount
 
-  const primaryProps = theme.colorProps('brand')
   const primaryDim = theme.palette.primaryDim
   const accent = theme.colorProps('accent')
   const dim = theme.colorProps('dim')
@@ -104,6 +103,15 @@ export function Banner(): ReactElement | null {
           tone="text"
         />
       ))}
+      {session.mode === 'plan' ? (
+        <InfoRow
+          width={width}
+          level={1}
+          icon={theme.icon('info')}
+          label="mode"
+          value={<Text {...theme.colorProps('info')}>plan</Text>}
+        />
+      ) : null}
       <InfoRow
         width={width}
         level={1}
@@ -298,6 +306,7 @@ function buildSessionDetails(session: ReturnType<typeof sessionState.get>): stri
 function BootLine(): ReactElement {
   const session = useStore(sessionState)
   const sessionId = session.sessionId ? session.sessionId.slice(0, 8) : '…'
+  const mode = session.mode === 'plan' ? ' · plan' : ''
   const dim = theme.colorProps('dim')
   const brand = theme.colorProps('brand')
   return (
@@ -307,6 +316,7 @@ function BootLine(): ReactElement {
       </Text>
       <Text {...dim}>
         {session.provider}/{session.model || 'resolving'} · {sessionId}
+        {mode}
       </Text>
     </Box>
   )

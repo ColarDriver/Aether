@@ -62,6 +62,10 @@ def _to_info(record: SessionRecord) -> dict[str, Any]:
     # gateway/handlers/__init__ which session_state does not depend on.
     from aether.runtime.session.session_state import get_mode
 
+    mode = get_mode(record.session_id)
+    if mode == "agent" and getattr(record, "mode", "agent") == "plan":
+        mode = "plan"
+
     return SessionInfo(
         session_id=record.session_id,
         created_at=_iso_to_epoch(record.created_at),
@@ -74,7 +78,7 @@ def _to_info(record: SessionRecord) -> dict[str, Any]:
         summary=record.first_user_message or None,
         # PR 12.1: include current plan mode so the TUI doesn't need a
         # follow-up plan.mode_get on every session.current call.
-        mode=get_mode(record.session_id),
+        mode=mode,
     ).model_dump(mode="json", exclude_none=True)
 
 
@@ -192,6 +196,14 @@ def session_create(params: dict[str, Any] | None) -> dict[str, Any]:
         base_url=base_url,
         system_prompt=system_prompt,
     )
+    # A newly-created session must not inherit an in-process plan mode or
+    # artifact from a previous session that reused an explicit id.
+    from aether.runtime.session.plan_artifact import clear_plan
+    from aether.runtime.session.session_state import clear_mode
+
+    clear_mode(record.session_id)
+    clear_plan(record.session_id)
+    record.mode = "agent"
     save_session(record)
     set_current_session(record.session_id)
     return {"session_id": record.session_id, "info": _to_info(record)}
@@ -215,7 +227,10 @@ def session_resume(params: dict[str, Any] | None) -> dict[str, Any]:
             code=ERROR_APPLICATION,
             data={"session_id": session_id},
         )
-    set_current_session(session_id)
+    from aether.runtime.session.session_state import set_mode
+
+    set_current_session(record.session_id)
+    set_mode(record.session_id, getattr(record, "mode", "agent"))
     return {
         "info": _to_info(record),
         "messages": [_to_transcript(m) for m in record.messages],

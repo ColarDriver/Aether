@@ -16,6 +16,7 @@ import { helpCommand } from './commands/help.js'
 import { interruptCommand } from './commands/interrupt.js'
 import { modelCommand } from './commands/model.js'
 import { newCommand } from './commands/new.js'
+import { planCommand } from './commands/plan.js'
 import { refreshCommand } from './commands/refresh.js'
 import { resumeCommand } from './commands/resume.js'
 import { sessionCommand, sessionsCommand } from './commands/session.js'
@@ -39,6 +40,7 @@ export type SlashResult =
   | { kind: 'clear' }
   | { kind: 'refresh' }
   | { kind: 'toggle-verbose'; enabled: boolean }
+  | { kind: 'query'; query: string; note?: string; level?: 'success' | 'info' | 'warn' | 'error' }
   | { kind: 'exit' }
   | { kind: 'noop' }
 
@@ -55,6 +57,7 @@ export type SlashCtx = {
   }): Promise<SessionInfo>
   setSystemOverride(text: string | null): void
   toggleVerbose(): boolean
+  openFile?(path: string): Promise<void>
 }
 
 export type ParsedSlash = {
@@ -74,6 +77,7 @@ export const slashCommands: SlashCommand[] = [
   modelCommand,
   statsCommand,
   resumeCommand,
+  planCommand,
   verboseCommand,
   interruptCommand,
   toolsCommand
@@ -252,6 +256,19 @@ export type SessionListResult = {
 export type SessionResumeResult = {
   info: SessionInfo
   messages: TranscriptMessage[]
+}
+
+export type PlanModeResult = {
+  session_id: string
+  mode: 'agent' | 'plan'
+}
+
+export type PlanCurrentResult = {
+  session_id: string
+  mode: 'agent' | 'plan'
+  plan_path: string | null
+  has_plan: boolean
+  plan_content: string | null
 }
 
 export type PrefsGetResult<T = unknown> = {

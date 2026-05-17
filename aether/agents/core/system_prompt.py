@@ -98,19 +98,55 @@ _VERIFIER_GATE = (
 # caller-supplied system prompt) so its instructions are the closest
 # to the user turn the model sees, overriding any general "verify and
 # report" guidance.
-_PLAN_MODE_REMINDER = (
+_PLAN_MODE_REMINDER_TEMPLATE = (
     "<plan_mode_reminder>\n"
-    "You are currently in plan mode. Do not make changes: do not write "
-    "files, run shell commands, commit, dispatch subagents, or "
-    "create/update/delete memory. You may read, search, list files, "
-    "fetch web/context, and ask the user clarifying questions. When "
-    "you have a concrete plan, you must call exit_plan_mode(plan=\"...\") "
-    "to request approval. Do not ask for plan approval in ordinary text.\n"
+    "Plan mode is active. Do not execute implementation work yet.\n"
+    "Plan file: {plan_path}\n"
+    "Plan file status: {plan_status}.\n"
+    "You may read, search, list files, fetch context, and ask clarifying "
+    "questions. The only file you may write or edit is the plan file "
+    "above; use write_file to create it or file_edit to revise it. Do "
+    "not write other files, run shell commands, commit, dispatch "
+    "subagents, update todos, or create/update/delete memory. When the "
+    "plan is ready, call exit_plan_mode to request approval. Do not ask "
+    "for plan approval in ordinary text or ask_user_question.\n"
     "</plan_mode_reminder>"
 )
 
+_PLAN_MODE_REMINDER = _PLAN_MODE_REMINDER_TEMPLATE.format(
+    plan_path="(unavailable)",
+    plan_status="unknown",
+)
 
-def append_plan_mode_reminder(system: str | None) -> str | None:
+
+def build_plan_mode_reminder(session_id: str) -> str:
+    """Return the plan-mode reminder for *session_id*."""
+    plan_path = "(unavailable)"
+    plan_status = "unknown"
+    try:
+        from aether.runtime.session.plan_artifact import get_plan_path, read_plan
+    except Exception:  # pragma: no cover - defensive
+        pass
+    else:
+        try:
+            path = get_plan_path(session_id)
+        except ValueError:
+            pass
+        else:
+            plan_path = str(path)
+            content = read_plan(session_id)
+            plan_status = "plan file exists" if content is not None else "no plan file exists yet"
+    return _PLAN_MODE_REMINDER_TEMPLATE.format(
+        plan_path=plan_path,
+        plan_status=plan_status,
+    )
+
+
+def append_plan_mode_reminder(
+    system: str | None,
+    *,
+    session_id: str | None = None,
+) -> str | None:
     """Append the plan-mode reminder to *system*.
 
     Used by the engine's per-turn prompt assembly when
@@ -118,9 +154,10 @@ def append_plan_mode_reminder(system: str | None) -> str | None:
     empty/None we return the reminder by itself so the model still sees
     the constraint.
     """
+    reminder = build_plan_mode_reminder(session_id) if session_id else _PLAN_MODE_REMINDER
     if system and system.strip():
-        return f"{system}\n\n{_PLAN_MODE_REMINDER}"
-    return _PLAN_MODE_REMINDER
+        return f"{system}\n\n{reminder}"
+    return reminder
 
 
 # Parity with open-claude-code/src/constants/prompts.ts:240.
@@ -212,4 +249,5 @@ __all__ = [
     "append_plan_mode_reminder",
     "augment_system_prompt",
     "augment_system_with_tool_contract",
+    "build_plan_mode_reminder",
 ]

@@ -13,7 +13,8 @@ const CATALOG: SlashCommandInfo[] = [
   { name: '/exit', description: 'quit', category: 'local' },
   { name: '/resume', description: 'resume a session', category: 'remote' },
   { name: '/refresh', description: 'redraw', category: 'local' },
-  { name: '/model', description: 'switch model', category: 'session' }
+  { name: '/model', description: 'switch model', category: 'session' },
+  { name: '/plan', description: 'plan mode', category: 'session' }
 ]
 
 describe('leadingSlashToken', () => {
@@ -61,6 +62,12 @@ describe('buildCompleterState', () => {
     expect(state.active).toBe(true)
     expect(state.matches[0]?.name).toBe('/help')
     expect(state.index).toBe(0)
+  })
+
+  it('matches /plan from the advertised catalog', () => {
+    const state = buildCompleterState('/pl', CATALOG)
+    expect(state.active).toBe(true)
+    expect(state.matches.map((match) => match.name)).toEqual(['/plan'])
   })
 })
 

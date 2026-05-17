@@ -22,16 +22,19 @@ from aether.runtime.session.session_state import SessionMode, set_mode
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
 
-_PLAN_INSTRUCTIONS = (
+_PLAN_INSTRUCTIONS_TEMPLATE = (
     "Entered plan mode. Until exit_plan_mode is approved:\n"
+    "Plan file: {plan_path}\n"
     "1. Use read_file / grep / glob / list_dir / web_fetch / web_search "
     "freely to understand the problem.\n"
-    "2. Write-class tools (shell, write_file, file_edit, notebook_edit, "
-    "todo_write, task, task_stop) are blocked and will return errors.\n"
-    "3. Use ask_user_question if you need clarification.\n"
-    "4. When you have a concrete plan, call exit_plan_mode with the plan "
-    "as a markdown string. The user will review and approve before any "
-    "write tool runs again.\n"
+    "2. The only file you may write or edit is the session plan file "
+    "above. Other write-class tools or paths (shell, write_file, "
+    "file_edit, notebook_edit, todo_write, task, task_stop, memory_write, "
+    "memory_update, memory_forget) are blocked and will return errors.\n"
+    "3. Use ask_user_question only for clarifying requirements or "
+    "choosing between approaches; do not use it for plan approval.\n"
+    "4. When the plan file is ready, call exit_plan_mode. The user will "
+    "review and approve before implementation write tools run again.\n"
     "Stay focused on understanding before changing."
 )
 
@@ -79,12 +82,17 @@ class EnterPlanModeTool(ToolExecutor):
             return _error(call, "session_id missing on TurnContext; cannot set mode")
 
         set_mode(context.session_id, SessionMode.PLAN)
+        _persist_session_mode(context.session_id, SessionMode.PLAN.value)
+        plan_path = _plan_path_for_message(context.session_id)
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
-            content=_PLAN_INSTRUCTIONS,
+            content=_PLAN_INSTRUCTIONS_TEMPLATE.format(plan_path=plan_path),
             is_error=False,
-            metadata={"new_mode": SessionMode.PLAN.value},
+            metadata={
+                "new_mode": SessionMode.PLAN.value,
+                "plan_path": plan_path,
+            },
         )
 
 
@@ -104,3 +112,26 @@ def _error(
 
 
 __all__ = ["EnterPlanModeTool"]
+
+
+def _persist_session_mode(session_id: str, mode: str) -> None:
+    try:
+        from aether.cli.sessions import load_session, save_session
+    except Exception:  # pragma: no cover - defensive
+        return
+    record = load_session(session_id)
+    if record is None:
+        return
+    record.mode = mode
+    save_session(record)
+
+
+def _plan_path_for_message(session_id: str) -> str:
+    try:
+        from aether.runtime.session.plan_artifact import get_plan_path
+    except Exception:  # pragma: no cover - defensive
+        return "(unavailable)"
+    try:
+        return str(get_plan_path(session_id))
+    except ValueError:
+        return "(unavailable)"

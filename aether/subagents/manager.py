@@ -7,7 +7,7 @@ import threading
 import time
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, List
 
 from aether.runtime.core.contracts import EngineStatus
 from aether.runtime.core.hooks import EngineHooks
@@ -52,7 +52,7 @@ class SubagentManager:
         # Async lifecycle: lazy-built ThreadPoolExecutor + in-flight
         # future tracking so ``shutdown(wait=True)`` can drain cleanly.
         self._async_executor: ThreadPoolExecutor | None = None
-        self._async_futures: dict[str, Future] = {}
+        self._async_futures: dict[str, Future[SubagentResult]] = {}
         self._async_lock = threading.Lock()
         # PR 10.7: weakref map session_id → root engine, populated by
         # ``AgentEngine.__init__`` when ``delegate_depth==0``.  Used by
@@ -244,7 +244,7 @@ class SubagentManager:
                 )
             return self._async_executor
 
-    def _on_async_done(self, task_id: str, future: Future) -> None:
+    def _on_async_done(self, task_id: str, future: Future[SubagentResult]) -> None:
         with self._async_lock:
             self._async_futures.pop(task_id, None)
         try:
@@ -315,7 +315,7 @@ class SubagentManager:
         *, parent, task: SubagentTask, background: bool
     ) -> TaskRecord:
         definition = task.metadata.get("_agent_type_def")
-        snapshot: dict = {}
+        snapshot: dict[str, Any] = {}
         if definition is not None and hasattr(definition, "to_snapshot"):
             try:
                 snapshot = definition.to_snapshot()
@@ -568,4 +568,3 @@ def _xml_escape(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-

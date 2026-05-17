@@ -6,9 +6,11 @@ import type { GatewayReady, SessionInfo, SlashCommandInfo } from '../gatewayType
 import { envBaseUrl } from '../lib/sessionBaseUrl.js'
 
 export type RunStatus = 'starting' | 'idle' | 'thinking' | 'responding' | 'tool_use'
+export type SessionMode = 'agent' | 'plan'
 
 export type SessionState = {
   sessionId: string | null
+  mode: SessionMode
   provider: string
   model: string
   recentSessions: SessionInfo[]
@@ -79,6 +81,7 @@ const initialProvider = process.env.AETHER_PROVIDER || 'openai'
 
 const initialState: SessionState = {
   sessionId: null,
+  mode: 'agent',
   provider: initialProvider,
   model: process.env.AETHER_MODEL || '',
   recentSessions: [],
@@ -144,9 +147,13 @@ export const sessionActions = {
       sessionState.set({ ...current, sessionId: sessionId ?? null })
       return
     }
+    const nextSessionId = info.session_id || sessionId || current.sessionId
+    const sameSession = nextSessionId !== null && nextSessionId === current.sessionId
+    const mode = normaliseMode(info.mode) ?? (sameSession ? current.mode : 'agent')
     sessionState.set({
       ...current,
-      sessionId: info.session_id || sessionId || current.sessionId,
+      sessionId: nextSessionId,
+      mode,
       provider: info.provider || current.provider,
       model: info.model || current.model,
       baseUrl: info.base_url ?? current.baseUrl,
@@ -167,6 +174,10 @@ export const sessionActions = {
 
   setStatus(status: RunStatus, detail: string | null = null): void {
     sessionState.set({ ...sessionState.get(), status, statusDetail: detail })
+  },
+
+  setMode(mode: SessionMode): void {
+    sessionState.set({ ...sessionState.get(), mode })
   },
 
   addUsage(input: {
@@ -190,4 +201,8 @@ export const sessionActions = {
   setSystemOverride(systemOverride: string | null): void {
     sessionState.set({ ...sessionState.get(), systemOverride })
   }
+}
+
+export function normaliseMode(value: unknown): SessionMode | null {
+  return value === 'agent' || value === 'plan' ? value : null
 }

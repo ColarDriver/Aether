@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+
 import { Box, Text, useInput } from 'ink'
 import TextInput from 'ink-text-input'
 import { useEffect, useMemo, useState, type ReactElement } from 'react'
@@ -7,6 +10,8 @@ import type {
   ApprovalRequestParams,
   JsonObject
 } from '../gatewayTypes.js'
+import { Markdown } from '../lib/markdown.js'
+import { theme } from '../lib/theme.js'
 import { overlayActions, type OverlayState } from '../store/overlayStore.js'
 
 export interface ApprovalAnswerMap {
@@ -36,59 +41,120 @@ function PlanApproval({
 }): ReactElement {
   const params = overlay.payload
   const remaining = useCountdown(params.deadline_ms ?? 0)
+  const border = theme.color('border')
+  const title = theme.colorProps('info')
+  const originalPlan = params.plan_text ?? '(no plan text provided)'
+  const [currentPlan, setCurrentPlan] = useState(originalPlan)
+  const [editMessage, setEditMessage] = useState<string | null>(null)
+
+  function approvalPayload(confirmed: boolean): JsonObject {
+    const payload: JsonObject = { confirmed, answers: {} }
+    if (confirmed && currentPlan !== originalPlan) {
+      payload.updated_input = { plan: currentPlan }
+    }
+    return payload
+  }
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       overlayActions.dismiss(overlay.id, 'cancel')
       return
     }
+    if (key.ctrl && input === 'g') {
+      if (!params.plan_path) {
+        setEditMessage('Plan path is unavailable')
+        return
+      }
+      void openPlanInEditor(params.plan_path).then(
+        (content) => {
+          setCurrentPlan(content)
+          setEditMessage('Plan updated from editor')
+        },
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          setEditMessage(`Could not edit plan: ${message}`)
+        }
+      )
+      return
+    }
     if (key.escape) {
-      overlayActions.dismiss(overlay.id, 'cancel')
+      overlayActions.dismiss(overlay.id, 'commit', approvalPayload(false))
       return
     }
     if (input === 'y' || input === 'Y' || key.return) {
-      overlayActions.dismiss(overlay.id, 'commit', { confirmed: true, answers: {} })
+      overlayActions.dismiss(overlay.id, 'commit', approvalPayload(true))
       return
     }
     if (input === 'n' || input === 'N') {
-      overlayActions.dismiss(overlay.id, 'cancel')
+      overlayActions.dismiss(overlay.id, 'commit', approvalPayload(false))
       return
     }
   })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      {...(border ? { borderColor: border } : {})}
+      paddingX={1}
+    >
       <Box>
-        <Text bold color="yellow">
+        <Text bold {...title}>
           Plan approval
         </Text>
         <Text dimColor> · {overlay.id}</Text>
       </Box>
+      {params.plan_path ? (
+        <Box>
+          <Text dimColor>{params.plan_path}</Text>
+        </Box>
+      ) : null}
       <Box marginTop={1} flexDirection="column">
-        <PlanText text={params.plan_text ?? '(no plan text provided)'} />
+        <PlanText text={currentPlan} />
       </Box>
       <Box marginTop={1}>
         <Text>
           [<Text color="green">Y</Text>] approve · [<Text color="red">N</Text>] reject ·
           ESC reject
         </Text>
+        {params.plan_path ? <Text dimColor> · Ctrl+G edit</Text> : null}
         {remaining !== null ? (
           <Text dimColor> · {formatRemaining(remaining)}</Text>
         ) : null}
       </Box>
+      {editMessage ? (
+        <Box>
+          <Text dimColor>{editMessage}</Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }
 
 function PlanText({ text }: { text: string }): ReactElement {
-  const lines = text.split('\n')
-  return (
-    <>
-      {lines.map((line, idx) => (
-        <Text key={idx}>{line || ' '}</Text>
-      ))}
-    </>
-  )
+  return <Markdown text={text || '(no plan text provided)'} />
+}
+
+async function openPlanInEditor(path: string): Promise<string> {
+  const editor = process.env.AETHER_EDITOR || process.env.VISUAL || process.env.EDITOR
+  if (!editor?.trim()) {
+    throw new Error('EDITOR is not configured')
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(editor, [path], {
+      shell: true,
+      stdio: 'inherit'
+    })
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`editor exited with code ${code ?? 'unknown'}`))
+      }
+    })
+  })
+  return readFile(path, 'utf8')
 }
 
 // ──────────────────────────────────────────────────────────────────────────

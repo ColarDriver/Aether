@@ -82,11 +82,25 @@ describe('Banner', () => {
     unmount()
   })
 
+  it('shows plan mode when the current session is planning', () => {
+    sessionState.set({
+      ...sessionState.get(),
+      sessionId: 'ses_planmode',
+      mode: 'plan'
+    })
+    const { lastFrame, unmount } = render(<Banner />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('mode')
+    expect(frame).toContain('plan')
+    unmount()
+  })
+
   it('falls back to BootLine when AETHER_NO_BANNER=1', () => {
     process.env.AETHER_NO_BANNER = '1'
     sessionState.set({
       ...sessionState.get(),
       sessionId: 'ses_xyz',
+      mode: 'plan',
       provider: 'openai',
       model: 'gpt-4o'
     })
@@ -94,6 +108,7 @@ describe('Banner', () => {
     const frame = lastFrame() ?? ''
     expect(frame).toContain('aether')
     expect(frame).toContain('openai/gpt-4o')
+    expect(frame).toContain('plan')
     expect(frame).not.toContain('industrial agent harness')
     unmount()
   })

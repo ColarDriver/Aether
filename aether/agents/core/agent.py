@@ -149,11 +149,27 @@ from aether.services.compact.llm_fork import LLMForkSummarizer
 from aether.services.compact.microcompact import TimeBasedMicrocompactor
 from aether.services.compact.snip import Snipper
 from aether.tools.base import UnknownToolError
-from aether.tools.registry import ToolRegistry, check_plan_mode_block
+from aether.tools.registry import (
+    ToolRegistry,
+    check_plan_mode_block,
+    plan_mode_plan_file_write,
+)
 
 if TYPE_CHECKING:
+    from typing import Protocol
+
     from aether.subagents.contracts import SubagentResult, SubagentTask
-    from aether.subagents.manager import SubagentManager
+
+    class SubagentManager(Protocol):
+        def register_root_engine(self, engine: "AgentEngine") -> None: ...
+
+        def run_tasks(
+            self,
+            *,
+            parent: "AgentEngine",
+            tasks: List[SubagentTask],
+            max_concurrent_children: int | None = None,
+        ) -> List[SubagentResult]: ...
 
 
 # keys that live on context.metadata as runtime helpers
@@ -1748,11 +1764,23 @@ class AgentEngine:
                 ),
             )
 
+        if self.config.skill_listing_enabled and self._skill_catalog is not None:
+            listing = format_skill_listing(
+                self._skill_catalog,
+                budget_chars=self.config.skill_listing_token_budget,
+            )
+            if listing:
+                prompt_for_messages = (
+                    f"{prompt_for_messages}\n\n{listing}"
+                    if prompt_for_messages and prompt_for_messages.strip()
+                    else listing
+                )
+
         # Sprint 12 PR 12.3: when the session is in plan mode, append a
         # short reminder to the system prompt every turn so the model
         # cannot drift back into normal agent behavior on long runs.
-        # The reminder text is fixed to keep the prompt-cache prefix
-        # stable across turns of the same session.
+        # Keep this as the final system-prompt section so its
+        # restrictions are the closest instructions to the user turn.
         if request.session_id:
             try:
                 from aether.runtime.session.session_state import (
@@ -1768,21 +1796,10 @@ class AgentEngine:
                     )
 
                     prompt_for_messages = append_plan_mode_reminder(
-                        prompt_for_messages
+                        prompt_for_messages,
+                        session_id=request.session_id,
                     )
                     context.metadata["plan_mode_active"] = True
-
-        if self.config.skill_listing_enabled and self._skill_catalog is not None:
-            listing = format_skill_listing(
-                self._skill_catalog,
-                budget_chars=self.config.skill_listing_token_budget,
-            )
-            if listing:
-                prompt_for_messages = (
-                    f"{prompt_for_messages}\n\n{listing}"
-                    if prompt_for_messages and prompt_for_messages.strip()
-                    else listing
-                )
 
         if prompt_for_messages:
             messages = self._inject_system_prompt(messages, prompt_for_messages)
@@ -5198,15 +5215,18 @@ class AgentEngine:
         if not is_dangerous_tool(call.name):
             return call
 
-        plan_refusal = check_plan_mode_block(call.name, context)
+        plan_refusal = check_plan_mode_block(call.name, context, call.arguments)
         if plan_refusal is not None:
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                content=plan_refusal,
+                content=plan_refusal.message,
                 is_error=True,
-                metadata={"plan_mode_blocked": True, "tool_executed": False},
+                metadata=plan_refusal.metadata,
             )
+
+        if plan_mode_plan_file_write(call.name, context, call.arguments) is not None:
+            return call
 
         executor = self.services.tool_registry.get(call.name)
         executor.validate(call)

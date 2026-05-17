@@ -44,6 +44,7 @@ class SessionRecord:
     model: str = ""
     base_url: str | None = None
     system_prompt: str | None = None
+    mode: str = "agent"
     messages: list[dict[str, Any]] = field(default_factory=list)
     first_user_message: str = ""
     turn_count: int = 0
@@ -88,6 +89,7 @@ class SessionRecord:
             model=str(data.get("model") or ""),
             base_url=data.get("base_url"),
             system_prompt=data.get("system_prompt"),
+            mode=_normalise_mode(data.get("mode")),
             messages=list(data.get("messages") or []),
             first_user_message=str(data.get("first_user_message") or ""),
             turn_count=int(data.get("turn_count") or 0),
@@ -101,6 +103,11 @@ class SessionRecord:
 
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalise_mode(value: Any) -> str:
+    text = str(value or "agent")
+    return text if text in {"agent", "plan"} else "agent"
 
 
 def default_session_dir() -> Path:

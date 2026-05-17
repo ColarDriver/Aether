@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from aether.cli.sessions import SessionRecord, save_session
+from aether.cli.sessions import SessionRecord, load_session, save_session
 from aether.gateway.dispatcher import (
     dispatch_request,
     register_builtins,
@@ -22,6 +22,7 @@ from aether.gateway.protocol import (
     RpcResponse,
 )
 from aether.runtime.session import all_sessions, clear_mode, set_mode
+from aether.runtime.session.plan_artifact import get_plan_path, read_plan, write_plan
 from aether.runtime.session.session_state import SessionMode
 
 
@@ -125,6 +126,10 @@ class ModeSetTests(_PlanMethodsCase):
         self.assertEqual(
             self._ok("plan.mode_get", {"session_id": sid})["mode"], "plan"
         )
+        record = load_session(sid)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.mode, "plan")
 
     def test_set_agent_after_plan_round_trips(self) -> None:
         sid = self._make_session()
@@ -161,15 +166,14 @@ class ModeSetTests(_PlanMethodsCase):
 # ---------------------------------------------------------------- current
 
 class PlanCurrentTests(_PlanMethodsCase):
-    def test_returns_mode_and_empty_artifact_before_pr_12_4(self) -> None:
+    def test_returns_mode_and_empty_artifact(self) -> None:
         sid = self._make_session()
         result = self._ok("plan.current", {"session_id": sid})
         self.assertEqual(result["session_id"], sid)
         self.assertEqual(result["mode"], "agent")
         self.assertFalse(result["has_plan"])
         self.assertIsNone(result["plan_content"])
-        # plan_path may be a path string (when PR 12.4 is present) or
-        # None.  In PR 12.1 before PR 12.4 lands it's None.
+        self.assertEqual(result["plan_path"], str(get_plan_path(sid)))
 
     def test_reflects_plan_mode_when_set(self) -> None:
         sid = self._make_session()
@@ -179,6 +183,28 @@ class PlanCurrentTests(_PlanMethodsCase):
 
     def test_unknown_session_errors(self) -> None:
         err = self._err("plan.current", {"session_id": "missing"})
+        self.assertEqual(err.code, ERROR_APPLICATION)
+
+
+# ---------------------------------------------------------------- clear
+
+class PlanClearTests(_PlanMethodsCase):
+    def test_clears_artifact_and_resets_mode(self) -> None:
+        sid = self._make_session()
+        set_mode(sid, SessionMode.PLAN)
+        write_plan(sid, "# Plan\n")
+
+        result = self._ok("plan.clear", {"session_id": sid})
+
+        self.assertEqual(result["session_id"], sid)
+        self.assertEqual(result["mode"], "agent")
+        self.assertEqual(result["plan_path"], str(get_plan_path(sid)))
+        self.assertFalse(result["has_plan"])
+        self.assertIsNone(read_plan(sid))
+        self.assertEqual(self._ok("plan.mode_get", {"session_id": sid})["mode"], "agent")
+
+    def test_clear_unknown_session_errors(self) -> None:
+        err = self._err("plan.clear", {"session_id": "missing"})
         self.assertEqual(err.code, ERROR_APPLICATION)
 
 

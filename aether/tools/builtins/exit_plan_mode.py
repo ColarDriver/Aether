@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 import logging
 
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
-from aether.runtime.session.plan_artifact import write_plan
+from aether.runtime.session.plan_artifact import get_plan_path, read_plan, write_plan
 from aether.runtime.session.session_state import SessionMode, get_mode, set_mode
 from aether.tools.base import ToolDescriptor, ToolExecutor
 
@@ -41,10 +41,13 @@ class ExitPlanModeTool(ToolExecutor):
         self._descriptor = ToolDescriptor(
             name=self.NAME,
             description=(
-                "Present a finalised plan (markdown string) to the user "
-                "for approval. On approval the session returns to agent "
-                "mode and write tools are re-enabled; on rejection the "
-                "session stays in plan mode for revision."
+                "Present the current session plan to the user for "
+                "approval. Prefer writing the plan to the session plan "
+                "file first; the optional plan argument is a compatibility "
+                "path that replaces the artifact before approval. On "
+                "approval the session returns to agent mode and write "
+                "tools are re-enabled; on rejection the session stays in "
+                "plan mode for revision."
             ),
             parameters={
                 "type": "object",
@@ -52,15 +55,16 @@ class ExitPlanModeTool(ToolExecutor):
                     "plan": {
                         "type": "string",
                         "description": (
-                            "Markdown-formatted plan describing the steps "
-                            "the agent intends to take. Be specific about "
-                            "files / commands / follow-ups."
+                            "Optional markdown plan. Prefer writing the "
+                            "plan to the session plan file; if provided, "
+                            "this content replaces the artifact before "
+                            "approval."
                         ),
                     },
                 },
-                "required": ["plan"],
+                "required": [],
             },
-            required=["plan"],
+            required=[],
         )
 
     @property
@@ -69,9 +73,9 @@ class ExitPlanModeTool(ToolExecutor):
 
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
         args = call.arguments or {}
-        plan = args.get("plan")
-        if not isinstance(plan, str) or not plan.strip():
-            return _error(call, "'plan' is required and must be a non-empty string")
+        plan_arg = args.get("plan")
+        if plan_arg is not None and not isinstance(plan_arg, str):
+            return _error(call, "'plan', if provided, must be a string")
 
         config = context.metadata.get("_engine_config") if context.metadata else None
         if not bool(getattr(config, "plan_mode_enabled", True)):
@@ -87,21 +91,33 @@ class ExitPlanModeTool(ToolExecutor):
                 "use enter_plan_mode first",
             )
 
-        # PR 12.4: persist the plan BEFORE prompting so a reject still
-        # leaves the artifact on disk for /plan to display and for the
-        # model to iterate on.  Failure here is non-fatal: we log and
-        # continue so a transient FS hiccup can't block plan approval.
-        plan_path_str: str | None = None
-        try:
-            plan_path = write_plan(context.session_id, plan)
-        except Exception as exc:  # noqa: BLE001 - logged + non-fatal
-            _logger.warning(
-                "exit_plan_mode: failed to persist plan for session %s: %s",
-                context.session_id,
-                exc,
-            )
-        else:
-            plan_path_str = str(plan_path)
+        plan_path_str = str(get_plan_path(context.session_id))
+        plan: str | None = None
+        if isinstance(plan_arg, str) and plan_arg.strip():
+            plan = plan_arg
+            try:
+                plan_path = write_plan(context.session_id, plan)
+            except Exception as exc:  # noqa: BLE001 - logged + non-fatal
+                _logger.warning(
+                    "exit_plan_mode: failed to persist plan for session %s: %s",
+                    context.session_id,
+                    exc,
+                )
+            else:
+                plan_path_str = str(plan_path)
+        elif plan_arg is not None:
+            return _error(call, "'plan', if provided, must be a non-empty string")
+
+        if plan is None:
+            plan = read_plan(context.session_id)
+            if plan is None or not plan.strip():
+                return _error(
+                    call,
+                    "no plan artifact found. Write your plan to the session "
+                    f"plan file first ({plan_path_str}), or pass a non-empty "
+                    "'plan' argument.",
+                    metadata={"plan_path": plan_path_str},
+                )
 
         prompter = self._prompter or (
             context.metadata.get("_approval_prompter") if context.metadata else None
@@ -113,29 +129,47 @@ class ExitPlanModeTool(ToolExecutor):
                 "approved interactively. Stay in plan mode or finalise "
                 "the plan as a normal text response for the user to "
                 "review out-of-band.",
-                metadata={"plan_preview": plan[:240]},
+                metadata={"plan_preview": plan[:240], "plan_path": plan_path_str},
             )
 
         try:
-            approved = bool(prompter.confirm_plan(plan, context=context))
+            approved, updated_plan = _confirm_plan(
+                prompter,
+                plan,
+                context=context,
+                plan_path=plan_path_str,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             return _error(call, f"approval prompter failed: {exc}")
+        if updated_plan is not None and updated_plan.strip():
+            plan = updated_plan
+            try:
+                plan_path = write_plan(context.session_id, plan)
+            except Exception as exc:  # noqa: BLE001 - logged + non-fatal
+                _logger.warning(
+                    "exit_plan_mode: failed to persist updated plan for session %s: %s",
+                    context.session_id,
+                    exc,
+                )
+            else:
+                plan_path_str = str(plan_path)
 
         if approved:
             set_mode(context.session_id, SessionMode.AGENT)
+            _persist_session_mode(context.session_id, SessionMode.AGENT.value)
             approve_meta: dict[str, Any] = {
                 "approved": True,
                 "new_mode": SessionMode.AGENT.value,
+                "plan_path": plan_path_str,
+                "plan": plan,
             }
-            if plan_path_str is not None:
-                approve_meta["plan_path"] = plan_path_str
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
                 content=(
-                    "Plan approved. Returning to agent mode — proceed with "
-                    "the implementation. Stick to the plan you outlined "
-                    "and use todo_write to track progress."
+                    "Plan approved. Returning to agent mode.\n\n"
+                    f"Your plan has been saved to: {plan_path_str}\n\n"
+                    f"## Approved Plan:\n{plan}"
                 ),
                 is_error=False,
                 metadata=approve_meta,
@@ -143,18 +177,13 @@ class ExitPlanModeTool(ToolExecutor):
         reject_meta: dict[str, Any] = {
             "approved": False,
             "new_mode": SessionMode.PLAN.value,
+            "plan_path": plan_path_str,
         }
-        if plan_path_str is not None:
-            reject_meta["plan_path"] = plan_path_str
+        _persist_session_mode(context.session_id, SessionMode.PLAN.value)
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
-            content=(
-                "User did not approve the plan. Session remains in plan "
-                "mode. Revise the plan based on the feedback (consider "
-                "ask_user_question for clarification) and call "
-                "exit_plan_mode again with the updated version."
-            ),
+            content="Plan rejected. Revise the plan file and call exit_plan_mode again.",
             is_error=False,
             metadata=reject_meta,
         )
@@ -176,3 +205,37 @@ def _error(
 
 
 __all__ = ["ExitPlanModeTool"]
+
+
+def _confirm_plan(
+    prompter: Any,
+    plan: str,
+    *,
+    context: TurnContext,
+    plan_path: str,
+) -> tuple[bool, str | None]:
+    try:
+        result = prompter.confirm_plan(plan, context=context, plan_path=plan_path)
+    except TypeError:
+        result = prompter.confirm_plan(plan, context=context)
+    if isinstance(result, dict):
+        updated_input = result.get("updated_input")
+        updated_plan = None
+        if isinstance(updated_input, dict) and isinstance(updated_input.get("plan"), str):
+            updated_plan = updated_input["plan"]
+        elif isinstance(result.get("plan"), str):
+            updated_plan = result["plan"]
+        return bool(result.get("confirmed")), updated_plan
+    return bool(result), None
+
+
+def _persist_session_mode(session_id: str, mode: str) -> None:
+    try:
+        from aether.cli.sessions import load_session, save_session
+    except Exception:  # pragma: no cover - defensive
+        return
+    record = load_session(session_id)
+    if record is None:
+        return
+    record.mode = mode
+    save_session(record)

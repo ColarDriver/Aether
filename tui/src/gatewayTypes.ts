@@ -172,6 +172,7 @@ export interface ApprovalRequestParams {
   run_id: string
   tool_call_id?: string | null
   plan_text?: string | null
+  plan_path?: string | null
   questions?: ApprovalQuestion[]
   deadline_ms: number
 }
@@ -259,6 +260,7 @@ export interface SessionInfo {
   system_prompt?: string | null
   message_count?: number
   summary?: string | null
+  mode?: 'agent' | 'plan' | string | null
 }
 
 export interface TranscriptToolCall {

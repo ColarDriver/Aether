@@ -289,6 +289,7 @@ class ApprovalRequest(BaseModel):
     run_id: str
     tool_call_id: str | None = None
     plan_text: str | None = None
+    plan_path: str | None = None
     questions: list[ApprovalQuestion] = Field(default_factory=list)
     deadline_ms: int
 

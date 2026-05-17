@@ -39,7 +39,13 @@ class Prompter(Protocol):
 
     def is_interactive(self) -> bool: ...
 
-    def confirm_plan(self, plan: str, *, context: Any | None = None) -> bool: ...
+    def confirm_plan(
+        self,
+        plan: str,
+        *,
+        context: Any | None = None,
+        plan_path: str | None = None,
+    ) -> bool | Mapping[str, Any]: ...
 
     def ask_questions(
         self,
@@ -78,7 +84,14 @@ class StubPrompter:
     def is_interactive(self) -> bool:
         return self._interactive
 
-    def confirm_plan(self, plan: str, *, context: Any | None = None) -> bool:
+    def confirm_plan(
+        self,
+        plan: str,
+        *,
+        context: Any | None = None,
+        plan_path: str | None = None,
+    ) -> bool:
+        del context, plan_path
         self.confirm_calls.append(plan)
         return self._approve
 
@@ -121,7 +134,14 @@ class ApprovalPrompter:
         except (AttributeError, ValueError):
             return False
 
-    def confirm_plan(self, plan: str, *, context: Any | None = None) -> bool:
+    def confirm_plan(
+        self,
+        plan: str,
+        *,
+        context: Any | None = None,
+        plan_path: str | None = None,
+    ) -> bool:
+        del context, plan_path
         if not self.is_interactive():
             return False
         try:

@@ -97,6 +97,8 @@ class EnterPlanModeTests(unittest.TestCase):
         self.assertIn("disabled", result.content)
 
     def test_b4_includes_full_guidance(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
         tool = EnterPlanModeTool()
         result = tool.execute(
             ToolCall(id="c1", name="enter_plan_mode", arguments={}),
@@ -104,6 +106,8 @@ class EnterPlanModeTests(unittest.TestCase):
         )
         self.assertIn("read_file", result.content)
         self.assertIn("exit_plan_mode", result.content)
+        self.assertIn(str(get_plan_path("sesguid")), result.content)
+        self.assertEqual(result.metadata["plan_path"], str(get_plan_path("sesguid")))
 
 
 # ----------------------------------------------------------- exit_plan_mode
@@ -188,6 +192,35 @@ class ExitPlanModeTests(unittest.TestCase):
         self.assertEqual(get_mode(sid), "agent")
         self.assertEqual(prompter.confirm_calls, ["p"])
 
+    def test_d7_no_plan_argument_reads_artifact(self) -> None:
+        from aether.runtime.session.plan_artifact import write_plan
+
+        sid = "ses-d7"
+        self._enter_plan(sid)
+        write_plan(sid, "# Plan\n\n- read artifact")
+        prompter = StubPrompter(approve_plan=True)
+        tool = ExitPlanModeTool(prompter=prompter)
+        result = tool.execute(
+            ToolCall(id="c1", name="exit_plan_mode", arguments={}),
+            _ctx(session_id=sid),
+        )
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(get_mode(sid), "agent")
+        self.assertEqual(prompter.confirm_calls, ["# Plan\n\n- read artifact"])
+        self.assertIn("Approved Plan", result.content)
+
+    def test_d8_missing_artifact_without_plan_errors(self) -> None:
+        sid = "ses-d8"
+        self._enter_plan(sid)
+        tool = ExitPlanModeTool(prompter=StubPrompter(approve_plan=True))
+        result = tool.execute(
+            ToolCall(id="c1", name="exit_plan_mode", arguments={}),
+            _ctx(session_id=sid),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("no plan artifact", result.content)
+        self.assertEqual(get_mode(sid), "plan")
+
 
 # ----------------------------------------------------------- write-tool gate
 
@@ -241,6 +274,26 @@ class PlanModeRegistryGateTests(unittest.TestCase):
         )
         self.assertTrue(result.is_error)
         self.assertEqual(t.executed, 0)
+        self.assertTrue(result.metadata.get("plan_mode_blocked"))
+        self.assertFalse(result.metadata.get("tool_executed"))
+
+    def test_c2b_plan_mode_allows_write_file_to_current_plan(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
+        reg, t = self._registry("write_file")
+        set_mode("swp", SessionMode.PLAN)
+        path = str(get_plan_path("swp"))
+        result = reg.dispatch(
+            ToolCall(
+                id="c1",
+                name="write_file",
+                arguments={"path": path, "content": "plan"},
+            ),
+            _ctx(session_id="swp"),
+        )
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(t.executed, 1)
+        self.assertTrue(result.metadata.get("plan_mode_plan_file_write"))
 
     def test_c3_plan_mode_blocks_file_edit(self) -> None:
         reg, t = self._registry("file_edit")
@@ -251,6 +304,24 @@ class PlanModeRegistryGateTests(unittest.TestCase):
         )
         self.assertTrue(result.is_error)
         self.assertEqual(t.executed, 0)
+
+    def test_c3b_plan_mode_allows_file_edit_to_current_plan(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
+        reg, t = self._registry("file_edit")
+        set_mode("sep", SessionMode.PLAN)
+        path = str(get_plan_path("sep"))
+        result = reg.dispatch(
+            ToolCall(
+                id="c1",
+                name="file_edit",
+                arguments={"path": path, "old_string": "a", "new_string": "b"},
+            ),
+            _ctx(session_id="sep"),
+        )
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(t.executed, 1)
+        self.assertTrue(result.metadata.get("plan_mode_plan_file_write"))
 
     def test_c4_plan_mode_blocks_notebook_edit(self) -> None:
         reg, t = self._registry("notebook_edit")

@@ -64,6 +64,146 @@ describe('slash dispatcher', () => {
     })
   })
 
+  it('/plan enters plan mode', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1' }))
+    const request = vi.fn(async (method: string) => {
+      if (method === 'plan.mode_set') {
+        return { session_id: 's1', mode: 'plan' }
+      }
+      return {}
+    })
+    const ctx = makeCtx({ request: request as unknown as GatewayClient['request'] })
+
+    await expect(dispatchSlash('/plan', ctx)).resolves.toEqual({
+      kind: 'note',
+      level: 'success',
+      text: 'Enabled plan mode'
+    })
+    expect(request).toHaveBeenCalledWith('plan.mode_set', {
+      session_id: 's1',
+      mode: 'plan'
+    })
+    expect(sessionState.get().mode).toBe('plan')
+  })
+
+  it('/plan with a description enters plan mode and returns a query continuation', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1' }))
+    const request = vi.fn(async () => ({ session_id: 's1', mode: 'plan' }))
+    const ctx = makeCtx({ request: request as unknown as GatewayClient['request'] })
+
+    await expect(dispatchSlash('/plan add auth flow', ctx)).resolves.toEqual({
+      kind: 'query',
+      query: 'add auth flow',
+      note: 'Enabled plan mode',
+      level: 'success'
+    })
+  })
+
+  it('/plan in plan mode renders the current plan', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1', mode: 'plan' }))
+    const request = vi.fn(async (method: string) => {
+      if (method === 'plan.current') {
+        return {
+          session_id: 's1',
+          mode: 'plan',
+          plan_path: '/tmp/plan.md',
+          has_plan: true,
+          plan_content: '# Plan\n- add auth'
+        }
+      }
+      return {}
+    })
+    const ctx = makeCtx({ request: request as unknown as GatewayClient['request'] })
+
+    const result = await dispatchSlash('/plan', ctx)
+    expect(result).toMatchObject({
+      kind: 'note',
+      level: 'info',
+      text: expect.stringContaining('# Plan\n- add auth')
+    })
+    if (result.kind === 'note') {
+      expect(result.text).toContain('Current Plan')
+      expect(result.text).toContain('/tmp/plan.md')
+    }
+  })
+
+  it('/plan open outside plan mode only enables plan mode', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1', mode: 'agent' }))
+    const openFile = vi.fn(async () => undefined)
+    const request = vi.fn(async (method: string) => {
+      if (method === 'plan.mode_set') {
+        return { session_id: 's1', mode: 'plan' }
+      }
+      return {}
+    })
+    const ctx = makeCtx({
+      request: request as unknown as GatewayClient['request'],
+      openFile
+    })
+
+    await expect(dispatchSlash('/plan open', ctx)).resolves.toEqual({
+      kind: 'note',
+      level: 'success',
+      text: 'Enabled plan mode'
+    })
+    expect(openFile).not.toHaveBeenCalled()
+  })
+
+  it('/plan open reports no plan when the artifact is missing', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1', mode: 'plan' }))
+    const request = vi.fn(async () => ({
+      session_id: 's1',
+      mode: 'plan',
+      plan_path: null,
+      has_plan: false,
+      plan_content: null
+    }))
+    const ctx = makeCtx({ request: request as unknown as GatewayClient['request'] })
+
+    await expect(dispatchSlash('/plan open', ctx)).resolves.toMatchObject({
+      kind: 'note',
+      level: 'warn',
+      text: 'No plan written yet.'
+    })
+  })
+
+  it('/plan open opens the artifact path when present', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1', mode: 'plan' }))
+    const openFile = vi.fn(async () => undefined)
+    const request = vi.fn(async () => ({
+      session_id: 's1',
+      mode: 'plan',
+      plan_path: '/tmp/s1.md',
+      has_plan: true,
+      plan_content: 'plan'
+    }))
+    const ctx = makeCtx({
+      request: request as unknown as GatewayClient['request'],
+      openFile
+    })
+
+    await expect(dispatchSlash('/plan open', ctx)).resolves.toMatchObject({
+      kind: 'note',
+      level: 'success',
+      text: 'Opened plan: /tmp/s1.md'
+    })
+    expect(openFile).toHaveBeenCalledWith('/tmp/s1.md')
+  })
+
+  it('/clear clears the current plan state when a session is active', async () => {
+    sessionActions.setSession(makeSessionInfo({ session_id: 's1', mode: 'plan' }))
+    const request = vi.fn(async () => ({
+      session_id: 's1',
+      mode: 'agent',
+      has_plan: false
+    }))
+    const ctx = makeCtx({ request: request as unknown as GatewayClient['request'] })
+
+    await expect(dispatchSlash('/clear', ctx)).resolves.toEqual({ kind: 'clear' })
+    expect(request).toHaveBeenCalledWith('plan.clear', { session_id: 's1' })
+    expect(sessionState.get().mode).toBe('agent')
+  })
+
   it('requests cancellation for /interrupt', async () => {
     sessionActions.setSession(makeSessionInfo({ session_id: 's1' }))
     const request = vi.fn(async () => ({ ok: true }))
@@ -125,6 +265,7 @@ function makeCtx(input: {
   catalog?: SlashCommandInfo[]
   request?: GatewayClient['request']
   createSession?: SlashCtx['createSession']
+  openFile?: SlashCtx['openFile']
 } = {}): SlashCtx {
   return {
     client: {
@@ -134,7 +275,8 @@ function makeCtx(input: {
     getSession: () => sessionState.get(),
     createSession: input.createSession ?? vi.fn(async () => makeSessionInfo()),
     setSystemOverride: sessionActions.setSystemOverride,
-    toggleVerbose: chatActions.toggleVerbose
+    toggleVerbose: chatActions.toggleVerbose,
+    ...(input.openFile ? { openFile: input.openFile } : {})
   }
 }
 
@@ -145,6 +287,7 @@ function makeSessionInfo(input: Partial<SessionInfo> = {}): SessionInfo {
     updated_at: 0,
     provider: input.provider ?? 'openai',
     model: input.model ?? 'gpt-4o',
-    ...(input.base_url !== undefined ? { base_url: input.base_url } : {})
+    ...(input.base_url !== undefined ? { base_url: input.base_url } : {}),
+    ...(input.mode !== undefined ? { mode: input.mode } : {})
   }
 }

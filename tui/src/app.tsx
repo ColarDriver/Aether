@@ -268,6 +268,10 @@ export function App({
       return
     }
 
+    await submitUserMessage(text)
+  }
+
+  async function submitUserMessage(text: string): Promise<void> {
     if (running) {
       chatActions.pushNote('A turn is already running. Use Ctrl+C or /interrupt.', 'warn')
       return
@@ -357,6 +361,12 @@ export function App({
         break
       case 'toggle-verbose':
         chatActions.pushNote(`verbose ${result.enabled ? 'on' : 'off'}`, 'success')
+        break
+      case 'query':
+        if (result.note) {
+          chatActions.pushNote(result.note, result.level ?? 'info')
+        }
+        await submitUserMessage(result.query)
         break
       case 'exit':
         await client.stop()

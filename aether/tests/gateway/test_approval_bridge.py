@@ -170,7 +170,7 @@ class AgentRunApprovalBridgeIntegration(unittest.TestCase):
         ]
         tool_results = [event for event in events if event["type"] == "tool.result"]
         self.assertEqual(len(tool_results), 1)
-        self.assertIn("did not approve", tool_results[0]["content"])
+        self.assertIn("Plan rejected", tool_results[0]["content"])
 
     def _frames(self) -> list[dict]:
         return [

@@ -89,6 +89,7 @@ def plan_mode_set(params: dict[str, Any] | None) -> dict[str, Any]:
             data={"mode": mode},
         )
     set_mode(session_id, mode)
+    _persist_session_mode(session_id, mode)
     return {"session_id": session_id, "mode": mode}
 
 
@@ -118,7 +119,6 @@ def plan_current(params: dict[str, Any] | None) -> dict[str, Any]:
         if content is None:
             has_plan = False
             plan_content = None
-            plan_path = None
         else:
             has_plan = True
             plan_content = content
@@ -131,6 +131,29 @@ def plan_current(params: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def plan_clear(params: dict[str, Any] | None) -> dict[str, Any]:
+    """Clear the current session's plan artifact and reset mode to agent."""
+    session_id = _require_session_id(params, where="plan.clear")
+    _require_session_exists(session_id, where="plan.clear")
+    plan_path: str | None = None
+    try:
+        from aether.runtime.session.plan_artifact import clear_plan, get_plan_path
+    except ImportError:  # pragma: no cover - PR 12.1 compatibility
+        pass
+    else:
+        plan_path = str(get_plan_path(session_id))
+        clear_plan(session_id)
+    set_mode(session_id, SessionMode.AGENT)
+    _persist_session_mode(session_id, SessionMode.AGENT.value)
+    return {
+        "session_id": session_id,
+        "mode": SessionMode.AGENT.value,
+        "plan_path": plan_path,
+        "has_plan": False,
+        "plan_content": None,
+    }
+
+
 def register() -> None:
     """Register the ``plan.*`` method handlers on the dispatcher.
 
@@ -139,11 +162,23 @@ def register() -> None:
     method("plan.mode_get", long=False)(plan_mode_get)
     method("plan.mode_set", long=False)(plan_mode_set)
     method("plan.current", long=False)(plan_current)
+    method("plan.clear", long=False)(plan_clear)
 
 
 __all__ = [
     "plan_mode_get",
     "plan_mode_set",
     "plan_current",
+    "plan_clear",
     "register",
 ]
+
+
+def _persist_session_mode(session_id: str, mode: str) -> None:
+    from aether.cli.sessions import load_session, save_session
+
+    record = load_session(session_id)
+    if record is None:
+        return
+    record.mode = mode
+    save_session(record)

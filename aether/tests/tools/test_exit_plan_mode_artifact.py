@@ -51,11 +51,17 @@ class _ExitPlanModeCase(unittest.TestCase):
             metadata={"_approval_prompter": prompter},
         )
 
-    def _execute(self, *, approve: bool, plan: str = "# Plan\n\n- one\n- two"):
+    def _execute(
+        self,
+        *,
+        approve: bool,
+        plan: str | None = "# Plan\n\n- one\n- two",
+    ):
         prompter = _StubApprovingPrompter(approve)
         tool = ExitPlanModeTool()
+        arguments = {} if plan is None else {"plan": plan}
         result = tool.execute(
-            ToolCall(id="c1", name="exit_plan_mode", arguments={"plan": plan}),
+            ToolCall(id="c1", name="exit_plan_mode", arguments=arguments),
             self._ctx(prompter=prompter),
         )
         return result, prompter
@@ -75,6 +81,23 @@ class ApproveWritesArtifactTests(_ExitPlanModeCase):
             result.metadata.get("plan_path"),
             str(get_plan_path(self.session_id)),
         )
+        self.assertEqual(result.metadata.get("plan"), "# Plan\n\n- one\n- two")
+        self.assertIn("Approved Plan", result.content)
+
+    def test_no_plan_argument_reads_artifact(self) -> None:
+        from aether.runtime.session.plan_artifact import write_plan
+
+        write_plan(self.session_id, "# From artifact\n")
+        result, prompter = self._execute(approve=True, plan=None)
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(prompter.calls, ["# From artifact\n"])
+        self.assertEqual(result.metadata.get("plan"), "# From artifact\n")
+
+    def test_no_plan_argument_missing_artifact_errors(self) -> None:
+        result, prompter = self._execute(approve=True, plan=None)
+        self.assertTrue(result.is_error)
+        self.assertEqual(prompter.calls, [])
+        self.assertIn("no plan artifact", result.content)
 
 
 class RejectKeepsArtifactTests(_ExitPlanModeCase):
@@ -153,10 +176,12 @@ class PlanCurrentReadsArtifactTests(unittest.TestCase):
         self.assertTrue(result["plan_path"].endswith(".md"))
 
     def test_plan_current_returns_no_plan_when_artifact_missing(self) -> None:
+        from aether.runtime.session.plan_artifact import get_plan_path
+
         result = self._ok("plan.current", {"session_id": self.session_id})
         self.assertFalse(result["has_plan"])
         self.assertIsNone(result["plan_content"])
-        self.assertIsNone(result["plan_path"])
+        self.assertEqual(result["plan_path"], str(get_plan_path(self.session_id)))
 
 
 if __name__ == "__main__":  # pragma: no cover

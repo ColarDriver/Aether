@@ -36,6 +36,8 @@ from aether.gateway.transport import (
     reset_transport,
     reset_transport_for_tests,
 )
+from aether.runtime.session.plan_artifact import read_plan, write_plan
+from aether.runtime.session.session_state import SessionMode, get_mode, set_mode
 
 
 class _SessionMethodsCase(unittest.TestCase):
@@ -235,6 +237,20 @@ class ResumeSession(_SessionMethodsCase):
         self._result("session.resume", {"session_id": "ses_current_via_resume"})
         current = self._result("session.current")
         self.assertEqual(current["session_id"], "ses_current_via_resume")
+
+    def test_resume_restores_persisted_plan_mode(self) -> None:
+        record = SessionRecord.new(
+            session_id="ses_plan_resume",
+            provider="claude",
+            model="claude-sonnet-4-6",
+        )
+        record.mode = "plan"
+        save_session(record)
+
+        result = self._result("session.resume", {"session_id": "ses_plan_resume"})
+
+        self.assertEqual(result["info"]["mode"], "plan")
+        self.assertEqual(get_mode("ses_plan_resume"), "plan")
 
     def test_accepts_unique_prefix(self) -> None:
         record = SessionRecord.new(
@@ -481,6 +497,24 @@ class CurrentSession(_SessionMethodsCase):
         current = self._result("session.current")
         self.assertEqual(current["session_id"], created["session_id"])
         self.assertEqual(current["info"]["provider"], "claude")
+
+    def test_create_resets_reused_session_plan_state(self) -> None:
+        sid = "ses_reused_plan"
+        set_mode(sid, SessionMode.PLAN)
+        write_plan(sid, "old plan")
+
+        created = self._result(
+            "session.create",
+            {
+                "session_id": sid,
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+            },
+        )
+
+        self.assertEqual(created["session_id"], sid)
+        self.assertEqual(get_mode(sid), "agent")
+        self.assertIsNone(read_plan(sid))
 
     def test_clears_stale_pointer(self) -> None:
         """If the on-disk session is deleted out of band, current must null out."""

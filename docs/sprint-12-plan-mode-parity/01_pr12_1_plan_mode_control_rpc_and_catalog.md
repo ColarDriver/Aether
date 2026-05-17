@@ -2,9 +2,9 @@
 
 ## 目标 / Goal
 
-建立 plan mode 的后端控制面：让 CLI / gateway 能暴露 `/plan`，让 TUI 可以通过稳定 RPC 查询和切换当前 session 的 `agent` / `plan` mode，并能读取当前 session 的 plan metadata。
+建立 plan mode 的后端控制面：让 CLI / gateway 能暴露 `/plan`，让 TUI 可以通过稳定 RPC 查询、切换、清理当前 session 的 `agent` / `plan` mode，并能读取当前 session 的 plan metadata。
 
-本 PR 不实现 TUI 行为、不写 plan artifact 文件、不重复实现写工具阻断。它只定义 wire contract，并复用已有 session state。
+本 PR 不实现 TUI 行为、不实现 engine prompt、不实现 tool blocker 细节。它只定义 wire contract，并复用已有 session state / session record，给后续 PR 提供稳定接口。
 
 ## 当前问题 / Current Problem
 
@@ -42,6 +42,21 @@ Command(
 ### 2. 新增 plan gateway RPC
 
 在 gateway command/session handler 附近新增 `plan.*` RPC。具体文件以现有 method dispatcher 为准，保持命名风格与 `session.current`、`commands.list` 一致。
+
+建议新增：
+
+```text
+aether/gateway/handlers/plan_methods.py
+```
+
+并在 gateway handler registration 中注册：
+
+```python
+method("plan.mode_get", long=False)(plan_mode_get)
+method("plan.mode_set", long=False)(plan_mode_set)
+method("plan.current", long=False)(plan_current)
+method("plan.clear", long=False)(plan_clear)
+```
 
 #### `plan.mode_get`
 
@@ -91,7 +106,7 @@ Command(
 
 #### `plan.current`
 
-第一版返回 mode 和 plan metadata。PR 12.4 落地前可以先返回空 artifact 字段；PR 12.4 再接入真实 plan 文件。
+第一版返回 mode 和 plan metadata。PR 12.4 落地后，`plan_path` 必须来自 `plan_artifact.get_plan_path(session_id)`。
 
 响应 schema：
 
@@ -99,7 +114,7 @@ Command(
 {
   "session_id": "...",
   "mode": "plan",
-  "plan_path": null,
+  "plan_path": "/home/user/.aether/plans/7f8d4f67.md",
   "has_plan": false,
   "plan_content": null
 }
@@ -107,9 +122,39 @@ Command(
 
 要求：
 
-- `plan_path` 是 string 或 null。
-- `has_plan` 是 boolean。
-- `plan_content` 是 string 或 null；如果未来做大文件截断，必须另加 `truncated` 字段，不要改变字段含义。
+- `plan_path` 是 string 或 null。只要 session valid，就应尽量返回稳定路径，即使文件尚不存在；这样 engine prompt 和 `/plan open` 可以给用户明确目标。
+- `has_plan` 是 boolean，表示文件是否存在。
+- `plan_content` 是 string 或 null；不存在时为 null，存在但为空时为 `""`。
+- 如果未来做大文件截断，必须另加 `truncated` 字段，不要改变字段含义。
+
+#### `plan.clear`
+
+请求：
+
+```json
+{
+  "session_id": "..."
+}
+```
+
+响应：
+
+```json
+{
+  "session_id": "...",
+  "mode": "agent",
+  "plan_path": "/home/user/.aether/plans/7f8d4f67.md",
+  "has_plan": false,
+  "plan_content": null
+}
+```
+
+语义：
+
+- 清理当前 session plan artifact。
+- 将 session mode 重置为 `agent`。
+- 持久化 session record mode。
+- 主要给 `/clear` 调用，不用于普通 `/plan` 展示。
 
 ### 3. 复用 session_state
 
@@ -120,7 +165,23 @@ RPC 必须调用：
 
 不要在 gateway handler 内维护第二份 mode map，也不要把 mode 塞进 TUI-only state。engine、tool blocker、approval flow 都应该观察同一份 session state。
 
-### 4. 可选扩展 `session.current`
+### 4. 持久化 session mode
+
+为了 `/resume` 能恢复 mode，`SessionRecord` 增加可选字段：
+
+```python
+mode: str = "agent"
+```
+
+规则：
+
+- 新 session 默认 `agent`。
+- `SessionRecord.from_json` 对缺失或未知 mode fallback 到 `agent`。
+- `plan.mode_set` 成功后同步写入 session record。
+- `exit_plan_mode` approve/reject 后同步写入 session record。
+- `/clear` / `plan.clear` 写回 `agent`。
+
+### 5. 可选扩展 `session.current`
 
 `session.current` 可以追加返回：
 
@@ -136,13 +197,14 @@ RPC 必须调用：
 - 旧的 `SessionInfo` 消费者不能因为缺少新字段而报错。
 - TS 侧类型应把 mode 当作可选字段，直到所有 gateway 版本都支持。
 
-### 5. 错误处理
+### 6. 错误处理
 
 以下场景必须返回明确 RPC error：
 
 - 缺少 `session_id`。
 - `session_id` 对应的 session 不存在或当前 gateway 无法解析。
 - `mode` 不是 `agent` / `plan`。
+- plan artifact path 无法生成，说明 session id 非法。
 - 请求体类型错误，例如 `mode` 不是 string。
 
 错误文案应短而可操作，例如：
@@ -151,9 +213,15 @@ RPC 必须调用：
 - `unknown session: <id>`
 - `unsupported plan mode: <mode>`
 
-### 6. 明确不在 RPC 重复 blocker
+### 7. 明确不在 RPC 重复 blocker
 
-`plan.mode_set(plan)` 只改变 session mode。plan mode 下写工具阻断仍由 registry / engine pre-permission gate 负责。不要在 RPC 里实现工具白名单，否则会出现两个策略源，后续难以保持一致。
+`plan.mode_set(plan)` 只改变 session mode。plan mode 下写工具阻断仍由 PR 12.3 / PR 12.4 的 registry / engine pre-permission gate 负责。不要在 RPC 里实现工具白名单，否则会出现两个策略源，后续难以保持一致。
+
+## Open-Claude-Code Parity Notes
+
+- OCC 的 permission mode 是 richer context，会保存 `prePlanMode`，退出后恢复。Aether 当前只有 `agent` / `plan`，本 PR 只需要回 `agent`；若未来引入 `auto` / `bypass` 等 mode，应在 session state 中增加 `pre_plan_mode`。
+- OCC plan slug 在 session log 中恢复；Aether 第一版使用 session id prefix，不在本 PR 引入 slug cache。
+- OCC command catalog 是本地 command registry；Aether 通过 gateway catalog 提供给 TUI，语义等价。
 
 ## 测试 / Tests
 
@@ -161,17 +229,23 @@ Python 单测建议：
 
 - `test_command_catalog_includes_plan`：`commands.list` 或对应 catalog API 包含 `/plan`，description 为固定文案，category 为 `session`。
 - `test_plan_mode_set_updates_session_state`：调用 `plan.mode_set` 为 `plan` 后，`get_mode(session_id) == "plan"`。
+- `test_plan_mode_set_persists_session_record`：session record `mode == "plan"`。
 - `test_plan_mode_get_returns_current_state`：默认 mode 为 `agent`，设置后读回 `plan`。
-- `test_plan_current_returns_mode_and_empty_metadata_before_artifact`：artifact 未接入时返回 `has_plan=false`、`plan_content=null`。
+- `test_plan_current_returns_mode_and_plan_metadata`：返回 `mode`、`plan_path`、`has_plan`、`plan_content`。
+- `test_plan_current_returns_path_even_when_missing`：artifact 缺失时仍返回稳定 `plan_path`。
+- `test_plan_clear_clears_artifact_and_resets_mode`：`plan.clear` 清文件并回 `agent`。
 - `test_plan_mode_set_rejects_unknown_mode`：未知 mode 返回 RPC error。
 - `test_plan_rpc_requires_session_id`：缺 session id 返回明确 error。
 - `test_plan_rpc_rejects_unknown_session`：session 不存在返回明确 error。
-- `test_plan_rpc_does_not_bypass_write_blocker`：确认 blocker 测试仍在 engine/registry 层，不需要 RPC mock 工具权限。
+- `test_session_current_includes_optional_mode`。
+- `test_old_session_without_mode_defaults_agent`。
 
 ## 验收 / Acceptance
 
 - `/help` 和 gateway command catalog 都能看到 `/plan`。
 - TUI 可以只通过 `plan.mode_get` / `plan.mode_set` 判断和切换 mode。
+- `plan.current` 能返回当前 session 的 mode、plan path、has_plan、content。
+- `plan.clear` 可供 `/clear` 调用并回到 agent mode。
 - `session.current` 的旧消费者不需要改动即可继续工作。
 - 计划 mode 的唯一状态源仍是 `session_state`。
 
@@ -181,4 +255,3 @@ Python 单测建议：
 - plan-mode system reminder：PR 12.3。
 - plan artifact 文件读写：PR 12.4。
 - approval modal UI parity：PR 12.5。
-

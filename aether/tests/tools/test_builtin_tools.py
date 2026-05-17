@@ -82,6 +82,7 @@ class FactoryTests(unittest.TestCase):
                 "memory_write",
                 "notebook_edit",
                 "read_file",
+                "send_message",
                 "shell",
                 "skill",
                 "task",

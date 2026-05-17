@@ -441,12 +441,48 @@ class AgentEngine:
         self._active_children_lock = RLock()
         self._session_store = session_store or InMemorySessionStore()
         self._hooks = hooks or EngineHooks()
+        # External-event queue (PR 10.7).  Used by the root engine to
+        # receive ``<task-notification>`` messages routed back from
+        # async children that have completed.  Drained at the next
+        # PRE_LLM boundary by ``_drain_pending_messages``; nested
+        # children read their pending queue from the on-disk TaskStore
+        # instead.
+        self._external_event_queue: list[str] = []
+        self._external_event_lock = RLock()
+        # Register self with the SubagentManager's root-engine map so
+        # ``_on_async_done`` can route notifications back here when an
+        # async child finishes.  Only root engines (depth==0) register;
+        # nested children are addressed via their parent_task_id.
+        if self._delegate_depth == 0 and self._subagent_manager is not None:
+            register = getattr(self._subagent_manager, "register_root_engine", None)
+            if callable(register):
+                try:
+                    register(self)
+                except Exception:  # pragma: no cover - defensive
+                    logging.getLogger(__name__).warning(
+                        "subagent manager root registration failed",
+                        exc_info=True,
+                    )
 
     @staticmethod
     def _default_agent_type_search_paths() -> tuple[Path, ...]:
         user = Path.home() / ".aether" / "agents"
         project = Path.cwd() / ".claude" / "agents"
         return (user, project)
+
+    def enqueue_external_event(self, message: str) -> None:
+        """Queue a message to be injected as a user turn at the next
+        PRE_LLM boundary.
+
+        Used by :class:`SubagentManager` to deliver
+        ``<task-notification>`` messages from async children back to
+        their (root) parent's conversation.  In-memory only; survives
+        only as long as this engine instance.
+        """
+        if not isinstance(message, str) or not message:
+            return
+        with self._external_event_lock:
+            self._external_event_queue.append(message)
 
     @property
     def delegate_depth(self) -> int:
@@ -595,6 +631,11 @@ class AgentEngine:
 
                     self._register_skill_nudge(context)
                     messages = self._maybe_inject_skill_nudge(messages, context)
+                    # PR 10.7: drain peer ``send_message`` deliveries
+                    # (when this engine is itself an async subagent)
+                    # and root-engine ``<task-notification>`` events
+                    # (when async children just finished).
+                    messages = self._drain_pending_messages(messages, context)
                     # Drain the diagnostic tracker and inject a
                     # ``<diagnostics>`` block so the model sees errors
                     # introduced by its most recent edits.
@@ -1785,6 +1826,71 @@ class AgentEngine:
         if state.skill_nudge_counter >= interval:
             context.metadata["should_review_skills"] = True
             state.skill_nudge_counter = 0
+
+    def _drain_pending_messages(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
+        """Drain peer / notification messages and append them as user turns.
+
+        Two source streams are merged at every PRE_LLM boundary:
+
+        1. ``TaskStore.drain_pending_messages(task_id)`` — peer
+           ``send_message`` deliveries (PR 10.7) addressed to *this*
+           async subagent.  Only fires when ``context.task_id`` matches
+           a record in the store.
+        2. ``self._external_event_queue`` — in-memory queue used by the
+           root engine to receive ``<task-notification>`` messages
+           bubbled up by :meth:`SubagentManager._on_async_done` when a
+           child finishes.
+
+        Each drained string lands as a fresh ``role=user`` turn so the
+        model treats it like a regular user message; the ``metadata``
+        field tags the source for observability.
+        """
+        drained: list[tuple[str, str]] = []  # (source, message)
+
+        store = self._task_store
+        task_id = context.task_id
+        if store is not None and isinstance(task_id, str) and task_id:
+            try:
+                queued = store.drain_pending_messages(task_id)
+            except Exception:  # pragma: no cover - defensive
+                queued = []
+                logging.getLogger(__name__).warning(
+                    "drain_pending_messages failed for task %s",
+                    task_id,
+                    exc_info=True,
+                )
+            for msg in queued:
+                if msg:
+                    drained.append(("send_message", msg))
+
+        with self._external_event_lock:
+            external = list(self._external_event_queue)
+            self._external_event_queue.clear()
+        for msg in external:
+            if not msg:
+                continue
+            source = (
+                "task_notification" if "<task-notification>" in msg else "external"
+            )
+            drained.append((source, msg))
+
+        if not drained:
+            return messages
+
+        nudged = list(messages)
+        for source, msg in drained:
+            nudged.append(
+                {
+                    "role": "user",
+                    "content": msg,
+                    "metadata": {"source": source},
+                }
+            )
+        return nudged
 
     def _maybe_inject_skill_nudge(
         self,

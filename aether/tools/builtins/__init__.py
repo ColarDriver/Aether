@@ -56,6 +56,7 @@ from aether.tools.builtins.memory import (
 )
 from aether.tools.builtins.notebook_edit import NotebookEditTool
 from aether.tools.builtins.read_file import ReadFileTool
+from aether.tools.builtins.send_message import SendMessageTool
 from aether.tools.builtins.shell import ShellTool
 from aether.tools.builtins.skill import SkillTool
 from aether.tools.builtins.task_output import TaskOutputTool
@@ -126,6 +127,7 @@ def build_default_tool_registry(
     registry.register(AgentTool(agent_type_registry=agent_type_registry))
     registry.register(TaskOutputTool())
     registry.register(TaskStopTool())
+    registry.register(SendMessageTool())
     registry.register(EnterPlanModeTool())
     registry.register(ExitPlanModeTool(prompter=approval_prompter))
     registry.register(AskUserQuestionTool(prompter=approval_prompter))
@@ -157,6 +159,7 @@ __all__ = [
     "AgentTool",
     "TaskOutputTool",
     "TaskStopTool",
+    "SendMessageTool",
     "EnterPlanModeTool",
     "ExitPlanModeTool",
     "AskUserQuestionTool",

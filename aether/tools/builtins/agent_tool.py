@@ -231,6 +231,11 @@ class AgentTool(ToolExecutor):
                 "subagent_type": subagent_type,
                 "parent_session_id": context.session_id,
                 "parent_task_id": task_id,
+                # PR 10.7: surface our own task_id into the child's
+                # ``context.task_id`` so the engine's pending-message
+                # drain (``_drain_pending_messages``) can read this
+                # task's queue in TaskStore.
+                "task_id": task_id,
             },
             interrupt_signal=context.interrupt_signal,
         )

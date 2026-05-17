@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from aether.runtime.core.contracts import EngineStatus
 from aether.runtime.core.hooks import EngineHooks
@@ -15,6 +16,9 @@ from aether.subagents.builder import SubagentBuilder
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
 from aether.subagents.default_builder import DefaultSubagentBuilder
 from aether.subagents.lifecycle_hooks import TaskStoreFanoutHooks
+
+if TYPE_CHECKING:
+    from aether.agents.core.agent import AgentEngine
 
 
 class SubagentManager:
@@ -50,6 +54,15 @@ class SubagentManager:
         self._async_executor: ThreadPoolExecutor | None = None
         self._async_futures: dict[str, Future] = {}
         self._async_lock = threading.Lock()
+        # PR 10.7: weakref map session_id → root engine, populated by
+        # ``AgentEngine.__init__`` when ``delegate_depth==0``.  Used by
+        # ``_on_async_done`` to bubble ``<task-notification>`` messages
+        # back to the parent that spawned the (now-finished) child.
+        # WeakValueDictionary so a closed CLI session doesn't pin its
+        # AgentEngine in memory forever.
+        self._root_engines: "weakref.WeakValueDictionary[str, AgentEngine]" = (
+            weakref.WeakValueDictionary()
+        )
 
     def run_task(self, parent, task: SubagentTask) -> SubagentResult:
         return self.run_tasks(parent=parent, tasks=[task])[0]
@@ -180,6 +193,46 @@ class SubagentManager:
         if executor is not None:
             executor.shutdown(wait=wait)
 
+    # ---------------------------------------------------------- root registry
+
+    def register_root_engine(self, engine: "AgentEngine") -> None:
+        """Track a root :class:`AgentEngine` so async notifications can
+        be routed back to it after a child finishes.
+
+        Called from :meth:`AgentEngine.__init__` when
+        ``delegate_depth==0``.  Re-registers on each construction; an
+        engine with the same ``_current_session_id`` overwrites a stale
+        entry from a previous instantiation.  The map holds weakrefs,
+        so closed engines drop out automatically.
+        """
+        session_id = getattr(engine, "_current_session_id", None)
+        # ``_current_session_id`` is set on ``run_loop`` entry, not at
+        # init.  Until then we key by the engine's id() so the
+        # registration is non-destructive; ``_on_async_done`` will
+        # match by both keys.
+        key = session_id or f"engine:{id(engine)}"
+        self._root_engines[key] = engine
+
+    def _lookup_root_engine_for(
+        self, *, session_id: str | None, parent_session_id: str | None
+    ) -> "AgentEngine | None":
+        """Best-effort lookup: try the parent's session_id first, then
+        any engine whose current session_id matches, then fall through
+        to ``None``."""
+        candidates = [s for s in (parent_session_id, session_id) if s]
+        for key in candidates:
+            engine = self._root_engines.get(key)
+            if engine is not None:
+                return engine
+        # Second pass: scan for an engine whose live ``_current_session_id``
+        # matches one of our candidates (it may have been registered
+        # with the placeholder ``engine:<id>`` key before its first
+        # ``run_loop`` set the real session id).
+        for engine in list(self._root_engines.values()):
+            if getattr(engine, "_current_session_id", None) in candidates:
+                return engine
+        return None
+
     # ----------------------------------------------------------- internals
 
     def _ensure_async_executor(self) -> ThreadPoolExecutor:
@@ -195,11 +248,62 @@ class SubagentManager:
         with self._async_lock:
             self._async_futures.pop(task_id, None)
         try:
-            future.result()
+            result = future.result()
         except Exception:  # noqa: BLE001 - already finalized into the store
             self.logger.exception(
                 "async task %s done callback observed exception", task_id
             )
+            return
+
+        # PR 10.7: bubble a ``<task-notification>`` back to the parent.
+        # If the parent is itself an async subagent (parent_task_id set),
+        # we land in their on-disk pending queue so they pick it up at
+        # their next iteration boundary.  Otherwise the parent is a
+        # root engine — drop the message into its in-memory event
+        # queue via ``enqueue_external_event``.
+        try:
+            self._dispatch_completion_notification(task_id, result)
+        except Exception:  # pragma: no cover - defensive
+            self.logger.exception(
+                "failed to dispatch task-notification for %s", task_id
+            )
+
+    def _dispatch_completion_notification(
+        self, task_id: str, result: SubagentResult
+    ) -> None:
+        notification = _build_task_notification(task_id, result)
+        parent_task_id = (
+            (result.metadata or {}).get("parent_task_id")
+            if result.metadata
+            else None
+        )
+        store = None  # resolve from any registered engine if needed
+        if parent_task_id:
+            for engine in list(self._root_engines.values()):
+                store = getattr(engine, "_task_store", None)
+                if store is not None:
+                    break
+            if store is not None:
+                try:
+                    record = store.read(parent_task_id)
+                except Exception:  # pragma: no cover - defensive
+                    record = None
+                if record is not None:
+                    store.enqueue_pending_message(parent_task_id, notification)
+                    return
+            # Parent task isn't in the store (or store is gone) — fall
+            # through to in-memory routing so the message isn't lost.
+
+        parent_session_id = (
+            (result.metadata or {}).get("parent_session_id")
+            if result.metadata
+            else None
+        )
+        engine = self._lookup_root_engine_for(
+            session_id=None, parent_session_id=parent_session_id
+        )
+        if engine is not None:
+            engine.enqueue_external_event(notification)
 
     @staticmethod
     def _resolve_task_store(parent) -> TaskStore | None:
@@ -415,3 +519,53 @@ class SubagentManager:
             with self._stop_events_lock:
                 self._stop_events.pop(task.task_id, None)
                 self._active_children.pop(task.task_id, None)
+
+
+# ----------------------------------------------------------- helpers
+
+
+def _build_task_notification(task_id: str, result: SubagentResult) -> str:
+    """Render the ``<task-notification>`` XML the parent sees as a user turn.
+
+    Format mirrors ``open-claude-code/src/coordinator/coordinatorMode.ts``:
+    a small XML block with task_id / subagent_type / status / duration
+    / optional summary / optional error.  Escapes ``&`` / ``<`` / ``>``
+    so a child's tool output containing those characters cannot break
+    the markup.
+    """
+    raw_status = (
+        result.status.value
+        if isinstance(result.status, SubagentStatus)
+        else str(result.status)
+    )
+    # SubagentStatus values are upper-case ("COMPLETED" / "FAILED" / ...);
+    # TaskStatus uses lower-case.  Render lower-case in the wire payload
+    # so consumers see a single convention regardless of which enum the
+    # producer used.
+    status = raw_status.lower()
+    metadata = result.metadata or {}
+    subagent_type = str(metadata.get("subagent_type") or "general-purpose")
+    summary = (result.summary or "").strip()
+    error = (result.error or "").strip()
+    parts: list[str] = [
+        "<task-notification>",
+        f"  <task_id>{_xml_escape(task_id)}</task_id>",
+        f"  <subagent_type>{_xml_escape(subagent_type)}</subagent_type>",
+        f"  <status>{_xml_escape(status)}</status>",
+        f"  <duration_seconds>{result.duration_seconds:.1f}</duration_seconds>",
+    ]
+    if summary:
+        parts.append(f"  <summary>{_xml_escape(summary)}</summary>")
+    if error:
+        parts.append(f"  <error>{_xml_escape(error)}</error>")
+    parts.append("</task-notification>")
+    return "\n".join(parts)
+
+
+def _xml_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+

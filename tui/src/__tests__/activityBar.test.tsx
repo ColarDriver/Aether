@@ -60,6 +60,30 @@ describe('ActivityBar', () => {
     unmount()
   })
 
+  it('renders todo_write items as an activity checklist', () => {
+    activityActions.beginTurn()
+    activityActions.setTodos([
+      {
+        id: '1',
+        content: 'Fix unwanted blank lines in nested markdown lists',
+        activeForm: 'Fixing nested markdown list spacing',
+        status: 'in_progress'
+      },
+      {
+        id: '2',
+        content: 'Verify with build and tests',
+        status: 'pending'
+      }
+    ])
+
+    const { lastFrame, unmount } = render(<ActivityBar />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Fixing nested markdown list spacing')
+    expect(frame).toContain('└ ■ Fix unwanted blank lines in nested markdown lists')
+    expect(frame).toContain('□ Verify with build and tests')
+    unmount()
+  })
+
   it('renders the cancelled status when endTurn(cancelled) is called', () => {
     activityActions.beginTurn()
     activityActions.endTurn('cancelled')

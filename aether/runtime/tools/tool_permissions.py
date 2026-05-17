@@ -84,7 +84,6 @@ DANGEROUS_TOOLS: frozenset[str] = frozenset(
         "write_file",
         "file_edit",
         "notebook_edit",
-        "todo_write",
         "task",
         "task_stop",
     }

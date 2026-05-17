@@ -79,6 +79,15 @@ describe('activityStore', () => {
     expect(activityState.get().maxIterations).toBe(8)
   })
 
+  it('stores the current todo list for activity rendering', () => {
+    activityActions.setTodos([
+      { id: '1', content: 'Implement registry', status: 'in_progress' }
+    ])
+    expect(activityState.get().todos).toEqual([
+      { id: '1', content: 'Implement registry', status: 'in_progress' }
+    ])
+  })
+
   it('bumpAnimation increments the animation tick monotonically', () => {
     const start = activityState.get().animationTick
     activityActions.bumpAnimation()

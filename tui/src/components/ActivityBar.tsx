@@ -5,6 +5,7 @@ import { useEffect, type ReactElement } from 'react'
 import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
 import { theme } from '../lib/theme.js'
 import { categoryFor, verbForCategory } from '../lib/toolCategory.js'
+import { activeTodoTitle, formatTodoPreviewLines } from '../lib/todos.js'
 import { activityActions, activityState, type ActivityStatus } from '../store/activityStore.js'
 import { sessionState } from '../store/sessionStore.js'
 
@@ -125,7 +126,8 @@ export function ActivityBar(): ReactElement {
     ? frames[activity.animationTick % frames.length]
     : (ascii ? STATIC_ICON_ASCII : STATIC_ICON)[activity.status]
 
-  const verb = verbForStatus(activity)
+  const todoTitle = activeTodoTitle(activity.todos)
+  const verb = todoTitle ?? verbForStatus(activity)
   const elapsedMs = activity.thinkingStartedAt
     ? Math.max(0, Date.now() - activity.thinkingStartedAt)
     : null
@@ -211,27 +213,43 @@ export function ActivityBar(): ReactElement {
   const shimmerSlices = isActive ? shimmer(verb, activity.animationTick) : null
   const shimmerColor = theme.color('text') ?? 'white'
 
+  const todoLines = formatTodoPreviewLines(activity.todos, {
+    ascii,
+    width: Math.max(20, cols - 2)
+  })
+
   return (
-    <Box>
-      <Text {...colorProps}>{icon ?? ' '} </Text>
-      {shimmerSlices ? (
-        <>
-          {shimmerSlices.before ? (
-            <Text bold {...colorProps}>{shimmerSlices.before}</Text>
-          ) : null}
-          {shimmerSlices.highlight ? (
-            <Text bold color={shimmerColor}>{shimmerSlices.highlight}</Text>
-          ) : null}
-          {shimmerSlices.after ? (
-            <Text bold {...colorProps}>{shimmerSlices.after}</Text>
-          ) : null}
-        </>
-      ) : (
-        <Text bold {...colorProps}>{verb}</Text>
-      )}
-      {detailSegment ? <Text dimColor>{detailSegment}</Text> : null}
-      {elapsedSegment ? <Text dimColor>{elapsedSegment}</Text> : null}
-      {kept.length > 0 ? <Text dimColor> · {kept.join(' · ')}</Text> : null}
+    <Box flexDirection="column">
+      <Box>
+        <Text {...colorProps}>{icon ?? ' '} </Text>
+        {shimmerSlices ? (
+          <>
+            {shimmerSlices.before ? (
+              <Text bold {...colorProps}>{shimmerSlices.before}</Text>
+            ) : null}
+            {shimmerSlices.highlight ? (
+              <Text bold color={shimmerColor}>{shimmerSlices.highlight}</Text>
+            ) : null}
+            {shimmerSlices.after ? (
+              <Text bold {...colorProps}>{shimmerSlices.after}</Text>
+            ) : null}
+          </>
+        ) : (
+          <Text bold {...colorProps}>{verb}</Text>
+        )}
+        {detailSegment ? <Text dimColor>{detailSegment}</Text> : null}
+        {elapsedSegment ? <Text dimColor>{elapsedSegment}</Text> : null}
+        {kept.length > 0 ? <Text dimColor> · {kept.join(' · ')}</Text> : null}
+      </Box>
+      {todoLines.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          {todoLines.map((line, idx) => (
+            <Text key={idx} dimColor={idx !== 0}>
+              {line}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   )
 }

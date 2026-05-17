@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import type { TodoItem } from '../lib/todos.js'
+
 export type ActivityStatus =
   | 'idle'
   | 'starting'
@@ -48,6 +50,8 @@ export interface ActivityState {
    * survives turn boundaries so `/stats` can show last-turn metrics.
    */
   lastTurn: TurnSummary | null
+  /** Current session todo list, updated from todo_write tool calls. */
+  todos: TodoItem[]
   /**
    * Latch set the moment the user requests an interrupt (ESC during a busy
    * turn). Mirrors Python `app.py:_interrupt_visual_pending` — the gateway
@@ -78,6 +82,7 @@ const initialState: ActivityState = {
   turnErrors: 0,
   responseChars: 0,
   lastTurn: null,
+  todos: [],
   interruptPending: false
 }
 
@@ -241,6 +246,11 @@ export const activityActions = {
       next.responseStartedAt = null
     }
     activityState.set(next)
+  },
+
+  setTodos(todos: TodoItem[]): void {
+    const current = activityState.get()
+    activityState.set({ ...current, todos })
   },
 
   setIteration(iteration: number, maxIterations?: number | null): void {

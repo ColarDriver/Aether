@@ -21,6 +21,7 @@ import {
 import { overlayActions, type OverlayState } from '../store/overlayStore.js'
 import { useStore } from '@nanostores/react'
 import { theme } from '../lib/theme.js'
+import { formatTodoPreviewLines, todosFromArgs } from '../lib/todos.js'
 
 // Mirrors `ToolPermissionDecisionType` on the wire side. The TUI commits one
 // of these four values, the gateway maps them back to the engine via
@@ -217,6 +218,22 @@ function PreviewBody({
   preview: PermissionPreview | null
   request: PermissionToolRequest
 }): ReactElement | null {
+  if (request.tool_name === 'todo_write') {
+    const todos = todosFromArgs(request.arguments)
+    if (todos.length > 0) {
+      const width = Math.max(20, (process.stdout?.columns ?? 100) - 4)
+      return (
+        <Box marginTop={1} flexDirection="column">
+          {formatTodoPreviewLines(todos, {
+            ascii: !theme.isUnicodeAllowed(),
+            width
+          }).map((line, idx) => (
+            <Text key={idx} {...theme.colorProps('dim')}>{line}</Text>
+          ))}
+        </Box>
+      )
+    }
+  }
   // Falsy-string-aware guard: a tool may set `diff` / `command` / `body`
   // to "" when the relevant data was structurally empty (e.g., overwriting
   // a file with identical content). Treat whitespace-only values the same

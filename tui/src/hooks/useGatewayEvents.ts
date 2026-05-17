@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { GatewayEvent } from '../gatewayTypes.js'
 import { theme } from '../lib/theme.js'
+import { shouldClearTodos, todosFromArgs } from '../lib/todos.js'
 import { activityActions, type TurnSummary } from '../store/activityStore.js'
 import { chatActions, verboseMode } from '../store/chatStore.js'
 import { reasoningActions } from '../store/reasoningStore.js'
@@ -136,6 +137,10 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       activityActions.setStatus('responding')
       break
     case 'tool.call': {
+      if (event.tool_name === 'todo_write') {
+        const todos = todosFromArgs(event.arguments)
+        activityActions.setTodos(shouldClearTodos(todos) ? [] : todos)
+      }
       const dispatch = toolGroupActions.startCall({
         toolCallId: event.tool_call_id,
         toolName: event.tool_name,

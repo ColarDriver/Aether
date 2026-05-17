@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject } from '../gatewayTypes.js'
+import { summarizeTodos, todosFromArgs } from './todos.js'
 
 export type ToolCategory =
   | 'search'
@@ -75,6 +76,7 @@ const NAME_TO_CATEGORY: Record<string, ToolCategory> = {
   create_file: 'write',
   save_file: 'write',
   // edit
+  todo_write: 'edit',
   edit_file: 'edit',
   file_edit: 'edit',
   Edit: 'edit',
@@ -242,6 +244,9 @@ function truncate(value: string, limit: number = 80): string {
 export function hintForCall(name: string, args: JsonObject | undefined): string {
   if (!args) {
     return ''
+  }
+  if (canonicalToolName(name) === 'todo_write') {
+    return summarizeTodos(todosFromArgs(args))
   }
   const category = categoryFor(name)
   const path =

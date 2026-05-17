@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { applyGatewayEvent, resetGatewayEventDedupeForTests } from '../hooks/useGatewayEvents.js'
+import { activityActions, activityState } from '../store/activityStore.js'
 import { chatActions, chatItems } from '../store/chatStore.js'
 import { sessionActions, sessionState } from '../store/sessionStore.js'
 
 describe('chat store event mapping', () => {
   beforeEach(() => {
     chatActions.resetForTests()
+    activityActions.resetForTests()
     sessionActions.resetForTests()
     resetGatewayEventDedupeForTests()
   })
@@ -107,6 +109,45 @@ describe('chat store event mapping', () => {
       text: 'after',
       streaming: false
     })
+  })
+
+  it('updates activity todos from todo_write tool calls', () => {
+    applyGatewayEvent({
+      type: 'tool.call',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'todo1',
+      tool_name: 'todo_write',
+      arguments: {
+        todos: [
+          { id: '1', content: 'Implement registry', status: 'in_progress' },
+          { id: '2', content: 'Wire gateway', status: 'pending' }
+        ]
+      },
+      iteration: 1
+    })
+
+    expect(activityState.get().todos).toEqual([
+      { id: '1', content: 'Implement registry', status: 'in_progress' },
+      { id: '2', content: 'Wire gateway', status: 'pending' }
+    ])
+
+    applyGatewayEvent({
+      type: 'tool.call',
+      session_id: 's1',
+      run_id: 'r1',
+      tool_call_id: 'todo2',
+      tool_name: 'todo_write',
+      arguments: {
+        todos: [
+          { id: '1', content: 'Implement registry', status: 'completed' },
+          { id: '2', content: 'Wire gateway', status: 'completed' }
+        ]
+      },
+      iteration: 1
+    })
+
+    expect(activityState.get().todos).toEqual([])
   })
 
   it('appends the final assistant suffix below interleaved shell output even without a post-tool delta', () => {

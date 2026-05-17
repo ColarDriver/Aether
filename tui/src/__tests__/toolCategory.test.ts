@@ -16,6 +16,7 @@ describe('categoryFor', () => {
     expect(categoryFor('Grep')).toBe('search')
     expect(categoryFor('shell')).toBe('bash')
     expect(categoryFor('Edit')).toBe('edit')
+    expect(categoryFor('todo_write')).toBe('edit')
   })
 
   it('strips MCP / namespace prefixes before bucketing', () => {
@@ -47,6 +48,17 @@ describe('EXPLORE_CATEGORIES', () => {
 describe('hintForCall', () => {
   it('formats bash commands with a $ prefix', () => {
     expect(hintForCall('shell', { command: 'ls -la /tmp' })).toBe('$ ls -la /tmp')
+  })
+
+  it('summarizes todo_write lists instead of exposing raw JSON', () => {
+    expect(
+      hintForCall('todo_write', {
+        todos: [
+          { id: '1', content: 'A', status: 'completed' },
+          { id: '2', content: 'B', status: 'pending' }
+        ]
+      })
+    ).toBe('2 todos · 1/2 done')
   })
 
   it('formats search hints with pattern + path', () => {

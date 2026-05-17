@@ -20,6 +20,7 @@ class ToolPermissionPolicyTests(unittest.TestCase):
         self.assertTrue(is_dangerous_tool("file_edit"))
         self.assertTrue(is_dangerous_tool("write_file"))
         self.assertTrue(is_dangerous_tool("shell"))
+        self.assertFalse(is_dangerous_tool("todo_write"))
         self.assertFalse(is_dangerous_tool("read_file"))
 
     def test_session_rule_matches_preview_path(self) -> None:

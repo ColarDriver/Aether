@@ -65,6 +65,26 @@ const DIFF_PARAMS: PermissionRequestParams = {
   deadline_ms: 0
 }
 
+const TODO_PARAMS: PermissionRequestParams = {
+  session_id: 'ses_1',
+  run_id: 'run_1',
+  request: {
+    tool_call_id: 'tc_3',
+    tool_name: 'todo_write',
+    arguments: {
+      todos: [
+        { id: '1', content: 'Implement registry', status: 'in_progress' },
+        { id: '2', content: 'Wire gateway', status: 'pending' }
+      ]
+    },
+    category: 'state',
+    risk: 'read',
+    preview: { title: 'Use tool' },
+    allow_session: true
+  },
+  deadline_ms: 0
+}
+
 describe('PermissionModal — shell command preview', () => {
   beforeEach(() => {
     overlayActions.resetForTests()
@@ -213,6 +233,29 @@ describe('PermissionModal — shell command preview', () => {
     expect(dismiss).toHaveBeenCalledWith('commit', { type: 'allow_session' })
     expect(lastFrame()).not.toContain('Allow for session matching:')
     expect(lastFrame()).not.toContain('command prefix:')
+    unmount()
+  })
+})
+
+describe('PermissionModal — todo_write preview fallback', () => {
+  beforeEach(() => {
+    overlayActions.resetForTests()
+    permissionRulesActions.resetForTests()
+    nextCreatedAt = 1
+  })
+  afterEach(() => {
+    overlayActions.resetForTests()
+    permissionRulesActions.resetForTests()
+  })
+
+  it('renders todos as a checklist instead of raw JSON', () => {
+    const overlay = makeOverlay(TODO_PARAMS)
+    const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('└ ■ Implement registry')
+    expect(frame).toContain('□ Wire gateway')
+    expect(frame).not.toContain('"todos"')
+    expect(frame).not.toContain('"content"')
     unmount()
   })
 })

@@ -20,9 +20,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import logging
+
 from aether.runtime.core.contracts import ToolCall, ToolResult, TurnContext
+from aether.runtime.session.plan_artifact import write_plan
 from aether.runtime.session.session_state import SessionMode, get_mode, set_mode
 from aether.tools.base import ToolDescriptor, ToolExecutor
+
+
+_logger = logging.getLogger(__name__)
 
 
 class ExitPlanModeTool(ToolExecutor):
@@ -81,6 +87,22 @@ class ExitPlanModeTool(ToolExecutor):
                 "use enter_plan_mode first",
             )
 
+        # PR 12.4: persist the plan BEFORE prompting so a reject still
+        # leaves the artifact on disk for /plan to display and for the
+        # model to iterate on.  Failure here is non-fatal: we log and
+        # continue so a transient FS hiccup can't block plan approval.
+        plan_path_str: str | None = None
+        try:
+            plan_path = write_plan(context.session_id, plan)
+        except Exception as exc:  # noqa: BLE001 - logged + non-fatal
+            _logger.warning(
+                "exit_plan_mode: failed to persist plan for session %s: %s",
+                context.session_id,
+                exc,
+            )
+        else:
+            plan_path_str = str(plan_path)
+
         prompter = self._prompter or (
             context.metadata.get("_approval_prompter") if context.metadata else None
         )
@@ -101,6 +123,12 @@ class ExitPlanModeTool(ToolExecutor):
 
         if approved:
             set_mode(context.session_id, SessionMode.AGENT)
+            approve_meta: dict[str, Any] = {
+                "approved": True,
+                "new_mode": SessionMode.AGENT.value,
+            }
+            if plan_path_str is not None:
+                approve_meta["plan_path"] = plan_path_str
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
@@ -110,11 +138,14 @@ class ExitPlanModeTool(ToolExecutor):
                     "and use todo_write to track progress."
                 ),
                 is_error=False,
-                metadata={
-                    "approved": True,
-                    "new_mode": SessionMode.AGENT.value,
-                },
+                metadata=approve_meta,
             )
+        reject_meta: dict[str, Any] = {
+            "approved": False,
+            "new_mode": SessionMode.PLAN.value,
+        }
+        if plan_path_str is not None:
+            reject_meta["plan_path"] = plan_path_str
         return ToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -125,10 +156,7 @@ class ExitPlanModeTool(ToolExecutor):
                 "exit_plan_mode again with the updated version."
             ),
             is_error=False,
-            metadata={
-                "approved": False,
-                "new_mode": SessionMode.PLAN.value,
-            },
+            metadata=reject_meta,
         )
 
 

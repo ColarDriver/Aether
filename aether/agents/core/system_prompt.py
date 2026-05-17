@@ -92,6 +92,38 @@ _VERIFIER_GATE = (
 )
 
 # Parity with open-claude-code/src/constants/prompts.ts:240.
+# Sprint 12 PR 12.3 — per-turn reminder that the session is in plan
+# mode.  Short, stable text so the prompt cache prefix doesn't churn
+# between turns.  Appended LAST (after directive sections, after the
+# caller-supplied system prompt) so its instructions are the closest
+# to the user turn the model sees, overriding any general "verify and
+# report" guidance.
+_PLAN_MODE_REMINDER = (
+    "<plan_mode_reminder>\n"
+    "You are currently in plan mode. Do not make changes: do not write "
+    "files, run shell commands, commit, dispatch subagents, or "
+    "create/update/delete memory. You may read, search, list files, "
+    "fetch web/context, and ask the user clarifying questions. When "
+    "you have a concrete plan, you must call exit_plan_mode(plan=\"...\") "
+    "to request approval. Do not ask for plan approval in ordinary text.\n"
+    "</plan_mode_reminder>"
+)
+
+
+def append_plan_mode_reminder(system: str | None) -> str | None:
+    """Append the plan-mode reminder to *system*.
+
+    Used by the engine's per-turn prompt assembly when
+    ``session_state.get_mode(session_id) == "plan"``.  When *system* is
+    empty/None we return the reminder by itself so the model still sees
+    the constraint.
+    """
+    if system and system.strip():
+        return f"{system}\n\n{_PLAN_MODE_REMINDER}"
+    return _PLAN_MODE_REMINDER
+
+
+# Parity with open-claude-code/src/constants/prompts.ts:240.
 _FAITHFUL_REPORTING = (
     "<faithful_reporting>\n"
     "Report outcomes faithfully. If tests fail, say so with the relevant "
@@ -177,6 +209,7 @@ def augment_system_with_tool_contract(
 
 __all__ = [
     "SystemPromptOptions",
+    "append_plan_mode_reminder",
     "augment_system_prompt",
     "augment_system_with_tool_contract",
 ]

@@ -1748,6 +1748,30 @@ class AgentEngine:
                 ),
             )
 
+        # Sprint 12 PR 12.3: when the session is in plan mode, append a
+        # short reminder to the system prompt every turn so the model
+        # cannot drift back into normal agent behavior on long runs.
+        # The reminder text is fixed to keep the prompt-cache prefix
+        # stable across turns of the same session.
+        if request.session_id:
+            try:
+                from aether.runtime.session.session_state import (
+                    SessionMode,
+                    get_mode,
+                )
+            except ImportError:  # pragma: no cover - defensive
+                pass
+            else:
+                if get_mode(request.session_id) == SessionMode.PLAN.value:
+                    from aether.agents.core.system_prompt import (
+                        append_plan_mode_reminder,
+                    )
+
+                    prompt_for_messages = append_plan_mode_reminder(
+                        prompt_for_messages
+                    )
+                    context.metadata["plan_mode_active"] = True
+
         if self.config.skill_listing_enabled and self._skill_catalog is not None:
             listing = format_skill_listing(
                 self._skill_catalog,

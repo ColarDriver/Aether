@@ -140,6 +140,33 @@ class _StreamingProvider(ModelProvider):
         )
 
 
+class _SilentStreamingProvider(ModelProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(
+        self,
+        messages: list[dict],
+        tools: list[ToolDescriptor],
+        config: ModelCallConfig,
+        context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: StreamSilentCallback | None = None,
+    ) -> NormalizedResponse:
+        del messages, tools, config, context
+        self.calls += 1
+        if self.calls > 1:
+            if stream_callback is not None:
+                stream_callback("done")
+            return NormalizedResponse(content="done")
+        if stream_silent_callback is not None:
+            stream_silent_callback('{"path":')
+            stream_silent_callback('"/tmp/a"}')
+        return NormalizedResponse(
+            tool_calls=[ToolCall(id="tc_silent", name="echo", arguments={"text": "silent"})]
+        )
+
+
 class _ToolThenTextProvider(ModelProvider):
     def __init__(self) -> None:
         self.calls = 0
@@ -284,6 +311,31 @@ class AgentRunStreaming(_GatewayAgentCase):
         self.assertEqual(calls[0]["tool_call_id"], "tc_1")
         self.assertEqual(results[0]["tool_call_id"], "tc_1")
         self.assertEqual(results[0]["content"], "hello")
+
+    def test_silent_stream_chunks_emit_count_only_progress_events(self) -> None:
+        self._save_session()
+        provider = _SilentStreamingProvider()
+        registry = ToolRegistry()
+        registry.register(_EchoTool())
+
+        with mock.patch(
+            "aether.gateway.handlers.agent_methods._build_provider_for_record",
+            return_value=provider,
+        ):
+            with mock.patch(
+                "aether.gateway.handlers.agent_methods._build_tool_registry",
+                return_value=registry,
+            ):
+                frame = self._run_agent(
+                    "silent-run",
+                    {"session_id": "ses_agent", "user_message": "use echo"},
+                )
+
+        self.assertEqual(frame["result"]["exit_reason"], "done")
+        events = self._events()
+        progress = [event for event in events if event["type"] == "stream.progress"]
+        self.assertEqual([event["chars"] for event in progress], [8, 9])
+        self.assertNotIn("text", progress[0])
 
 
 class AgentRunActiveGuard(_GatewayAgentCase):

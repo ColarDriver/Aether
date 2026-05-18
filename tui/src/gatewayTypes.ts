@@ -61,6 +61,12 @@ export interface TextDelta extends AgentEventBase {
   sequence: number
 }
 
+export interface StreamProgress extends AgentEventBase {
+  type: 'stream.progress'
+  chars: number
+  sequence: number
+}
+
 export interface Reasoning extends AgentEventBase {
   type: 'reasoning.delta'
   text: string
@@ -235,6 +241,7 @@ export type GatewayEvent =
   | GatewayReady
   | GatewayErrorEvent
   | TextDelta
+  | StreamProgress
   | Reasoning
   | ToolCall
   | ToolResult

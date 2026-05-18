@@ -38,6 +38,7 @@ from aether.gateway.protocol import (
     LoopStateChanged,
     Reasoning,
     Status,
+    StreamProgress,
     TextDelta,
     TokenUsage,
     ToolCall as ToolCallEvent,
@@ -107,8 +108,17 @@ class _EventSink:
             )
         )
 
-    def silent_delta(self, _text: str) -> None:
-        return None
+    def silent_delta(self, text: str) -> None:
+        if not text:
+            return
+        self.emit(
+            StreamProgress(
+                session_id=self.session_id,
+                run_id=self.run_id,
+                chars=len(text),
+                sequence=self._next_sequence(),
+            )
+        )
 
     def status(self, kind: str, detail: str | None = None) -> None:
         self.emit(

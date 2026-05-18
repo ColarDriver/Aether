@@ -52,6 +52,17 @@ class ProviderStreamingTests(unittest.TestCase):
 
         self.assertEqual(deltas, [])
 
+    def test_function_call_argument_delta_is_silent_progress(self) -> None:
+        visible: list[str] = []
+        silent: list[str] = []
+        event = {"type": "response.function_call_arguments.delta", "delta": '{"cmd":'}
+
+        CodexChatModel._emit_stream_delta(visible.append, event)
+        CodexChatModel._emit_stream_silent_delta(silent.append, event)
+
+        self.assertEqual(visible, [])
+        self.assertEqual(silent, ['{"cmd":'])
+
     def test_build_payload_sets_tool_choice_auto_when_tools_present(self) -> None:
         provider = CodexChatModel(access_token="test-token", account_id="acct")
         payload = provider._build_payload(

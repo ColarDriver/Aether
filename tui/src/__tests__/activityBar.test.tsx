@@ -5,6 +5,18 @@ import { ActivityBar } from '../components/ActivityBar.js'
 import { activityActions, activityState } from '../store/activityStore.js'
 import { sessionActions, sessionState } from '../store/sessionStore.js'
 
+function tokenCountFrom(frame: string): number | null {
+  const match = frame.match(/↓ ([\d,.]+) tokens/)
+  if (!match) {
+    return null
+  }
+  const raw = match[1]
+  if (!raw) {
+    return null
+  }
+  return Number(raw.replace(/[,.]/g, ''))
+}
+
 describe('ActivityBar', () => {
   beforeEach(() => {
     activityActions.resetForTests()
@@ -28,8 +40,7 @@ describe('ActivityBar', () => {
   it('shows token segments, model and session id when active', () => {
     activityActions.beginTurn()
     activityActions.setIteration(2, 8)
-    activityActions.addUsage({ input: 1200, output: 480 })
-    activityActions.flushUsage()
+    activityActions.addResponseChars(480 * 4)
     sessionState.set({
       ...sessionState.get(),
       sessionId: 'ses_abcdef',
@@ -46,6 +57,29 @@ describe('ActivityBar', () => {
     expect(frame).toContain('↓ 480 tokens')
     expect(frame).toContain('ses_abcd')
     expect(frame).toContain('sonnet-4-6')
+    unmount()
+  })
+
+  it('uses provider usage as a fallback and lets streamed progress overtake it', () => {
+    activityActions.beginTurn()
+    activityActions.addUsage({ input: 100, output: 321 })
+    activityActions.flushUsage()
+
+    const { lastFrame, rerender, unmount } = render(<ActivityBar />)
+    expect(lastFrame() ?? '').toContain('↓ 321 tokens')
+
+    activityActions.addResponseChars(321 * 4 + 120)
+    rerender(<ActivityBar />)
+    const firstFrame = lastFrame() ?? ''
+    const firstCount = tokenCountFrom(firstFrame)
+    expect(firstCount).not.toBeNull()
+    expect(firstCount ?? 0).toBeGreaterThan(321)
+
+    activityActions.bumpAnimation()
+    rerender(<ActivityBar />)
+    const secondCount = tokenCountFrom(lastFrame() ?? '')
+    expect(secondCount).not.toBeNull()
+    expect(secondCount ?? 0).toBeGreaterThan(firstCount ?? 0)
     unmount()
   })
 

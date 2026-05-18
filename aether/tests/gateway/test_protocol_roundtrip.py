@@ -32,6 +32,7 @@ from aether.gateway.protocol import (
     PermissionRequest,
     PermissionToolRequest,
     Status,
+    StreamProgress,
     TextDelta,
     TokenUsage,
     ToolCall,
@@ -198,6 +199,7 @@ class EventModels(unittest.TestCase):
     def test_agent_event_models_carry_routing_fields(self) -> None:
         events = [
             TextDelta(session_id="s", run_id="r", text="hi", sequence=0),
+            StreamProgress(session_id="s", run_id="r", chars=8, sequence=1),
             ToolCall(
                 session_id="s",
                 run_id="r",

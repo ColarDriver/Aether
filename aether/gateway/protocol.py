@@ -198,6 +198,19 @@ class TextDelta(AgentEventBase):
     sequence: int
 
 
+class StreamProgress(AgentEventBase):
+    """Count-only stream progress for non-visible model output.
+
+    Tool-call argument fragments and similar control-plane deltas should not
+    appear in the transcript, but they are still model output and should keep
+    the live activity token counter moving.
+    """
+
+    type: Literal["stream.progress"] = "stream.progress"
+    chars: int
+    sequence: int
+
+
 class Reasoning(AgentEventBase):
     type: Literal["reasoning.delta"] = "reasoning.delta"
     text: str
@@ -387,6 +400,7 @@ __all__ = [
     "RpcRequest",
     "RpcResponse",
     "Status",
+    "StreamProgress",
     "TextDelta",
     "TokenUsage",
     "ToolCall",

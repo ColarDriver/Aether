@@ -50,6 +50,19 @@ describe('chat store event mapping', () => {
     expect(sessionState.get().status).toBe('idle')
   })
 
+  it('counts silent stream progress without appending assistant text', () => {
+    applyGatewayEvent({
+      type: 'stream.progress',
+      session_id: 's1',
+      run_id: 'r1',
+      chars: 24,
+      sequence: 0
+    })
+
+    expect(activityState.get().responseChars).toBe(24)
+    expect(chatItems.get()).toEqual([])
+  })
+
   it('keeps later assistant streaming below interleaved shell output', () => {
     applyGatewayEvent({
       type: 'text.delta',

@@ -29,6 +29,22 @@ describe('activityStore', () => {
     expect(activityState.get().turnVerbIndex).toBe(first + 1)
   })
 
+  it('beginTurn clears previous-turn usage and pending usage flushes', () => {
+    activityActions.addUsage({ input: 100, output: 25, cacheRead: 5, cacheWrite: 3 })
+    activityActions.flushUsage()
+    expect(activityState.get().tokensOut).toBe(25)
+
+    activityActions.addUsage({ input: 10, output: 4 })
+    activityActions.beginTurn()
+    vi.advanceTimersByTime(150)
+
+    const state = activityState.get()
+    expect(state.tokensIn).toBe(0)
+    expect(state.tokensOut).toBe(0)
+    expect(state.cacheRead).toBe(0)
+    expect(state.cacheWrite).toBe(0)
+  })
+
   it('setStatus transitions update timestamps appropriately', () => {
     activityActions.setStatus('thinking')
     expect(activityState.get().thinkingStartedAt).not.toBeNull()

@@ -136,6 +136,9 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       activityActions.addResponseChars(event.text.length)
       activityActions.setStatus('responding')
       break
+    case 'stream.progress':
+      activityActions.addResponseChars(event.chars)
+      break
     case 'tool.call': {
       if (event.tool_name === 'todo_write') {
         const todos = todosFromArgs(event.arguments)

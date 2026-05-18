@@ -38,10 +38,9 @@ export interface ActivityState {
   turnTools: number
   turnErrors: number
   /**
-   * Streamed character count this turn — used as a fallback for the
-   * activity-bar token counter when `tokensOut === 0` (the provider has
-   * not yet emitted a usage event). Mirrors Python's
-   * `response_chars // TOKEN_CHAR_RATIO` heuristic.
+   * Streamed character count this turn — used by the live activity-bar token
+   * counter. This includes visible text deltas and count-only progress for
+   * non-visible control-plane output such as tool-call argument fragments.
    */
   responseChars: number
   /**
@@ -147,6 +146,11 @@ export const activityActions = {
   },
 
   beginTurn(): void {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    pendingTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
     const current = activityState.get()
     const now = Date.now()
     activityState.set({
@@ -158,6 +162,10 @@ export const activityActions = {
       responseStartedAt: null,
       iteration: 0,
       loopState: null,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
       turnStartedAt: now,
       turnIterations: 0,
       turnTools: 0,

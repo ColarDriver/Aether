@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, type ReactElement } from 'react'
+import { useEffect, useRef, type ReactElement } from 'react'
 
 import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
 import { theme } from '../lib/theme.js'
@@ -89,6 +89,8 @@ export function ActivityBar(): ReactElement {
   const activity = useStore(activityState)
   const session = useStore(sessionState)
   const ascii = !theme.isUnicodeAllowed()
+  const tokenTurnStartedAtRef = useRef<number | null | undefined>(undefined)
+  const displayedResponseLengthRef = useRef(0)
 
   useEffect(() => {
     if (!ACTIVE_STATES.has(activity.status)) {
@@ -132,17 +134,34 @@ export function ActivityBar(): ReactElement {
     ? Math.max(0, Date.now() - activity.thinkingStartedAt)
     : null
 
-  // Approximate token count from streamed chars when the gateway hasn't
-  // emitted a usage event yet. Mirrors Python `response_chars // 4` with
-  // the same MIN_DISPLAY_TOKENS floor so trivial replies don't flash
-  // "↓ 1 token" for a single frame.
-  const fallbackTokensOut = Math.floor(activity.responseChars / TOKEN_CHAR_RATIO)
-  const tokensOutDisplay =
-    activity.tokensOut > 0
-      ? activity.tokensOut
-      : fallbackTokensOut >= MIN_DISPLAY_TOKENS
-        ? fallbackTokensOut
-        : 0
+  // Claude Code drives the live spinner token display from response length
+  // updates, including non-visible tool/control deltas. In Aether those arrive
+  // as `responseChars`; provider usage is kept as a coarse fallback for
+  // providers that cannot expose every streamed control-plane fragment.
+  const currentResponseLength = Math.max(
+    activity.responseChars,
+    activity.tokensOut * TOKEN_CHAR_RATIO
+  )
+  if (tokenTurnStartedAtRef.current !== activity.turnStartedAt) {
+    tokenTurnStartedAtRef.current = activity.turnStartedAt
+    displayedResponseLengthRef.current = currentResponseLength
+  } else if (!isActive || currentResponseLength <= displayedResponseLengthRef.current) {
+    displayedResponseLengthRef.current = currentResponseLength
+  } else {
+    const gap = currentResponseLength - displayedResponseLengthRef.current
+    const increment =
+      gap < 70
+        ? 3
+        : gap < 200
+          ? Math.max(8, Math.ceil(gap * 0.15))
+          : 50
+    displayedResponseLengthRef.current = Math.min(
+      displayedResponseLengthRef.current + increment,
+      currentResponseLength
+    )
+  }
+  const estimatedTokensOut = Math.round(displayedResponseLengthRef.current / TOKEN_CHAR_RATIO)
+  const tokensOutDisplay = estimatedTokensOut >= MIN_DISPLAY_TOKENS ? estimatedTokensOut : 0
 
   const segments: string[] = []
   // Mirrors Python `activity.py:236-241` — only the output (↓) count is

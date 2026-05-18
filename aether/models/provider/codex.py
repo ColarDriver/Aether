@@ -73,19 +73,14 @@ class CodexChatModel(ModelProvider):
         config: ModelCallConfig,
         context: TurnContext,  # noqa: ARG002
         stream_callback: StreamDeltaCallback | None = None,  # noqa: ARG002
-        # Accepted for signature parity with the base contract — Codex
-        # responses-stream events don't currently expose a separable
-        # tool-arg fragment channel that we forward, so the silent
-        # callback is unused here.  Wired through ``_call_codex_api``
-        # so a future refinement can plumb it without changing public
-        # signatures.
-        stream_silent_callback: StreamSilentCallback | None = None,  # noqa: ARG002
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
         response = self._call_codex_api(
             messages,
             tools=tools,
             config=config,
             stream_callback=stream_callback,
+            stream_silent_callback=stream_silent_callback,
         )
         parsed = self._parse_response(response)
         if stream_callback and parsed.content and not parsed.tool_calls:
@@ -105,6 +100,7 @@ class CodexChatModel(ModelProvider):
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> dict[str, Any]:
         payload = self._build_payload(messages, tools=tools, config=config)
         headers = {
@@ -119,7 +115,12 @@ class CodexChatModel(ModelProvider):
         last_error: Exception | None = None
         for attempt in range(1, self.retry_max_attempts + 1):
             try:
-                return self._stream_response(headers, payload, stream_callback=stream_callback)
+                return self._stream_response(
+                    headers,
+                    payload,
+                    stream_callback=stream_callback,
+                    stream_silent_callback=stream_silent_callback,
+                )
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 status_code = exc.response.status_code
@@ -328,6 +329,7 @@ class CodexChatModel(ModelProvider):
         payload: dict[str, Any],
         *,
         stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: StreamSilentCallback | None = None,
     ) -> dict[str, Any]:
         completed_response: dict[str, Any] | None = None
         streamed_output_items: dict[int, dict[str, Any]] = {}
@@ -339,6 +341,9 @@ class CodexChatModel(ModelProvider):
                     data = self._parse_sse_data_line(line)
                     if not data:
                         continue
+
+                    if stream_silent_callback:
+                        self._emit_stream_silent_delta(stream_silent_callback, data)
 
                     if stream_callback:
                         self._emit_stream_delta(stream_callback, data)
@@ -389,11 +394,26 @@ class CodexChatModel(ModelProvider):
             logger.exception("Codex stream callback failed while emitting delta")
 
     @staticmethod
+    def _emit_stream_silent_delta(
+        stream_silent_callback: StreamSilentCallback,
+        event: dict[str, Any],
+    ) -> None:
+        delta = CodexChatModel._extract_stream_silent_delta(event)
+        if not delta:
+            return
+        try:
+            stream_silent_callback(delta)
+        except Exception:
+            logger.exception("Codex silent stream callback failed while emitting delta")
+
+    @staticmethod
     def _extract_stream_delta(event: dict[str, Any]) -> str:
         if not isinstance(event, dict):
             return ""
 
         event_type = str(event.get("type") or "")
+        if CodexChatModel._is_function_call_arguments_delta(event_type):
+            return ""
 
         direct_delta = event.get("delta")
         if isinstance(direct_delta, str):
@@ -422,6 +442,22 @@ class CodexChatModel(ModelProvider):
                     return "".join(parts)
 
         return ""
+
+    @staticmethod
+    def _extract_stream_silent_delta(event: dict[str, Any]) -> str:
+        if not isinstance(event, dict):
+            return ""
+
+        event_type = str(event.get("type") or "")
+        if not CodexChatModel._is_function_call_arguments_delta(event_type):
+            return ""
+
+        delta = event.get("delta")
+        return delta if isinstance(delta, str) else ""
+
+    @staticmethod
+    def _is_function_call_arguments_delta(event_type: str) -> bool:
+        return "function_call_arguments" in event_type and event_type.endswith(".delta")
 
     @staticmethod
     def _parse_sse_data_line(line: str) -> dict[str, Any] | None:

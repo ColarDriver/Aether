@@ -22,25 +22,35 @@ import { SessionPicker, type SessionPickerPayload } from './SessionPicker.js'
  * The composer must observe `overlayStack` (or `hasOverlay()`) and pass
  * `isActive: false` to its own `useInput` so two consumers never compete.
  */
-export function OverlayFrame(): ReactElement | null {
+export function OverlayFrame({ maxRows }: { maxRows?: number } = {}): ReactElement | null {
   const stack = useStore(overlayStack)
   const top = stack[stack.length - 1] ?? null
   if (!top) {
     return null
   }
   return (
-    <Box flexDirection="column" marginTop={1} width="100%">
-      {renderOverlay(top)}
+    <Box flexDirection="column" marginTop={1} width="100%" overflow="hidden">
+      {renderOverlay(top, maxRows)}
     </Box>
   )
 }
 
-function renderOverlay(overlay: OverlayState): ReactElement {
+function renderOverlay(overlay: OverlayState, maxRows: number | undefined): ReactElement {
   switch (overlay.kind) {
     case 'approval':
-      return <ApprovalModal overlay={overlay as OverlayState<ApprovalRequestParams>} />
+      return (
+        <ApprovalModal
+          overlay={overlay as OverlayState<ApprovalRequestParams>}
+          {...(maxRows !== undefined ? { maxRows } : {})}
+        />
+      )
     case 'permission':
-      return <PermissionModal overlay={overlay as OverlayState<PermissionRequestParams>} />
+      return (
+        <PermissionModal
+          overlay={overlay as OverlayState<PermissionRequestParams>}
+          {...(maxRows !== undefined ? { maxRows } : {})}
+        />
+      )
     case 'session-picker':
       return <SessionPicker overlay={overlay as OverlayState<SessionPickerPayload>} />
     case 'picker':

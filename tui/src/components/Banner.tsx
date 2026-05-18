@@ -38,11 +38,11 @@ function truncate(value: string, max: number): string {
   return value.slice(0, Math.max(0, max - 1)) + '…'
 }
 
-export function Banner(): ReactElement | null {
+export function Banner({ compact = false }: { compact?: boolean } = {}): ReactElement | null {
   const session = useStore(sessionState)
   const env = useMemo(() => probeEnvironment(), [])
 
-  if (process.env.AETHER_NO_BANNER === '1') {
+  if (compact || process.env.AETHER_NO_BANNER === '1') {
     return <BootLine />
   }
 

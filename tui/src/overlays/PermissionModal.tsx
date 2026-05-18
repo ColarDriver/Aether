@@ -34,9 +34,11 @@ interface OptionRow {
 }
 
 export function PermissionModal({
-  overlay
+  overlay,
+  maxRows
 }: {
   overlay: OverlayState<PermissionRequestParams>
+  maxRows?: number
 }): ReactElement {
   const params = overlay.payload
   const request = params.request
@@ -146,6 +148,7 @@ export function PermissionModal({
   const backgroundColor = theme.color('popup_bg')
   const backgroundProps = backgroundColor ? { backgroundColor } : {}
   const hasLeadIn = Boolean(request.reason || cachedRule)
+  const previewRows = maxRows ? Math.max(1, maxRows - 12 - options.length) : undefined
 
   return (
     <Box flexDirection="column" width="100%">
@@ -173,7 +176,11 @@ export function PermissionModal({
           {subtitleText ? <Text {...dimTextProps}>{subtitleText}</Text> : null}
         </Box>
 
-        <PreviewBody preview={preview} request={request} />
+        <PreviewBody
+          preview={preview}
+          request={request}
+          {...(previewRows !== undefined ? { maxRows: previewRows } : {})}
+        />
 
         <Box marginTop={1}>
           <Text bold {...textTextProps}>{question}</Text>
@@ -213,10 +220,12 @@ export function PermissionModal({
 
 function PreviewBody({
   preview,
-  request
+  request,
+  maxRows
 }: {
   preview: PermissionPreview | null
   request: PermissionToolRequest
+  maxRows?: number
 }): ReactElement | null {
   if (request.tool_name === 'todo_write') {
     const todos = todosFromArgs(request.arguments)
@@ -227,9 +236,11 @@ function PreviewBody({
           {formatTodoPreviewLines(todos, {
             ascii: !theme.isUnicodeAllowed(),
             width
-          }).map((line, idx) => (
-            <Text key={idx} {...theme.colorProps('dim')}>{line}</Text>
-          ))}
+          })
+            .slice(0, maxRows ?? 8)
+            .map((line, idx) => (
+              <Text key={idx} {...theme.colorProps('dim')}>{line}</Text>
+            ))}
         </Box>
       )
     }
@@ -241,9 +252,14 @@ function PreviewBody({
   // fall through to the raw-JSON escape hatch when the tool actually had
   // something to say via a sibling field.
   if (preview?.diff && preview.diff.trim().length > 0) {
+    const foldThreshold = maxRows ? Math.max(3, maxRows) : undefined
     return (
       <Box marginTop={1} flexDirection="column">
-        <DiffView diff={preview.diff} expanded={false} />
+        <DiffView
+          diff={preview.diff}
+          expanded={false}
+          {...(foldThreshold !== undefined ? { foldThreshold } : {})}
+        />
       </Box>
     )
   }
@@ -253,7 +269,7 @@ function PreviewBody({
   if (preview?.body && preview.body.trim().length > 0) {
     return (
       <Box marginTop={1} flexDirection="column">
-        {preview.body.split('\n').slice(0, 8).map((line, idx) => (
+        {preview.body.split('\n').slice(0, maxRows ?? 8).map((line, idx) => (
           <Text key={idx} {...theme.colorProps('dim')}>{line || ' '}</Text>
         ))}
       </Box>

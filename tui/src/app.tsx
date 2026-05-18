@@ -10,6 +10,7 @@ import { ActivityBar } from './components/ActivityBar.js'
 import { Banner } from './components/Banner.js'
 import { ChatTranscript } from './components/ChatTranscript.js'
 import { Composer } from './components/Composer.js'
+import { FullscreenShell } from './components/FullscreenShell.js'
 import { ReasoningLine } from './components/ReasoningLine.js'
 import type { GatewayClient } from './gatewayClient.js'
 import type { JsonObject, SessionInfo } from './gatewayTypes.js'
@@ -18,16 +19,18 @@ import { useReverseRpc } from './hooks/useReverseRpc.js'
 import { augmentSystemPrompt } from './lib/environment.js'
 import { stripToolBlocks } from './lib/phantomTool.js'
 import { envBaseUrl, resolveDiscoveredBaseUrl } from './lib/sessionBaseUrl.js'
+import { buildCompleterState } from './lib/slashCompleter.js'
 import { OverlayFrame } from './overlays/OverlayFrame.js'
-import { activityActions } from './store/activityStore.js'
+import { activityActions, activityState } from './store/activityStore.js'
 import { chatActions, chatItems } from './store/chatStore.js'
-import { composerActions } from './store/composerStore.js'
+import { composerActions, composerState } from './store/composerStore.js'
 import {
   OVERLAY_PRIORITY,
   overlayActions,
   overlayStack,
   snapshotHasKind
 } from './store/overlayStore.js'
+import { reasoningState } from './store/reasoningStore.js'
 import { sessionActions, sessionState } from './store/sessionStore.js'
 import {
   dispatchSlash,
@@ -59,22 +62,54 @@ export function App({
   const session = useStore(sessionState)
   const transcript = useStore(chatItems)
   const overlays = useStore(overlayStack)
+  const composer = useStore(composerState)
+  const activity = useStore(activityState)
+  const reasoning = useStore(reasoningState)
   const [bootError, setBootError] = useState<string | null>(null)
+  const [bannerReady, setBannerReady] = useState(false)
   const [running, setRunning] = useState(false)
   const [terminalWidth, setTerminalWidth] = useState<number>(() =>
     readTerminalWidth(stdout as NodeJS.WriteStream | undefined)
+  )
+  const [terminalRows, setTerminalRows] = useState<number>(() =>
+    readTerminalRows(stdout as NodeJS.WriteStream | undefined)
   )
   const initialSessionId = useRef(process.env.AETHER_SESSION_ID?.trim() || null)
   const hasVisibleStreamingAssistant = transcript.some(
     (item) => item.kind === 'assistant' && item.streaming && stripToolBlocks(item.text).trim().length > 0
   )
-  // Mirrors Python `_has_permission_prompt` gating in `aether/cli/app.py`:
-  // while a permission overlay is up the modal is the only interactable
-  // surface — input box, activity bar, and reasoning excerpt are hidden so
-  // the user can't accidentally split focus away from the prompt.
-  const hasPermissionPrompt = snapshotHasKind(overlays, 'permission')
+  // While a blocking overlay is up, the modal is the only interactable
+  // surface. Keeping the activity spinner or composer mounted underneath it
+  // causes periodic Ink rerenders that steal the terminal scrollbar while the
+  // user is trying to inspect a long permission/plan body.
+  const hasBlockingOverlay =
+    snapshotHasKind(overlays, 'permission') || snapshotHasKind(overlays, 'approval')
   const showBottomActivity =
-    running && !hasVisibleStreamingAssistant && !hasPermissionPrompt
+    running && !hasVisibleStreamingAssistant && !hasBlockingOverlay
+  // The fullscreen/alt-screen shell is experimental. Aether's default TUI
+  // should use normal terminal scrollback like Claude/Codex, where the input
+  // follows the transcript instead of being pinned to the bottom.
+  const fullscreen = process.env.AETHER_FULLSCREEN === '1'
+  const showFullscreenBanner = transcript.length === 0
+  const fullscreenLeadingRows =
+    (showFullscreenBanner ? estimateBannerRows(session) : 0) + (bootError ? 1 : 0)
+  const fullscreenLayout = computeFullscreenLayout({
+    terminalRows,
+    hasOverlay: overlays.length > 0,
+    hasPermissionPrompt: hasBlockingOverlay,
+    composerRows: estimateComposerRows({
+      draft: composer.draft,
+      catalog: session.catalog,
+      queuedCount: composer.queued.length,
+      running,
+      interruptPending: activity.interruptPending
+    }),
+    activityRows: estimateActivityRows({
+      show: showBottomActivity,
+      hasReasoning: Boolean(reasoning.text && reasoning.updatedAt),
+      todoCount: activity.todos.length
+    })
+  })
 
   useGatewayEvents(client)
   useReverseRpc(client)
@@ -84,13 +119,14 @@ export function App({
     if (!stream) {
       return
     }
-    const syncWidth = () => {
+    const syncSize = () => {
       setTerminalWidth(readTerminalWidth(stream))
+      setTerminalRows(readTerminalRows(stream))
     }
-    syncWidth()
-    stream.on('resize', syncWidth)
+    syncSize()
+    stream.on('resize', syncSize)
     return () => {
-      stream.off('resize', syncWidth)
+      stream.off('resize', syncSize)
     }
   }, [stdout])
 
@@ -139,6 +175,7 @@ export function App({
           return
         }
         sessionActions.setBannerData(bannerData)
+        setBannerReady(true)
         sessionActions.setStatus('idle')
         // The activity bar reads from its own store — keep it in lockstep so
         // it does not get stuck on the initial 'starting' value after boot
@@ -395,29 +432,91 @@ export function App({
     app.exit()
   }
 
+  if (!fullscreen) {
+    return (
+      <Box flexDirection="column" paddingX={1} width={terminalWidth}>
+        <Banner />
+        {bootError ? <Text color="red">{bootError}</Text> : null}
+        <ChatTranscript staticScrollback={bannerReady} />
+        <OverlayFrame />
+        {showBottomActivity ? (
+          <Box flexDirection="column" marginTop={1} width="100%">
+            <ReasoningLine />
+            <ActivityBar />
+          </Box>
+        ) : null}
+        {hasBlockingOverlay ? null : (
+          <Box marginTop={showBottomActivity ? 1 : 0} width="100%">
+            <Composer
+              disabled={session.status === 'starting'}
+              busy={running}
+              onSubmit={(text) => void handleSubmit(text)}
+              onCancel={() => void handleCancel()}
+            />
+          </Box>
+        )}
+      </Box>
+    )
+  }
+
   return (
-    <Box flexDirection="column" paddingX={1} width={terminalWidth}>
-      <Banner />
-      {bootError ? <Text color="red">{bootError}</Text> : null}
-      <ChatTranscript />
-      <OverlayFrame />
-      {showBottomActivity ? (
-        <Box flexDirection="column" marginTop={1} width="100%">
-          <ReasoningLine />
-          <ActivityBar />
-        </Box>
-      ) : null}
-      {hasPermissionPrompt ? null : (
-        <Box marginTop={showBottomActivity ? 1 : 0} width="100%">
-          <Composer
-            disabled={session.status === 'starting'}
-            busy={running}
-            onSubmit={(text) => void handleSubmit(text)}
-            onCancel={() => void handleCancel()}
+    <FullscreenShell rows={terminalRows} width={terminalWidth}>
+      <Box flexDirection="column" paddingX={1} width={terminalWidth} height={terminalRows}>
+        <Box
+          flexDirection="column"
+          height={fullscreenLayout.transcriptRows}
+          flexShrink={1}
+          overflow="hidden"
+        >
+          <ChatTranscript
+            viewportRows={fullscreenLayout.transcriptRows}
+            width={terminalWidth}
+            leading={
+              showFullscreenBanner || bootError ? (
+                <>
+                  {showFullscreenBanner ? <Banner /> : null}
+                  {bootError ? <Text color="red">{bootError}</Text> : null}
+                </>
+              ) : undefined
+            }
+            leadingRows={fullscreenLeadingRows}
           />
         </Box>
-      )}
-    </Box>
+        <Box
+          flexDirection="column"
+          flexShrink={0}
+          width="100%"
+          {...(fullscreenLayout.bottomConstrained
+            ? { height: fullscreenLayout.bottomMaxRows }
+            : {})}
+          overflow="hidden"
+        >
+          {overlays.length > 0 ? (
+            <OverlayFrame
+              {...(fullscreenLayout.overlayRows !== undefined
+                ? { maxRows: fullscreenLayout.overlayRows }
+                : {})}
+            />
+          ) : null}
+          {showBottomActivity ? (
+            <Box flexDirection="column" marginTop={1} width="100%">
+              <ReasoningLine />
+              <ActivityBar />
+            </Box>
+          ) : null}
+          {hasBlockingOverlay ? null : (
+            <Box marginTop={showBottomActivity ? 1 : 0} width="100%">
+              <Composer
+                disabled={session.status === 'starting'}
+                busy={running}
+                onSubmit={(text) => void handleSubmit(text)}
+                onCancel={() => void handleCancel()}
+              />
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </FullscreenShell>
   )
 }
 
@@ -549,6 +648,117 @@ export function noteTextFromUsage(usage: JsonObject | undefined): string {
 function readTerminalWidth(stream: NodeJS.WriteStream | undefined): number {
   const columns = stream?.columns
   return typeof columns === 'number' && columns > 0 ? columns : 80
+}
+
+function readTerminalRows(stream: NodeJS.WriteStream | undefined): number {
+  const rows = stream?.rows
+  return typeof rows === 'number' && rows > 0 ? rows : 24
+}
+
+interface FullscreenLayoutState {
+  transcriptRows: number
+  overlayRows?: number
+  bottomMaxRows: number
+  bottomConstrained: boolean
+}
+
+function computeFullscreenLayout(input: {
+  terminalRows: number
+  hasOverlay: boolean
+  hasPermissionPrompt: boolean
+  composerRows: number
+  activityRows: number
+}): FullscreenLayoutState {
+  const rows = Math.max(1, Math.floor(input.terminalRows))
+  const composerRows = input.hasPermissionPrompt ? 0 : input.composerRows
+  const bottomRows = composerRows + input.activityRows
+  const bottomMaxRows = Math.max(1, Math.floor(rows * 0.5))
+  const cappedBottomRows = Math.min(bottomRows, bottomMaxRows)
+  const overlayMarginRows = input.hasOverlay ? 1 : 0
+  const availableForOverlay = Math.max(
+    0,
+    rows - cappedBottomRows - overlayMarginRows - 1
+  )
+  const overlayRows = input.hasOverlay
+    ? clampNumber(
+        Math.min(Math.floor(rows * 0.45), availableForOverlay),
+        1,
+        Math.max(1, availableForOverlay)
+      )
+    : undefined
+  const reservedRows =
+    cappedBottomRows +
+    (overlayRows !== undefined ? overlayRows + overlayMarginRows : 0)
+  return {
+    transcriptRows: Math.max(1, rows - reservedRows),
+    ...(overlayRows !== undefined ? { overlayRows } : {}),
+    bottomMaxRows,
+    bottomConstrained: bottomRows > bottomMaxRows
+  }
+}
+
+function estimateBannerRows(session: ReturnType<typeof sessionState.get>): number {
+  if (process.env.AETHER_NO_BANNER === '1') {
+    return 1
+  }
+  const sessionDetails = Math.min(
+    4,
+    1 + session.recentSessions.filter((item) => item.session_id !== session.sessionId).length
+  )
+  const toolDetails = Math.min(4, session.bannerTools.filter(Boolean).length)
+  const skillDetails = Math.min(4, session.bannerSkills.filter(Boolean).length)
+  return (
+    1 + // top border
+    1 + // blank frame line
+    1 + // provider
+    1 + // model
+    1 + // session header
+    sessionDetails +
+    (session.mode === 'plan' ? 1 : 0) +
+    1 + // cwd
+    1 + // tools header
+    toolDetails +
+    (session.bannerToolCount > toolDetails ? 1 : 0) +
+    1 + // skills header
+    skillDetails +
+    (session.bannerSkillCount > skillDetails ? 1 : 0) +
+    (session.systemOverride ? 1 : 0) +
+    1 // bottom border
+  )
+}
+
+function estimateComposerRows(input: {
+  draft: string
+  catalog: ReturnType<typeof sessionState.get>['catalog']
+  queuedCount: number
+  running: boolean
+  interruptPending: boolean
+}): number {
+  const draftRows = Math.max(1, input.draft.split('\n').length)
+  const inputBoxRows = draftRows + 2
+  const footerRows = input.queuedCount > 0 || input.running || input.interruptPending ? 2 : 1
+  const completer = buildCompleterState(input.draft, input.catalog)
+  const completerRows = completer.active ? Math.min(10, completer.matches.length) : 0
+  return inputBoxRows + footerRows + completerRows
+}
+
+function estimateActivityRows(input: {
+  show: boolean
+  hasReasoning: boolean
+  todoCount: number
+}): number {
+  if (!input.show) {
+    return 0
+  }
+  const marginRows = 1
+  const reasoningRows = input.hasReasoning ? 1 : 0
+  const activityMainRows = 1
+  const todoRows = Math.min(8, input.todoCount) + (input.todoCount > 8 ? 1 : 0)
+  return marginRows + reasoningRows + activityMainRows + todoRows
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
 }
 
 async function loadBannerData(

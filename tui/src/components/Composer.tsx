@@ -4,6 +4,7 @@ import stringWidth from 'string-width'
 import { useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 
 import { applyCompletion, buildCompleterState } from '../lib/slashCompleter.js'
+import { isOnlyMouseTrackingInput, stripMouseTrackingSequences } from '../lib/terminalMouse.js'
 import { theme } from '../lib/theme.js'
 import { activityState } from '../store/activityStore.js'
 import { chatActions } from '../store/chatStore.js'
@@ -55,8 +56,13 @@ export function Composer(props: ComposerProps): ReactElement {
 
   useInput(
     (input, key) => {
+      if (isOnlyMouseTrackingInput(input)) {
+        return
+      }
+      const textInput = stripMouseTrackingSequences(input)
+
       if (disabled) {
-        if (key.ctrl && input === 'c') {
+        if (key.ctrl && textInput === 'c') {
           onCancel()
         }
         return
@@ -94,7 +100,7 @@ export function Composer(props: ComposerProps): ReactElement {
       const completerActive = completer.active && completer.matches.length > 0
 
       // ── Cancel / exit chord ────────────────────────────────────────
-      if (key.ctrl && input === 'c') {
+      if (key.ctrl && textInput === 'c') {
         const now = Date.now()
         const lastCtrlC = ctrlCTimerRef.current
         if (busy) {
@@ -114,7 +120,7 @@ export function Composer(props: ComposerProps): ReactElement {
         flashHint('press Ctrl-C again to exit')
         return
       }
-      if (key.ctrl && input === 'd') {
+      if (key.ctrl && textInput === 'd') {
         if (!state.draft) {
           onCancel()
           return
@@ -126,34 +132,34 @@ export function Composer(props: ComposerProps): ReactElement {
       }
 
       // ── Readline-style line/word ops ──────────────────────────────
-      if (key.ctrl && input === 'a') {
+      if (key.ctrl && textInput === 'a') {
         composerActions.moveLineStart()
         return
       }
-      if (key.ctrl && input === 'e') {
+      if (key.ctrl && textInput === 'e') {
         composerActions.moveLineEnd()
         return
       }
-      if (key.ctrl && input === 'u') {
+      if (key.ctrl && textInput === 'u') {
         resetCompleterAnchor()
         composerActions.killToLineStart()
         return
       }
-      if (key.ctrl && input === 'k') {
+      if (key.ctrl && textInput === 'k') {
         resetCompleterAnchor()
         composerActions.killToLineEnd()
         return
       }
-      if (key.ctrl && input === 'w') {
+      if (key.ctrl && textInput === 'w') {
         resetCompleterAnchor()
         composerActions.deleteWordBackward()
         return
       }
-      if (key.ctrl && input === 'b') {
+      if (key.ctrl && textInput === 'b') {
         composerActions.moveLeft()
         return
       }
-      if (key.ctrl && input === 'f') {
+      if (key.ctrl && textInput === 'f') {
         composerActions.moveRight()
         return
       }
@@ -280,9 +286,9 @@ export function Composer(props: ComposerProps): ReactElement {
         }
         return
       }
-      if (input) {
+      if (textInput) {
         resetCompleterAnchor()
-        composerActions.insert(input)
+        composerActions.insert(textInput)
         setCompleterCursor(0)
       }
     },

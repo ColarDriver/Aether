@@ -75,16 +75,19 @@ export type ChatItem =
 let nextId = 1
 
 export const chatItems = atom<ChatItem[]>([])
+export const chatEpoch = atom(0)
 export const verboseMode = atom(false)
 
 export const chatActions = {
   reset(): void {
     chatItems.set([])
+    chatEpoch.set(chatEpoch.get() + 1)
   },
 
   resetForTests(): void {
     nextId = 1
     chatItems.set([])
+    chatEpoch.set(0)
     verboseMode.set(false)
   },
 
@@ -307,6 +310,7 @@ export const chatActions = {
 
   replaceTranscript(messages: TranscriptMessage[]): void {
     chatItems.set(rebuildChatItemsFromTranscript(messages))
+    chatEpoch.set(chatEpoch.get() + 1)
   },
 
   toggleVerbose(): boolean {

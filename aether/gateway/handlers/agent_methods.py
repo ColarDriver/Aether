@@ -12,7 +12,7 @@ import os
 import threading
 import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from aether.agents.core.agent import AgentEngine
 from aether.agents.middlewares.base import EngineMiddleware
@@ -64,7 +64,9 @@ from aether.runtime.core.contracts import (
     TurnContext,
 )
 from aether.runtime.core.hooks import EngineHooks
+from aether.runtime.tasks import TaskStore
 from aether.runtime.tools.skill_catalog import build_default_skill_catalog
+from aether.subagents import SubagentManager
 from aether.tools.registry import ToolRegistry
 
 
@@ -120,12 +122,16 @@ class _EventSink:
             )
         )
 
-    def status(self, kind: str, detail: str | None = None) -> None:
+    def status(
+        self,
+        kind: Literal["thinking", "responding", "tool_use", "idle"],
+        detail: str | None = None,
+    ) -> None:
         self.emit(
             Status(
                 session_id=self.session_id,
                 run_id=self.run_id,
-                kind=kind,  # type: ignore[arg-type]
+                kind=kind,
                 detail=detail,
             )
         )
@@ -187,7 +193,11 @@ class _GatewayEventMiddleware(EngineMiddleware):
     def __init__(self, sink: _EventSink) -> None:
         self._sink = sink
 
-    def before_llm(self, messages: list[dict], context: TurnContext) -> list[dict]:
+    def before_llm(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
         iteration = _wire_iteration(context)
         self._sink.status("thinking")
         self._sink.emit(
@@ -316,6 +326,15 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
             search_paths=config.agent_type_search_paths
             or AgentEngine._default_agent_type_search_paths()
         )
+        task_store: TaskStore | None = None
+        if getattr(config, "task_store_enabled", True):
+            task_store_path = getattr(config, "task_store_path", None)
+            task_store = TaskStore(task_store_path) if task_store_path else TaskStore()
+        subagent_manager: SubagentManager | None = None
+        if getattr(config, "allow_subagent_dispatch", True):
+            subagent_manager = SubagentManager(
+                max_concurrent_background=getattr(config, "max_concurrent_background", 8),
+            )
         engine = AgentEngine(
             provider,
             tool_registry=tool_registry,
@@ -324,6 +343,8 @@ def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
             hooks=_GatewayEventHooks(sink),
             skill_catalog=skill_catalog,
             agent_type_registry=agent_type_registry,
+            subagent_manager=subagent_manager,
+            task_store=task_store,
         )
         request = EngineRequest(
             session_id=session_id,

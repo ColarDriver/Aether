@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from aether.runtime.core.contracts import LoopState, NormalizedResponse, ToolCall, ToolResult, TurnContext
 
 
 class EngineMiddleware:
     """Synchronous chain hooks for the loop engine."""
 
-    def before_llm(self, messages: list[dict], context: TurnContext) -> list[dict]:
+    def before_llm(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+    ) -> list[dict[str, Any]]:
         return messages
 
     def after_llm(self, response: NormalizedResponse, context: TurnContext) -> NormalizedResponse:

@@ -581,6 +581,50 @@ class AskUserQuestionTests(unittest.TestCase):
         )
         self.assertTrue(result.is_error)
 
+    def test_e11b_single_option_rejected(self) -> None:
+        tool = AskUserQuestionTool(prompter=_MappingPrompter(answers={}))
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={
+                    "questions": [
+                        {
+                            "id": "q1",
+                            "prompt": "confirm?",
+                            "options": [{"id": "ok", "label": "OK"}],
+                        }
+                    ]
+                },
+            ),
+            _ctx(),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("2-4", result.content)
+
+    def test_e11c_five_options_rejected(self) -> None:
+        tool = AskUserQuestionTool(prompter=_MappingPrompter(answers={}))
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={
+                    "questions": [
+                        {
+                            "id": "q1",
+                            "prompt": "pick one",
+                            "options": [
+                                {"id": f"o{i}", "label": f"O{i}"} for i in range(5)
+                            ],
+                        }
+                    ]
+                },
+            ),
+            _ctx(),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("at most 4", result.content)
+
     def test_e12_no_prompter_returns_error(self) -> None:
         tool = AskUserQuestionTool()
         result = tool.execute(

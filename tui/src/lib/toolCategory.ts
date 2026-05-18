@@ -245,8 +245,12 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
   if (!args) {
     return ''
   }
-  if (canonicalToolName(name) === 'todo_write') {
+  const canonical = canonicalToolName(name)
+  if (canonical === 'todo_write') {
     return summarizeTodos(todosFromArgs(args))
+  }
+  if (canonical === 'ask_user_question') {
+    return hintForAskUserQuestion(args)
   }
   const category = categoryFor(name)
   const path =
@@ -325,6 +329,34 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
   }
 
   return ''
+}
+
+function hintForAskUserQuestion(args: JsonObject): string {
+  const raw = args['questions']
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return '(asking the user)'
+  }
+  const firstPrompt = pickQuestionText(raw[0])
+  if (raw.length === 1) {
+    return firstPrompt ? truncate(firstPrompt, 80) : '1 question'
+  }
+  if (firstPrompt) {
+    return `${raw.length} questions · ${truncate(firstPrompt, 60)}`
+  }
+  return `${raw.length} questions`
+}
+
+function pickQuestionText(question: unknown): string {
+  if (!question || typeof question !== 'object') {
+    return ''
+  }
+  const record = question as Record<string, unknown>
+  return (
+    strOrNull(record['prompt']) ??
+    strOrNull(record['question']) ??
+    strOrNull(record['text']) ??
+    ''
+  )
 }
 
 function strOrNull(value: unknown): string | null {

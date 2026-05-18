@@ -79,6 +79,7 @@ describe('ApprovalModal — plan kind', () => {
     expect(frame).toContain('/tmp/plan.md')
     expect(frame).toContain('add auth')
     expect(frame).toContain('const ok = true')
+    expect(frame).not.toContain(overlay.id)
     unmount()
   })
 
@@ -173,7 +174,9 @@ describe('ApprovalModal — questions kind', () => {
       dismiss
     )
     const { stdin, lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
-    expect(lastFrame()).toContain('Questions (1/1)')
+    const initialFrame = lastFrame() ?? ''
+    expect(initialFrame).toContain('Questions (1/1)')
+    expect(initialFrame).not.toContain(overlay.id)
 
     stdin.write('\u001B[B') // down arrow
     await flush()

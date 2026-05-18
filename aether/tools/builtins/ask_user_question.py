@@ -40,12 +40,19 @@ class AskUserQuestionTool(ToolExecutor):
             description=(
                 "Ask the user one or more structured questions. Use only "
                 "when you genuinely need user input to proceed (e.g. an "
-                "ambiguous requirement). Each question may be free-text "
-                "or multiple-choice. In plan mode, use this only to "
-                "clarify requirements or choose between approaches; do "
-                "not ask whether the plan is approved or whether to "
-                "proceed. Use exit_plan_mode for plan approval. Not "
-                "allowed inside subagent contexts."
+                "ambiguous requirement). 1 to 4 questions per call.\n"
+                "Each question may be free-text (omit `options`) or "
+                "multiple-choice. When you provide `options`, supply "
+                "2-4 mutually exclusive choices with concise (1-5 word) "
+                "labels — a single-option question is a confirmation "
+                "and will be rejected. Do NOT add an `Other` option: "
+                "the UI offers free-text input automatically. If you "
+                "recommend a specific option, place it first and append "
+                "`(Recommended)` to its label.\n"
+                "In plan mode, use this only to clarify requirements or "
+                "choose between approaches; never ask whether the plan "
+                "is approved or whether to proceed — use exit_plan_mode "
+                "for plan approval. Not allowed inside subagent contexts."
             ),
             parameters={
                 "type": "object",
@@ -53,6 +60,7 @@ class AskUserQuestionTool(ToolExecutor):
                     "questions": {
                         "type": "array",
                         "minItems": 1,
+                        "maxItems": 4,
                         "items": {
                             "type": "object",
                             "properties": {
@@ -66,6 +74,12 @@ class AskUserQuestionTool(ToolExecutor):
                                 },
                                 "options": {
                                     "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 4,
+                                    "description": (
+                                        "2-4 mutually exclusive choices. "
+                                        "Omit entirely for a free-text question."
+                                    ),
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -196,7 +210,21 @@ def _validate_question(q: Any, index: int) -> Optional[str]:
     options = q.get("options", [])
     if options is not None and not isinstance(options, list):
         return f"questions[{index}].options must be an array if present"
-    for j, opt in enumerate(options or []):
+    option_list = options or []
+    if option_list:
+        if len(option_list) < 2:
+            return (
+                f"questions[{index}].options must contain 2-4 mutually "
+                "exclusive choices (omit the field entirely for a "
+                "free-text question; a single-option question is a "
+                "confirmation and is not supported)"
+            )
+        if len(option_list) > 4:
+            return (
+                f"questions[{index}].options must contain at most 4 "
+                "choices"
+            )
+    for j, opt in enumerate(option_list):
         if not isinstance(opt, dict):
             return f"questions[{index}].options[{j}] must be an object"
         if not isinstance(opt.get("id"), str) or not opt["id"].strip():

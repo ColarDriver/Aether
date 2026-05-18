@@ -102,7 +102,6 @@ function PlanApproval({
         <Text bold {...title}>
           Plan approval
         </Text>
-        <Text dimColor> · {overlay.id}</Text>
       </Box>
       {params.plan_path ? (
         <Box>
@@ -262,7 +261,6 @@ function QuestionApproval({
         <Text bold color="yellow">
           Questions ({cursor + 1}/{questions.length})
         </Text>
-        <Text dimColor> · {overlay.id}</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text>{current?.text}</Text>

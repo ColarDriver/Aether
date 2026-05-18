@@ -95,6 +95,26 @@ describe('hintForCall', () => {
     expect(hintForCall('shell', undefined)).toBe('')
     expect(hintForCall('shell', {})).toBe('')
   })
+
+  it('summarizes ask_user_question instead of exposing raw JSON', () => {
+    expect(
+      hintForCall('ask_user_question', {
+        questions: [{ id: 'q1', prompt: 'Which name should we use?' }]
+      })
+    ).toBe('Which name should we use?')
+
+    expect(
+      hintForCall('ask_user_question', {
+        questions: [
+          { id: 'q1', prompt: 'Pick a framework' },
+          { id: 'q2', prompt: 'Pick a DB' },
+          { id: 'q3', prompt: 'Pick an auth' }
+        ]
+      })
+    ).toBe('3 questions · Pick a framework')
+
+    expect(hintForCall('ask_user_question', { questions: [] })).toBe('(asking the user)')
+  })
 })
 
 describe('verb / noun tables', () => {

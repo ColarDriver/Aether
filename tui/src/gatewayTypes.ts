@@ -165,11 +165,18 @@ export interface ErrorEvent extends AgentEventBase {
   message: string
 }
 
+export interface ApprovalOption {
+  label: string
+  description?: string
+}
+
 export interface ApprovalQuestion {
   id: string
+  header?: string
   text: string
   kind?: 'open' | 'select'
-  options?: string[]
+  options?: ApprovalOption[]
+  multi_select?: boolean
 }
 
 export interface ApprovalRequestParams {

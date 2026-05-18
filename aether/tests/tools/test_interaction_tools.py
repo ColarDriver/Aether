@@ -13,6 +13,7 @@ Sprint 3.5 / PR-2 (PR 3.5.7).  Covers:
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -399,8 +400,8 @@ class _MappingPrompter:
     def confirm_plan(self, plan: str, *, context: Any | None = None) -> bool:
         return True
 
-    def ask_questions(self, questions, *, timeout=None):
-        self.calls.append(list(questions))
+    def ask_questions(self, questions, *, timeout=None, plan_path: str | None = None):
+        self.calls.append({"questions": list(questions), "plan_path": plan_path})
         if self._raise is not None:
             raise self._raise
         return self._answers
@@ -425,11 +426,14 @@ class AskUserQuestionTests(unittest.TestCase):
             _ctx(),
         )
         self.assertFalse(result.is_error, result.content)
-        self.assertIn("User responses", result.content)
-        self.assertIn("Continue?", result.content)
+        self.assertIn("User has answered your questions", result.content)
         self.assertIn("yes", result.content)
         self.assertEqual(result.metadata["question_count"], 1)
         self.assertEqual(result.metadata["answer_count"], 1)
+        self.assertEqual(
+            result.metadata["answer_pairs"],
+            [{"label": "Continue?", "value": "yes"}],
+        )
 
     def test_e2_subagent_context_rejected(self) -> None:
         parent = SimpleNamespace(delegate_depth=2)
@@ -487,8 +491,8 @@ class AskUserQuestionTests(unittest.TestCase):
                             "id": "q1",
                             "prompt": "Pick one",
                             "options": [
-                                {"id": "alpha", "label": "Alpha"},
-                                {"id": "beta", "label": "Beta"},
+                                {"id": "alpha", "label": "Alpha", "description": "first choice"},
+                                {"id": "beta", "label": "Beta", "description": "second choice"},
                             ],
                         }
                     ]
@@ -513,8 +517,8 @@ class AskUserQuestionTests(unittest.TestCase):
                             "prompt": "Pick many",
                             "allow_multiple": True,
                             "options": [
-                                {"id": "a", "label": "A"},
-                                {"id": "b", "label": "B"},
+                                {"id": "a", "label": "A", "description": "first"},
+                                {"id": "b", "label": "B", "description": "second"},
                             ],
                         }
                     ]
@@ -523,8 +527,11 @@ class AskUserQuestionTests(unittest.TestCase):
             _ctx(),
         )
         self.assertFalse(result.is_error)
-        self.assertIn("- a", result.content)
-        self.assertIn("- b", result.content)
+        self.assertIn("a, b", result.content)
+        self.assertEqual(
+            result.metadata["answer_pairs"],
+            [{"label": "Pick many", "value": "a, b"}],
+        )
 
     def test_e8_multiple_questions(self) -> None:
         p = _MappingPrompter(answers={"q1": "first", "q2": "second"})
@@ -624,6 +631,127 @@ class AskUserQuestionTests(unittest.TestCase):
         )
         self.assertTrue(result.is_error)
         self.assertIn("at most 4", result.content)
+
+    def test_e11d_option_without_description_rejected(self) -> None:
+        tool = AskUserQuestionTool(prompter=_MappingPrompter(answers={}))
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={
+                    "questions": [
+                        {
+                            "id": "q1",
+                            "prompt": "pick one",
+                            "options": [
+                                {"id": "a", "label": "A"},
+                                {"id": "b", "label": "B", "description": "second"},
+                            ],
+                        }
+                    ]
+                },
+            ),
+            _ctx(),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("description", result.content)
+
+    def test_e11e_header_too_long_rejected(self) -> None:
+        tool = AskUserQuestionTool(prompter=_MappingPrompter(answers={}))
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={
+                    "questions": [
+                        {
+                            "id": "q1",
+                            "prompt": "pick one",
+                            "header": "WayTooLongHeader",
+                        }
+                    ]
+                },
+            ),
+            _ctx(),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("12 characters", result.content)
+
+    def test_e11f_plan_mode_passes_plan_path(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.dict(
+                "os.environ", {"AETHER_HOME": tmp}
+            ):
+                set_mode("ses-plan-1", SessionMode.PLAN)
+                try:
+                    prompter = _MappingPrompter(answers={"q1": "API"})
+                    tool = AskUserQuestionTool(prompter=prompter)
+                    ctx = _ctx(session_id="ses-plan-1")
+                    ctx.metadata["plan_mode_active"] = True
+                    result = tool.execute(
+                        ToolCall(
+                            id="c1",
+                            name="ask_user_question",
+                            arguments={
+                                "questions": [
+                                    {
+                                        "id": "q1",
+                                        "prompt": "pick one",
+                                        "options": [
+                                            {"id": "a", "label": "API", "description": "x"},
+                                            {"id": "b", "label": "CLI", "description": "y"},
+                                        ],
+                                    }
+                                ]
+                            },
+                        ),
+                        ctx,
+                    )
+                finally:
+                    clear_mode("ses-plan-1")
+
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(len(prompter.calls), 1)
+        plan_path = prompter.calls[0]["plan_path"]
+        self.assertIsNotNone(plan_path)
+        assert plan_path is not None
+        self.assertTrue(plan_path.endswith(".md"))
+        # get_plan_path truncates the session id; just verify the call carried
+        # a non-empty path under AETHER_HOME/plans/.
+        self.assertIn("/plans/", plan_path)
+
+    def test_e11g_user_action_chat_returns_error(self) -> None:
+        prompter = _MappingPrompter(answers={"__user_action": "chat"})
+        tool = AskUserQuestionTool(prompter=prompter)
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={"questions": [{"id": "q1", "prompt": "p"}]},
+            ),
+            _ctx(),
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("chat", result.content.lower())
+        self.assertEqual(result.metadata.get("user_action"), "chat")
+
+    def test_e11h_user_action_skip_returns_success(self) -> None:
+        prompter = _MappingPrompter(answers={"__user_action": "skip"})
+        tool = AskUserQuestionTool(prompter=prompter)
+        result = tool.execute(
+            ToolCall(
+                id="c1",
+                name="ask_user_question",
+                arguments={"questions": [{"id": "q1", "prompt": "p"}]},
+            ),
+            _ctx(),
+        )
+        self.assertFalse(result.is_error, result.content)
+        self.assertIn("skip", result.content.lower())
+        self.assertEqual(result.metadata.get("user_action"), "skip")
 
     def test_e12_no_prompter_returns_error(self) -> None:
         tool = AskUserQuestionTool()

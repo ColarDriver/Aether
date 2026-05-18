@@ -232,6 +232,8 @@ class EventModels(unittest.TestCase):
             self.assertIn("type", dumped)
 
     def test_approval_and_permission_request_models(self) -> None:
+        from aether.gateway.protocol import ApprovalOption
+
         approval = ApprovalRequest(
             kind="questions",
             session_id="s",
@@ -239,16 +241,27 @@ class EventModels(unittest.TestCase):
             questions=[
                 ApprovalQuestion(
                     id="q1",
+                    header="Pick",
                     text="Choose",
                     kind="select",
-                    options=["a", "b"],
+                    options=[
+                        ApprovalOption(label="a", description="alpha"),
+                        ApprovalOption(label="b", description="beta"),
+                    ],
                 )
             ],
             deadline_ms=60_000,
         )
         dumped_approval = approval.model_dump(mode="json", exclude_none=False)
         self.assertEqual(dumped_approval["tool_call_id"], None)
-        self.assertEqual(dumped_approval["questions"][0]["options"], ["a", "b"])
+        self.assertEqual(
+            dumped_approval["questions"][0]["options"],
+            [
+                {"label": "a", "description": "alpha"},
+                {"label": "b", "description": "beta"},
+            ],
+        )
+        self.assertEqual(dumped_approval["questions"][0]["header"], "Pick")
 
         permission = PermissionRequest(
             session_id="s",

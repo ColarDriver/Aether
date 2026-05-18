@@ -120,7 +120,7 @@ describe('ApprovalModal — plan kind', () => {
     )
     const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
 
-    stdin.write('\u001B') // ESC
+    stdin.write('') // ESC
     await flush()
 
     expect(dismiss).toHaveBeenCalledWith('commit', { confirmed: false, answers: {} })
@@ -142,7 +142,7 @@ describe('ApprovalModal — plan kind', () => {
     )
     const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
 
-    stdin.write('\u0003')
+    stdin.write('')
     await flush()
 
     expect(dismiss).toHaveBeenCalledWith('cancel', undefined)
@@ -159,26 +159,50 @@ describe('ApprovalModal — questions kind', () => {
     overlayActions.resetForTests()
   })
 
-  it('select question: ↓ then Enter records the second option', async () => {
-    const dismiss = vi.fn()
-    const overlay = makeOverlay(
+  function makeSelectOverlay(dismiss = vi.fn()): OverlayState<ApprovalRequestParams> {
+    return makeOverlay(
       {
         kind: 'questions',
         session_id: 's',
         run_id: 'r',
         questions: [
-          { id: 'q1', text: 'pick one', kind: 'select', options: ['a', 'b', 'c'] }
+          {
+            id: 'q1',
+            text: 'pick one',
+            kind: 'select',
+            options: [
+              { label: 'a', description: 'option a' },
+              { label: 'b', description: 'option b' },
+              { label: 'c', description: 'option c' }
+            ]
+          }
         ],
         deadline_ms: 0
       },
       dismiss
     )
-    const { stdin, lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
-    const initialFrame = lastFrame() ?? ''
-    expect(initialFrame).toContain('Questions (1/1)')
-    expect(initialFrame).not.toContain(overlay.id)
+  }
 
-    stdin.write('\u001B[B') // down arrow
+  it('renders numbered options with descriptions and no overlay id', () => {
+    const overlay = makeSelectOverlay(vi.fn())
+    const { lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('1. a')
+    expect(frame).toContain('option a')
+    expect(frame).toContain('2. b')
+    expect(frame).toContain('Type something.')
+    expect(frame).toContain('Chat about this')
+    expect(frame).not.toContain('Skip interview')
+    expect(frame).not.toContain(overlay.id)
+    unmount()
+  })
+
+  it('select question: ↓ then Enter records the second option', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeSelectOverlay(dismiss)
+    const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
+
+    stdin.write('[B') // down arrow
     await flush()
     stdin.write('\r') // Enter
     await flush()
@@ -189,18 +213,7 @@ describe('ApprovalModal — questions kind', () => {
 
   it('select question: number key 3 picks the third option', async () => {
     const dismiss = vi.fn()
-    const overlay = makeOverlay(
-      {
-        kind: 'questions',
-        session_id: 's',
-        run_id: 'r',
-        questions: [
-          { id: 'q1', text: 'pick one', kind: 'select', options: ['a', 'b', 'c'] }
-        ],
-        deadline_ms: 0
-      },
-      dismiss
-    )
+    const overlay = makeSelectOverlay(dismiss)
     const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
 
     stdin.write('3')
@@ -210,40 +223,105 @@ describe('ApprovalModal — questions kind', () => {
     unmount()
   })
 
-  it('multiple open questions accumulate answers and submit on the last Enter', async () => {
+  it('Type something opens a text input that records on Enter', async () => {
     const dismiss = vi.fn()
     const overlay = makeOverlay(
       {
         kind: 'questions',
         session_id: 's',
         run_id: 'r',
+        questions: [{ id: 'q1', text: 'free?', kind: 'open' }],
+        deadline_ms: 0
+      },
+      dismiss
+    )
+    const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
+
+    // First row is "Type something." when the question has no options.
+    stdin.write('\r')
+    await flush()
+    stdin.write('foo')
+    await flush()
+    stdin.write('\r')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('commit', { confirmed: true, answers: { q1: 'foo' } })
+    unmount()
+  })
+
+  it('Chat about this dismisses with action=chat', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeSelectOverlay(dismiss)
+    const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
+
+    // Rows: 1=a 2=b 3=c 4=Type 5=Chat
+    stdin.write('5')
+    await flush()
+
+    expect(dismiss).toHaveBeenCalledWith('commit', {
+      confirmed: false,
+      action: 'chat',
+      answers: {}
+    })
+    unmount()
+  })
+
+  it('Skip interview only renders in plan mode and dismisses with action=skip', async () => {
+    const dismiss = vi.fn()
+    const overlay = makeOverlay(
+      {
+        kind: 'questions',
+        session_id: 's',
+        run_id: 'r',
+        plan_path: '/tmp/plan.md',
         questions: [
-          { id: 'q1', text: 'first?', kind: 'open', options: [] },
-          { id: 'q2', text: 'second?', kind: 'open', options: [] }
+          {
+            id: 'q1',
+            text: 'pick one',
+            kind: 'select',
+            options: [
+              { label: 'a', description: 'option a' },
+              { label: 'b', description: 'option b' }
+            ]
+          }
         ],
         deadline_ms: 0
       },
       dismiss
     )
     const { stdin, lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Planning: /tmp/plan.md')
+    expect(frame).toContain('Skip interview and plan immediately')
 
-    stdin.write('foo')
-    await flush()
-    stdin.write('\r')
-    await flush()
-    expect(lastFrame()).toContain('(2/2)')
-    expect(dismiss).not.toHaveBeenCalled()
-
-    stdin.write('bar')
-    await flush()
-    stdin.write('\r')
+    // Rows: 1=a 2=b 3=Type 4=Chat 5=Skip
+    stdin.write('5')
     await flush()
 
-    expect(dismiss).toHaveBeenCalledOnce()
     expect(dismiss).toHaveBeenCalledWith('commit', {
       confirmed: true,
-      answers: { q1: 'foo', q2: 'bar' }
+      action: 'skip',
+      answers: {}
     })
+    unmount()
+  })
+
+  it('renders chip bar across multiple questions and a Submit chip', () => {
+    const overlay = makeOverlay({
+      kind: 'questions',
+      session_id: 's',
+      run_id: 'r',
+      questions: [
+        { id: 'q1', header: 'Interface', text: 'pick interface' },
+        { id: 'q2', header: 'Tools', text: 'pick tools' }
+      ],
+      deadline_ms: 0
+    })
+    const { lastFrame, unmount } = render(<ApprovalModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Interface')
+    expect(frame).toContain('Tools')
+    expect(frame).toContain('Submit')
     unmount()
   })
 
@@ -273,14 +351,14 @@ describe('ApprovalModal — questions kind', () => {
         kind: 'questions',
         session_id: 's',
         run_id: 'r',
-        questions: [{ id: 'q1', text: 'first?', kind: 'open', options: [] }],
+        questions: [{ id: 'q1', text: 'first?', kind: 'open' }],
         deadline_ms: 0
       },
       dismiss
     )
     const { stdin, unmount } = render(<ApprovalModal overlay={overlay} />)
 
-    stdin.write('\u0003')
+    stdin.write('')
     await flush()
 
     expect(dismiss).toHaveBeenCalledWith('cancel', undefined)

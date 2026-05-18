@@ -4,6 +4,7 @@ import {
   CATEGORY_ORDER,
   EXPLORE_CATEGORIES,
   categoryFor,
+  displayToolName,
   hintForCall,
   nounForCategory,
   verbForCategory,
@@ -96,6 +97,20 @@ describe('hintForCall', () => {
     expect(hintForCall('shell', {})).toBe('')
   })
 
+  it('summarizes exit_plan_mode plan instead of exposing raw JSON', () => {
+    expect(
+      hintForCall('exit_plan_mode', {
+        plan: '# Plan: Build LangGraph coding-agent\n\n## Goal\n\nAdd LangGraph workflow.'
+      })
+    ).toBe('Plan: Build LangGraph coding-agent')
+
+    expect(hintForCall('exit_plan_mode', {})).toBe('plan ready for approval')
+  })
+
+  it('returns "entering" hint for enter_plan_mode', () => {
+    expect(hintForCall('enter_plan_mode', {})).toBe('entering')
+  })
+
   it('summarizes ask_user_question instead of exposing raw JSON', () => {
     expect(
       hintForCall('ask_user_question', {
@@ -114,6 +129,20 @@ describe('hintForCall', () => {
     ).toBe('3 questions · Pick a framework')
 
     expect(hintForCall('ask_user_question', { questions: [] })).toBe('(asking the user)')
+  })
+})
+
+describe('displayToolName', () => {
+  it('returns friendly names for plan-mode / question / todo tools', () => {
+    expect(displayToolName('enter_plan_mode')).toBe('Plan mode')
+    expect(displayToolName('exit_plan_mode')).toBe('Plan ready')
+    expect(displayToolName('ask_user_question')).toBe('Ask user')
+    expect(displayToolName('todo_write')).toBe('Todos')
+  })
+
+  it('returns the raw name for tools without a mapping', () => {
+    expect(displayToolName('read_file')).toBe('read_file')
+    expect(displayToolName('shell')).toBe('shell')
   })
 })
 

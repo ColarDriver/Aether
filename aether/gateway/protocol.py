@@ -281,15 +281,26 @@ class Error(AgentEventBase):
     message: str
 
 
+class ApprovalOption(BaseModel):
+    """Single choice for an ``ApprovalQuestion`` of kind ``select``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    description: str = ""
+
+
 class ApprovalQuestion(BaseModel):
     """Question item sent by ``approval.request`` reverse RPC."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    header: str = ""
     text: str
     kind: Literal["open", "select"] = "open"
-    options: list[str] = Field(default_factory=list)
+    options: list[ApprovalOption] = Field(default_factory=list)
+    multi_select: bool = False
 
 
 class ApprovalRequest(BaseModel):
@@ -370,6 +381,7 @@ def make_success_response(request_id: _RpcId, result: Any) -> RpcResponse:
 
 __all__ = [
     "AgentEventBase",
+    "ApprovalOption",
     "ApprovalQuestion",
     "ApprovalRequest",
     "Cancelled",

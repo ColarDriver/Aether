@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink'
 import type { ReactElement } from 'react'
 
-import { categoryFor, hintForCall } from '../lib/toolCategory.js'
+import { categoryFor, displayToolName, hintForCall } from '../lib/toolCategory.js'
 import type { ChatItem } from '../store/chatStore.js'
 
 import { ShellResultFooter } from './ShellResultFooter.js'
@@ -29,12 +29,20 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
   const isShellCategory = categoryFor(item.toolName) === 'bash'
   const shellMetadata =
     isShellCategory && item.result?.metadata ? item.result.metadata : null
+  const askUserQuestionPairs =
+    item.toolName === 'ask_user_question' && !isError
+      ? extractAnswerPairs(item.result?.metadata)
+      : null
+  const planModeBlock =
+    item.toolName === 'enter_plan_mode' || item.toolName === 'exit_plan_mode'
+      ? buildPlanModeBlock(item.toolName, item.result)
+      : null
 
   if (!expanded) {
     return (
       <Box flexDirection="column" marginTop={item.iteration > 0 ? 0 : 1}>
         <Box>
-          <Text color={headerColor}>▸ {item.toolName}</Text>
+          <Text color={headerColor}>▸ {displayToolName(item.toolName)}</Text>
           {collapsedHint ? (
             <>
               <Text color="gray"> · </Text>
@@ -49,7 +57,13 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
           {isError ? <Text color="red"> · error</Text> : null}
         </Box>
         {shellMetadata ? <ShellResultFooter metadata={shellMetadata} /> : null}
-        {item.result ? <InlineResultPreview text={item.result.text} isError={isError} /> : null}
+        {askUserQuestionPairs ? (
+          <AskUserQuestionAnswers pairs={askUserQuestionPairs} />
+        ) : planModeBlock ? (
+          <PlanModeResultBlock block={planModeBlock} />
+        ) : item.result ? (
+          <InlineResultPreview text={item.result.text} isError={isError} />
+        ) : null}
       </Box>
     )
   }
@@ -57,7 +71,7 @@ export function ToolCallPanel({ item, expanded, focused }: ToolCallPanelProps): 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
-        <Text color={headerColor}>▾ {item.toolName}</Text>
+        <Text color={headerColor}>▾ {displayToolName(item.toolName)}</Text>
         {item.durationMs !== null ? (
           <Text dimColor> · ⏱ {formatDuration(item.durationMs)}</Text>
         ) : (
@@ -118,6 +132,101 @@ function InlineResultPreview({
           {'  '}… ({totalLines - INLINE_PREVIEW_LINES} more lines · Tab+Enter to expand)
         </Text>
       ) : null}
+    </Box>
+  )
+}
+
+interface PlanModeBlock {
+  title: string
+  detail: string | null
+  color: 'green' | 'red' | 'cyan'
+}
+
+function buildPlanModeBlock(
+  toolName: string,
+  result: ToolCallPanelProps['item']['result']
+): PlanModeBlock | null {
+  if (!result) {
+    return null
+  }
+  if (toolName === 'enter_plan_mode') {
+    if (result.isError) {
+      return { title: 'Plan mode unavailable', detail: result.text || null, color: 'red' }
+    }
+    return {
+      title: 'Entered plan mode',
+      detail: 'Claude is exploring and designing an approach.',
+      color: 'cyan'
+    }
+  }
+  if (toolName === 'exit_plan_mode') {
+    if (result.isError) {
+      // The tool rejects with "Plan rejected." when the user says No.
+      const detail = (result.text || '').split('\n').find((line) => line.trim()) || null
+      return { title: 'Plan rejected', detail, color: 'red' }
+    }
+    const metadata = (result.metadata ?? {}) as Record<string, unknown>
+    const planPath = typeof metadata.plan_path === 'string' ? metadata.plan_path : null
+    return {
+      title: 'Plan approved',
+      detail: planPath ? `Plan saved to: ${planPath}` : null,
+      color: 'green'
+    }
+  }
+  return null
+}
+
+function PlanModeResultBlock({ block }: { block: PlanModeBlock }): ReactElement {
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text color={block.color}>● {block.title}</Text>
+      {block.detail ? (
+        <Box marginLeft={2}>
+          <Text dimColor>{block.detail}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
+interface AnswerPair {
+  label: string
+  value: string
+}
+
+function extractAnswerPairs(metadata: unknown): AnswerPair[] | null {
+  if (!metadata || typeof metadata !== 'object') {
+    return null
+  }
+  const raw = (metadata as Record<string, unknown>)['answer_pairs']
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null
+  }
+  const pairs: AnswerPair[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      continue
+    }
+    const record = entry as Record<string, unknown>
+    const label = typeof record.label === 'string' ? record.label : ''
+    const value = typeof record.value === 'string' ? record.value : ''
+    if (label || value) {
+      pairs.push({ label, value })
+    }
+  }
+  return pairs.length > 0 ? pairs : null
+}
+
+function AskUserQuestionAnswers({ pairs }: { pairs: AnswerPair[] }): ReactElement {
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text dimColor>⎿ User answered the questions:</Text>
+      {pairs.map((pair, idx) => (
+        <Text key={idx} dimColor>
+          {'  · '}
+          {pair.label} → {pair.value}
+        </Text>
+      ))}
     </Box>
   )
 }

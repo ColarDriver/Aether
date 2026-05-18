@@ -228,6 +228,21 @@ export function verbForTool(name: string): string {
   return VERBS_PAST[category][0]
 }
 
+// Friendlier display names for tools whose snake_case name reads poorly in
+// the transcript header. Mirrors Claude Code's `userFacingName` overrides
+// (open-claude-code/src/tools/{Enter,Exit}PlanModeTool, AskUserQuestionTool).
+const FRIENDLY_TOOL_NAMES: Record<string, string> = {
+  enter_plan_mode: 'Plan mode',
+  exit_plan_mode: 'Plan ready',
+  ask_user_question: 'Ask user',
+  todo_write: 'Todos'
+}
+
+export function displayToolName(name: string): string {
+  const canonical = canonicalToolName(name)
+  return FRIENDLY_TOOL_NAMES[canonical] ?? name
+}
+
 function truncate(value: string, limit: number = 80): string {
   const cleaned = (value || '').replace(/[\r\n]+/g, ' ').trim()
   if (cleaned.length <= limit) {
@@ -251,6 +266,12 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
   }
   if (canonical === 'ask_user_question') {
     return hintForAskUserQuestion(args)
+  }
+  if (canonical === 'exit_plan_mode') {
+    return hintForExitPlanMode(args)
+  }
+  if (canonical === 'enter_plan_mode') {
+    return 'entering'
   }
   const category = categoryFor(name)
   const path =
@@ -329,6 +350,16 @@ export function hintForCall(name: string, args: JsonObject | undefined): string 
   }
 
   return ''
+}
+
+function hintForExitPlanMode(args: JsonObject): string {
+  const plan = strOrNull(args['plan'])
+  if (!plan) {
+    return 'plan ready for approval'
+  }
+  const firstLine = plan.split('\n').find((line) => line.trim().length > 0) ?? ''
+  const cleaned = firstLine.replace(/^#+\s*/, '').trim()
+  return truncate(cleaned || 'plan ready for approval', 80)
 }
 
 function hintForAskUserQuestion(args: JsonObject): string {

@@ -19,13 +19,20 @@ export interface ApprovalAnswerMap {
 }
 
 export function ApprovalModal({
-  overlay
+  overlay,
+  maxRows
 }: {
   overlay: OverlayState<ApprovalRequestParams>
+  maxRows?: number
 }): ReactElement {
   const params = overlay.payload
   if (params.kind === 'plan') {
-    return <PlanApproval overlay={overlay} />
+    return (
+      <PlanApproval
+        overlay={overlay}
+        {...(maxRows !== undefined ? { maxRows } : {})}
+      />
+    )
   }
   return <QuestionApproval overlay={overlay} />
 }
@@ -35,9 +42,11 @@ export function ApprovalModal({
 // ──────────────────────────────────────────────────────────────────────────
 
 function PlanApproval({
-  overlay
+  overlay,
+  maxRows
 }: {
   overlay: OverlayState<ApprovalRequestParams>
+  maxRows?: number
 }): ReactElement {
   const params = overlay.payload
   const remaining = useCountdown(params.deadline_ms ?? 0)
@@ -46,6 +55,7 @@ function PlanApproval({
   const originalPlan = params.plan_text ?? '(no plan text provided)'
   const [currentPlan, setCurrentPlan] = useState(originalPlan)
   const [editMessage, setEditMessage] = useState<string | null>(null)
+  const planRows = maxRows ? Math.max(1, maxRows - 6) : undefined
 
   function approvalPayload(confirmed: boolean): JsonObject {
     const payload: JsonObject = { confirmed, answers: {} }
@@ -109,7 +119,10 @@ function PlanApproval({
         </Box>
       ) : null}
       <Box marginTop={1} flexDirection="column">
-        <PlanText text={currentPlan} />
+        <PlanText
+          text={currentPlan}
+          {...(planRows !== undefined ? { maxRows: planRows } : {})}
+        />
       </Box>
       <Box marginTop={1}>
         <Text>
@@ -130,8 +143,19 @@ function PlanApproval({
   )
 }
 
-function PlanText({ text }: { text: string }): ReactElement {
-  return <Markdown text={text || '(no plan text provided)'} />
+function PlanText({ text, maxRows }: { text: string; maxRows?: number }): ReactElement {
+  return <Markdown text={limitMarkdownRows(text || '(no plan text provided)', maxRows)} />
+}
+
+function limitMarkdownRows(text: string, maxRows: number | undefined): string {
+  if (!maxRows || maxRows < 1) {
+    return text
+  }
+  const lines = text.split('\n')
+  if (lines.length <= maxRows) {
+    return text
+  }
+  return [...lines.slice(0, Math.max(1, maxRows - 1)), '... plan truncated in terminal view ...'].join('\n')
 }
 
 async function openPlanInEditor(path: string): Promise<string> {
@@ -160,6 +184,43 @@ async function openPlanInEditor(path: string): Promise<string> {
 // QUESTIONS
 // ──────────────────────────────────────────────────────────────────────────
 
+type RowKind = 'option' | 'free' | 'chat' | 'skip'
+
+interface QuestionRow {
+  kind: RowKind
+  number: number
+  label: string
+  description?: string
+  optionLabel?: string
+}
+
+function buildRows(question: ApprovalQuestion | undefined, planMode: boolean): QuestionRow[] {
+  const rows: QuestionRow[] = []
+  if (!question) {
+    return rows
+  }
+  const options = question.options ?? []
+  options.forEach((opt, idx) => {
+    rows.push({
+      kind: 'option',
+      number: idx + 1,
+      label: opt.label,
+      ...(opt.description !== undefined ? { description: opt.description } : {}),
+      optionLabel: opt.label
+    })
+  })
+  rows.push({ kind: 'free', number: rows.length + 1, label: 'Type something.' })
+  rows.push({ kind: 'chat', number: rows.length + 1, label: 'Chat about this' })
+  if (planMode) {
+    rows.push({
+      kind: 'skip',
+      number: rows.length + 1,
+      label: 'Skip interview and plan immediately'
+    })
+  }
+  return rows
+}
+
 function QuestionApproval({
   overlay
 }: {
@@ -167,14 +228,16 @@ function QuestionApproval({
 }): ReactElement {
   const params = overlay.payload
   const questions = useMemo(() => params.questions ?? [], [params])
-  const [cursor, setCursor] = useState(0)
+  const planMode = Boolean(params.plan_path)
+  const [cursor, setCursor] = useState(0) // 0..questions.length-1 is a question, == length is the Submit chip
   const [answers, setAnswers] = useState<ApprovalAnswerMap>({})
-  const [openValue, setOpenValue] = useState<string>('')
   const [selectIndex, setSelectIndex] = useState<number>(0)
+  const [mode, setMode] = useState<'list' | 'freeText'>('list')
+  const [freeTextValue, setFreeTextValue] = useState<string>('')
   const remaining = useCountdown(params.deadline_ms ?? 0)
 
-  const current = questions[cursor]
-  const isOpen = !current || (current.kind ?? 'open') === 'open'
+  const current = cursor < questions.length ? questions[cursor] : undefined
+  const rows = useMemo(() => buildRows(current, planMode), [current, planMode])
 
   // Defensive: a questions request with no questions is malformed; commit
   // empty so the engine does not hang waiting for a response.
@@ -184,25 +247,68 @@ function QuestionApproval({
     }
   }, [overlay.id, questions])
 
-  function commitAll(map: ApprovalAnswerMap): void {
-    const payload: JsonObject = { confirmed: true, answers: map }
+  function commitAnswers(
+    map: ApprovalAnswerMap,
+    extra: { action?: 'chat' | 'skip'; confirmed?: boolean } = {}
+  ): void {
+    const payload: JsonObject = {
+      confirmed: extra.confirmed ?? true,
+      answers: map
+    }
+    if (extra.action) {
+      payload.action = extra.action
+    }
     overlayActions.dismiss(overlay.id, 'commit', payload)
   }
 
-  function recordAndAdvance(value: string): void {
+  function advanceCursor(nextAnswers: ApprovalAnswerMap): void {
+    // Skip questions that already have answers; land on the next pending
+    // question, or the Submit chip when all are answered.
+    let next = cursor + 1
+    while (next < questions.length) {
+      const q = questions[next]
+      if (q && nextAnswers[q.id] === undefined) {
+        break
+      }
+      next += 1
+    }
+    setCursor(Math.min(next, questions.length))
+    setSelectIndex(0)
+    setMode('list')
+    setFreeTextValue('')
+  }
+
+  function recordAnswer(value: string): void {
     if (!current) {
-      commitAll(answers)
+      commitAnswers(answers)
       return
     }
     const next: ApprovalAnswerMap = { ...answers, [current.id]: value }
-    if (cursor + 1 >= questions.length) {
-      commitAll(next)
+    setAnswers(next)
+    if (questions.every((q) => next[q.id] !== undefined)) {
+      commitAnswers(next)
       return
     }
-    setAnswers(next)
-    setCursor(cursor + 1)
-    setOpenValue('')
-    setSelectIndex(0)
+    advanceCursor(next)
+  }
+
+  function activateRow(row: QuestionRow): void {
+    if (row.kind === 'option') {
+      recordAnswer(row.optionLabel ?? row.label)
+      return
+    }
+    if (row.kind === 'free') {
+      setMode('freeText')
+      setFreeTextValue('')
+      return
+    }
+    if (row.kind === 'chat') {
+      commitAnswers(answers, { confirmed: false, action: 'chat' })
+      return
+    }
+    if (row.kind === 'skip') {
+      commitAnswers({}, { confirmed: true, action: 'skip' })
+    }
   }
 
   useInput(
@@ -212,35 +318,63 @@ function QuestionApproval({
         return
       }
       if (key.escape) {
+        if (mode === 'freeText') {
+          setMode('list')
+          setFreeTextValue('')
+          return
+        }
         overlayActions.dismiss(overlay.id, 'cancel')
         return
       }
-      if (!current) {
+      if (mode === 'freeText') {
+        // TextInput owns Enter / character keys via onChange/onSubmit below.
         return
       }
-      if (isOpen) {
-        // Open input — TextInput owns most keys; we still let Enter commit
-        // through onSubmit.
+      if (key.tab) {
+        // Single-question prompts auto-commit when the user picks an option,
+        // so the chip bar (and Tab navigation) is hidden — swallow Tab to
+        // avoid trapping the user on an invisible Submit chip.
+        if (questions.length <= 1) {
+          return
+        }
+        const total = questions.length + 1 // +1 for the Submit chip
+        const direction = key.shift ? -1 : 1
+        const nextCursor = (cursor + direction + total) % total
+        setCursor(nextCursor)
+        setSelectIndex(0)
         return
       }
-      const options = current.options ?? []
+      if (cursor === questions.length) {
+        // Submit chip is focused — Enter commits.
+        if (key.return) {
+          commitAnswers(answers)
+        }
+        return
+      }
+      if (rows.length === 0) {
+        return
+      }
       if (key.upArrow) {
-        setSelectIndex((idx) => (idx <= 0 ? Math.max(options.length - 1, 0) : idx - 1))
+        setSelectIndex((idx) => (idx <= 0 ? rows.length - 1 : idx - 1))
         return
       }
       if (key.downArrow) {
-        setSelectIndex((idx) => (options.length === 0 ? 0 : (idx + 1) % options.length))
+        setSelectIndex((idx) => (idx + 1) % rows.length)
         return
       }
       if (key.return) {
-        const choice = options[selectIndex] ?? ''
-        recordAndAdvance(choice)
+        const row = rows[selectIndex]
+        if (row) {
+          activateRow(row)
+        }
         return
       }
       if (input >= '1' && input <= '9') {
-        const idx = Number.parseInt(input, 10) - 1
-        if (idx < options.length) {
-          recordAndAdvance(options[idx] ?? '')
+        const num = Number.parseInt(input, 10)
+        const row = rows.find((r) => r.number === num)
+        if (row) {
+          setSelectIndex(rows.indexOf(row))
+          activateRow(row)
         }
       }
     },
@@ -255,72 +389,170 @@ function QuestionApproval({
     )
   }
 
+  const onSubmitChip = cursor === questions.length
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-      <Box>
-        <Text bold color="yellow">
-          Questions ({cursor + 1}/{questions.length})
-        </Text>
-      </Box>
-      <Box marginTop={1} flexDirection="column">
-        <Text>{current?.text}</Text>
-      </Box>
-      <Box marginTop={1} flexDirection="column">
-        {isOpen ? (
-          <Box>
-            <Text color="cyan">› </Text>
-            <TextInput
-              value={openValue}
-              onChange={setOpenValue}
-              onSubmit={(value) => recordAndAdvance(value)}
-            />
+    <Box flexDirection="column">
+      {params.plan_path ? (
+        <Box>
+          <Text dimColor>Planning: {params.plan_path}</Text>
+        </Box>
+      ) : null}
+      {questions.length > 1 ? (
+        <ChipBar
+          questions={questions}
+          answers={answers}
+          cursor={cursor}
+        />
+      ) : null}
+      <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+        {onSubmitChip ? (
+          <Box flexDirection="column">
+            <Text bold color="yellow">
+              Submit
+            </Text>
+            <Box marginTop={1}>
+              <Text>Press Enter to send answers to the agent.</Text>
+            </Box>
           </Box>
         ) : (
-          <SelectList
-            options={current?.options ?? []}
-            selectedIndex={selectIndex}
-            onSelect={(value) => recordAndAdvance(value)}
-          />
+          <>
+            <Box>
+              <Text bold color="yellow">
+                {current?.text || `Question ${cursor + 1}/${questions.length}`}
+              </Text>
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+              {rows.map((row, idx) => {
+                const focused = idx === selectIndex
+                if (row.kind === 'free' && mode === 'freeText' && focused) {
+                  return (
+                    <Box key={`${row.kind}-${row.number}`}>
+                      <Text color="cyan">
+                        › {row.number}.{' '}
+                      </Text>
+                      <TextInput
+                        value={freeTextValue}
+                        onChange={setFreeTextValue}
+                        onSubmit={(value) => {
+                          if (value.trim().length === 0) {
+                            return
+                          }
+                          recordAnswer(value)
+                        }}
+                      />
+                    </Box>
+                  )
+                }
+                if (row.kind === 'chat' && idx === firstFooterIndex(rows)) {
+                  return (
+                    <Box key={`${row.kind}-${row.number}`} flexDirection="column">
+                      <Text dimColor>{'─'.repeat(40)}</Text>
+                      <QuestionRowView row={row} focused={focused} />
+                    </Box>
+                  )
+                }
+                return (
+                  <QuestionRowView
+                    key={`${row.kind}-${row.number}`}
+                    row={row}
+                    focused={focused}
+                  />
+                )
+              })}
+            </Box>
+          </>
         )}
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>
-          {isOpen ? 'Enter to submit · ESC reject' : '↑/↓ navigate · Enter pick · 1-9 quick · ESC reject'}
-        </Text>
-        {remaining !== null ? (
-          <Text dimColor> · {formatRemaining(remaining)}</Text>
-        ) : null}
+        <Box marginTop={1}>
+          <Text dimColor>
+            Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+          </Text>
+          {remaining !== null ? (
+            <Text dimColor> · {formatRemaining(remaining)}</Text>
+          ) : null}
+        </Box>
       </Box>
     </Box>
   )
 }
 
-function SelectList({
-  options,
-  selectedIndex,
-  onSelect
-}: {
-  options: string[]
-  selectedIndex: number
-  onSelect: (value: string) => void
-}): ReactElement {
-  // Render-only — actual key handling lives in QuestionApproval so the parent
-  // owns the answers map and progression.
-  void onSelect
+function firstFooterIndex(rows: QuestionRow[]): number {
+  return rows.findIndex((r) => r.kind === 'chat')
+}
+
+function QuestionRowView({ row, focused }: { row: QuestionRow; focused: boolean }): ReactElement {
+  const pointerProps = focused ? { color: 'cyan' as const } : {}
   return (
     <Box flexDirection="column">
-      {options.map((option, idx) => {
-        const isFocused = idx === selectedIndex
-        const props = isFocused ? { color: 'cyan' } : {}
+      <Box>
+        <Text {...pointerProps}>{focused ? '›' : ' '} </Text>
+        <Text {...pointerProps} bold={focused}>
+          {row.number}. {row.label}
+        </Text>
+      </Box>
+      {row.description ? (
+        <Box>
+          <Text>{'     '}</Text>
+          <Text dimColor>{row.description}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
+function ChipBar({
+  questions,
+  answers,
+  cursor
+}: {
+  questions: ApprovalQuestion[]
+  answers: ApprovalAnswerMap
+  cursor: number
+}): ReactElement {
+  return (
+    <Box>
+      <Text dimColor>← </Text>
+      {questions.map((q, idx) => {
+        const answered = answers[q.id] !== undefined
+        const focused = idx === cursor
+        // ASCII glyphs avoid CJK width-overlap that `☐` / `✓` exhibit in
+        // monospace fonts when followed by Chinese / Japanese / Korean text.
+        const glyph = answered ? '[x]' : '[ ]'
+        const label = chipLabel(q, idx)
+        const textProps = focused
+          ? { color: 'cyan' as const, bold: true }
+          : answered
+            ? { color: 'green' as const }
+            : { dimColor: true }
         return (
-          <Text key={idx} {...props}>
-            {isFocused ? '› ' : '  '}
-            {option}
+          <Text key={q.id} {...textProps}>
+            {glyph} {label}
+            {idx < questions.length - 1 ? '  ' : ' '}
           </Text>
         )
       })}
+      <Text
+        {...(cursor === questions.length
+          ? { color: 'cyan' as const, bold: true }
+          : { color: 'green' as const })}
+      >
+        [Submit]{' '}
+      </Text>
+      <Text dimColor>→</Text>
     </Box>
   )
+}
+
+function chipLabel(question: ApprovalQuestion, index: number): string {
+  const header = (question.header ?? '').trim()
+  if (header) {
+    return header
+  }
+  const text = (question.text ?? '').trim()
+  if (text) {
+    return text.length > 12 ? `${text.slice(0, 11)}…` : text
+  }
+  return `Q${index + 1}`
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -329,7 +561,7 @@ function SelectList({
 
 export function questionDefaultValue(question: ApprovalQuestion): string {
   if ((question.kind ?? 'open') === 'select') {
-    return question.options?.[0] ?? ''
+    return question.options?.[0]?.label ?? ''
   }
   return ''
 }
@@ -339,31 +571,7 @@ export function questionDefaultValue(question: ApprovalQuestion): string {
 // ──────────────────────────────────────────────────────────────────────────
 
 function useCountdown(deadlineMs: number): number | null {
-  const [remaining, setRemaining] = useState<number | null>(() =>
-    deadlineMs > 0 ? deadlineMs : null
-  )
-
-  useEffect(() => {
-    if (deadlineMs <= 0) {
-      setRemaining(null)
-      return
-    }
-    const start = Date.now()
-    setRemaining(deadlineMs)
-    const handle = setInterval(() => {
-      const elapsed = Date.now() - start
-      const next = Math.max(0, deadlineMs - elapsed)
-      setRemaining(next)
-      if (next <= 0) {
-        clearInterval(handle)
-      }
-    }, 500)
-    return () => {
-      clearInterval(handle)
-    }
-  }, [deadlineMs])
-
-  return remaining
+  return deadlineMs > 0 ? deadlineMs : null
 }
 
 function formatRemaining(ms: number): string {

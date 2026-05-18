@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from aether.gateway import reverse_rpc
 from aether.gateway.protocol import (
+    ApprovalOption,
     ApprovalQuestion,
     ApprovalRequest,
     PermissionPreview,
@@ -82,9 +83,10 @@ class GatewayPrompter:
 
     def ask_questions(
         self,
-        questions: list[Mapping[str, Any]],
+        questions: Sequence[Mapping[str, Any]],
         *,
         timeout: float | None = None,
+        plan_path: str | None = None,
     ) -> dict[str, Any]:
         effective_timeout = float(timeout if timeout is not None else self.request_timeout)
         wire_questions = [_question_to_wire(q) for q in questions]
@@ -93,6 +95,7 @@ class GatewayPrompter:
             session_id=self.session_id,
             run_id=self.run_id,
             tool_call_id=None,
+            plan_path=plan_path,
             questions=wire_questions,
             deadline_ms=_deadline_ms(effective_timeout),
         ).model_dump(mode="json", exclude_none=False)
@@ -104,8 +107,15 @@ class GatewayPrompter:
             )
         except OSError as exc:
             raise GatewayPromptDisconnected("peer disconnected") from exc
-        answers = result.get("answers")
-        return dict(answers) if isinstance(answers, dict) else {}
+        raw_answers = result.get("answers")
+        answers: dict[str, Any] = dict(raw_answers) if isinstance(raw_answers, dict) else {}
+        action = result.get("action")
+        if isinstance(action, str) and action.strip():
+            # Stash special UI actions ("chat", "skip") under a reserved key the
+            # caller can recognize. The chosen prefix avoids colliding with any
+            # plausible question id.
+            answers["__user_action"] = action.strip()
+        return answers
 
 
 class GatewayToolPermissionPrompter:
@@ -155,19 +165,32 @@ class GatewayToolPermissionPrompter:
 
 def _question_to_wire(question: Mapping[str, Any]) -> ApprovalQuestion:
     qid = str(question.get("id") or "")
+    header = str(question.get("header") or "")
     text = str(question.get("text") or question.get("prompt") or "")
     raw_options = question.get("options") or []
-    options: list[str] = []
+    options: list[ApprovalOption] = []
     if isinstance(raw_options, list):
         for item in raw_options:
             if isinstance(item, Mapping):
-                value = item.get("label") or item.get("id")
-                if value is not None:
-                    options.append(str(value))
+                label = item.get("label") or item.get("id")
+                if label is None:
+                    continue
+                description = item.get("description") or ""
+                options.append(
+                    ApprovalOption(label=str(label), description=str(description))
+                )
             elif item is not None:
-                options.append(str(item))
+                options.append(ApprovalOption(label=str(item)))
     kind = "select" if options else "open"
-    return ApprovalQuestion(id=qid, text=text, kind=kind, options=options)
+    multi_select = bool(question.get("multi_select") or question.get("allow_multiple"))
+    return ApprovalQuestion(
+        id=qid,
+        header=header,
+        text=text,
+        kind=kind,
+        options=options,
+        multi_select=multi_select,
+    )
 
 
 def _permission_request_to_wire(

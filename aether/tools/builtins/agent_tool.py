@@ -24,6 +24,7 @@ fresh ``EngineRequest`` whose ``user_message`` is the model-supplied
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -36,6 +37,9 @@ if TYPE_CHECKING:
     from aether.agents.types import AgentTypeRegistry
 
 logger = logging.getLogger(__name__)
+
+_SUBAGENT_MODEL_ENV = "AETHER_SUBAGENT_MODEL"
+_SUBAGENT_MODEL_CHOICES = {"sonnet", "sonnect", "gpt"}
 
 
 class AgentTool(ToolExecutor):
@@ -121,14 +125,17 @@ class AgentTool(ToolExecutor):
                     },
                     "model": {
                         "type": "string",
-                        "enum": ["sonnet", "opus", "haiku", "inherit"],
+                        "enum": ["sonnet", "gpt", "opus", "haiku", "inherit"],
                         "default": "inherit",
                         "description": (
                             "Optional model override for this subagent. "
-                            "Takes precedence over the agent type "
-                            "definition's model. If omitted (or "
-                            "'inherit'), uses the type definition's model "
-                            "or inherits from the parent."
+                            "`sonnet` uses Claude Sonnet, `gpt` uses the "
+                            "OpenAI-compatible GPT subagent model. Takes "
+                            "precedence over the agent type definition's "
+                            f"model and `{_SUBAGENT_MODEL_ENV}`. If omitted, "
+                            f"`{_SUBAGENT_MODEL_ENV}` may choose `sonnet` "
+                            "or `gpt`; otherwise the type definition or "
+                            "parent model is inherited."
                         ),
                     },
                     "run_in_background": {
@@ -170,6 +177,11 @@ class AgentTool(ToolExecutor):
             normalized_model = model_arg.strip()
             if normalized_model and normalized_model.lower() != "inherit":
                 model_override = normalized_model
+        elif model_arg is None:
+            try:
+                model_override = _default_subagent_model()
+            except ValueError as exc:
+                return _error(call, str(exc))
 
         run_in_background_arg = args.get("run_in_background", False)
         if run_in_background_arg is not None and not isinstance(run_in_background_arg, bool):
@@ -411,6 +423,18 @@ def _error(
         is_error=True,
         metadata=metadata or {},
     )
+
+
+def _default_subagent_model() -> str | None:
+    raw = os.getenv(_SUBAGENT_MODEL_ENV)
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip().lower()
+    if value not in _SUBAGENT_MODEL_CHOICES:
+        raise ValueError(
+            f"{_SUBAGENT_MODEL_ENV} must be sonnet or gpt; got {raw!r}"
+        )
+    return "sonnet" if value == "sonnect" else value
 
 
 __all__ = ["AgentTool"]

@@ -3,7 +3,9 @@ model override, max_turns clamp, and skills hint injection."""
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest import mock
 
 from aether import AgentEngine
 from aether.agents.types import AgentTypeDefinition, AgentTypeRegistry
@@ -125,6 +127,8 @@ class MetaToolFilteringTests(unittest.TestCase):
 class ModelAliasTests(unittest.TestCase):
     def test_known_aliases_resolve_to_concrete_model_ids(self) -> None:
         self.assertEqual(_resolve_model_alias("sonnet"), "claude-sonnet-4-6")
+        self.assertEqual(_resolve_model_alias("sonnect"), "claude-sonnet-4-6")
+        self.assertEqual(_resolve_model_alias("gpt"), "gpt-5.4")
         self.assertEqual(_resolve_model_alias("opus"), "claude-opus-4-7")
         self.assertEqual(_resolve_model_alias("haiku"), "claude-haiku-4-5-20251001")
 
@@ -164,6 +168,19 @@ class ModelOverrideTests(unittest.TestCase):
             task.request.model_config.extra.get("model"),
             "claude-haiku-4-5-20251001",
         )
+
+    def test_gpt_override_selects_openai_provider(self) -> None:
+        parent = _build_parent(_registry("read_file"))
+        task = _typed_task(self._definition(model=None), model_override="gpt")
+        fake_provider = ScriptedProvider([NormalizedResponse(content="ok")])
+        with mock.patch(
+            "aether.cli.providers.build_provider",
+            return_value=fake_provider,
+        ) as build_provider:
+            child = DefaultSubagentBuilder().build_child(parent, task, child_depth=1)
+        build_provider.assert_called_once_with("openai", model="gpt-5.4")
+        self.assertIs(child.services.provider, fake_provider)
+        self.assertEqual(task.request.model_config.extra.get("model"), "gpt-5.4")
 
     def test_no_override_keeps_extra_clean(self) -> None:
         parent = _build_parent(_registry("read_file"))
@@ -301,7 +318,7 @@ class AgentToolModelParameterTests(unittest.TestCase):
         self.assertIn("model", props)
         self.assertEqual(
             sorted(props["model"]["enum"]),
-            sorted(["sonnet", "opus", "haiku", "inherit"]),
+            sorted(["sonnet", "gpt", "opus", "haiku", "inherit"]),
         )
         self.assertEqual(props["model"]["default"], "inherit")
 
@@ -390,6 +407,45 @@ class AgentToolModelParameterTests(unittest.TestCase):
             ctx,
         )
         self.assertNotIn("model_override", captured["task"].metadata)
+
+    def test_env_model_default_writes_metadata(self) -> None:
+        from aether.tools.builtins.agent_tool import AgentTool
+
+        registry = AgentTypeRegistry(search_paths=[])
+        captured: dict[str, SubagentTask] = {}
+
+        class _CapturingManager:
+            def run_task(self, *, parent, task: SubagentTask):
+                captured["task"] = task
+                from aether.subagents.contracts import SubagentResult, SubagentStatus
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status=SubagentStatus.COMPLETED,
+                    summary="ok",
+                    engine_result=None,
+                )
+
+        parent = _build_parent(_registry("read_file"))
+        tool = AgentTool(
+            parent_agent=parent,
+            subagent_manager=_CapturingManager(),
+            agent_type_registry=registry,
+        )
+        ctx = TurnContext(session_id="s", iteration=0, metadata={})
+        with mock.patch.dict(os.environ, {"AETHER_SUBAGENT_MODEL": "gpt"}):
+            result = tool.execute(
+                ToolCall(
+                    id="c1",
+                    name="task",
+                    arguments={
+                        "subagent_type": "Explore",
+                        "prompt": "find usages",
+                    },
+                ),
+                ctx,
+            )
+        self.assertFalse(result.is_error, msg=result.content)
+        self.assertEqual(captured["task"].metadata.get("model_override"), "gpt")
 
     def test_non_string_model_returns_error(self) -> None:
         from aether.tools.builtins.agent_tool import AgentTool

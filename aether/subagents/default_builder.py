@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.config.schema import EngineConfig
+from aether.models.provider.base import ModelProvider
+from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.subagents.builder import SubagentBuilder
 from aether.subagents.contracts import SubagentTask
 from aether.tools.registry import ToolRegistry
@@ -40,13 +41,32 @@ META_TOOLS_DEFAULT_ALLOWED: frozenset[str] = frozenset({
 # so callers that already know the exact model id can use it directly.
 _MODEL_ALIAS_MAP: dict[str, str] = {
     "sonnet": "claude-sonnet-4-6",
+    "sonnect": "claude-sonnet-4-6",
+    "gpt":    "gpt-5.4",
     "opus":   "claude-opus-4-7",
     "haiku":  "claude-haiku-4-5-20251001",
+}
+
+_MODEL_PROVIDER_MAP: dict[str, str] = {
+    "sonnet": "claude",
+    "sonnect": "claude",
+    "gpt": "openai",
+    "opus": "claude",
+    "haiku": "claude",
 }
 
 
 def _resolve_model_alias(name: str) -> str:
     return _MODEL_ALIAS_MAP.get(name.strip().lower(), name.strip())
+
+
+def _provider_for_model_alias(name: str) -> ModelProvider | None:
+    provider_name = _MODEL_PROVIDER_MAP.get(name.strip().lower())
+    if provider_name is None:
+        return None
+    from aether.cli.providers import build_provider
+
+    return build_provider(provider_name, model=_resolve_model_alias(name))
 
 
 def _format_preloaded_skills_hint(skill_names: tuple[str, ...]) -> str:
@@ -73,7 +93,6 @@ class DefaultSubagentBuilder(SubagentBuilder):
     ) -> AgentEngine:
         from aether.agents.core.agent import AgentEngine
 
-        provider = task.provider or parent.services.provider
         agent_type_def = task.metadata.get("_agent_type_def")
         tool_registry = parent.services.tool_registry if self.inherit_tools else None
         if tool_registry is not None:
@@ -116,10 +135,13 @@ class DefaultSubagentBuilder(SubagentBuilder):
             if isinstance(caller_model, str) and caller_model.strip() and caller_model.strip().lower() != "inherit"
             else type_model
         )
+        provider = task.provider
         if isinstance(effective_model, str) and effective_model.strip():
+            provider = provider or _provider_for_model_alias(effective_model)
             resolved = _resolve_model_alias(effective_model)
             if task.request.model_config is not None:
                 task.request.model_config.extra["model"] = resolved
+        provider = provider or parent.services.provider
 
         # ``max_turns`` clamps the child's iteration budget but never
         # raises it above the inherited ceiling — type definitions only

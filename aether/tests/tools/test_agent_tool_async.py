@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -80,6 +82,9 @@ class AgentToolDescriptorTests(unittest.TestCase):
 
 class AgentToolAsyncBranchTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._env = mock.patch.dict(os.environ, {"AETHER_SUBAGENT_MODEL": ""})
+        self._env.start()
+        self.addCleanup(self._env.stop)
         self._tmp = TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.store = TaskStore(root=Path(self._tmp.name))
@@ -197,6 +202,9 @@ class AgentToolAsyncBranchTests(unittest.TestCase):
 class TypeBackgroundForcesAsyncTests(unittest.TestCase):
     def test_type_definition_background_true_forces_async_path(self) -> None:
         with TemporaryDirectory() as tmp:
+            env = mock.patch.dict(os.environ, {"AETHER_SUBAGENT_MODEL": ""})
+            env.start()
+            self.addCleanup(env.stop)
             store = TaskStore(root=Path(tmp))
             manager = SubagentManager()
             self.addCleanup(manager.shutdown)

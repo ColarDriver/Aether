@@ -1,7 +1,8 @@
 import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState, type ReactElement } from 'react'
+import { useRef, type ReactElement } from 'react'
 
+import { useAnimationFrame } from '../lib/useAnimationFrame.js'
 import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
 import { theme } from '../lib/theme.js'
 import { categoryFor, verbForCategory } from '../lib/toolCategory.js'
@@ -91,22 +92,12 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
   const ascii = !theme.isUnicodeAllowed()
   const tokenTurnStartedAtRef = useRef<number | null | undefined>(undefined)
   const displayedResponseLengthRef = useRef(0)
-  const [animationTick, setAnimationTick] = useState(0)
-
-  useEffect(() => {
-    if (!animate) {
-      return
-    }
-    if (!ACTIVE_STATES.has(activity.status)) {
-      return
-    }
-    const handle = setInterval(() => {
-      setAnimationTick((tick) => tick + 1)
-    }, SPINNER_INTERVAL_MS)
-    return () => {
-      clearInterval(handle)
-    }
-  }, [animate, activity.status])
+  const shouldAnimate =
+    animate && ACTIVE_STATES.has(activity.status) && !activity.interruptPending
+  const [animationRef, animationTime] = useAnimationFrame(
+    shouldAnimate ? SPINNER_INTERVAL_MS : null
+  )
+  const animationTick = Math.floor(animationTime / SPINNER_INTERVAL_MS)
 
   const isError = activity.status === 'error' || activity.status === 'cancelled'
   const colorName = isError ? 'error' : activity.status === 'idle' ? 'dim' : 'status'
@@ -242,7 +233,7 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
   })
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" ref={animationRef}>
       <Box>
         <Text {...colorProps}>{icon ?? ' '} </Text>
         {shimmerSlices ? (

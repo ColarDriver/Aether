@@ -77,6 +77,75 @@ describe('ChatTranscript spacing', () => {
     unmount()
   })
 
+  it('renders pending coalesced edit previews above the permission modal', () => {
+    chatItems.set([
+      {
+        kind: 'tool-call',
+        id: 'tc1',
+        toolCallId: 'tc1',
+        toolName: 'file_edit',
+        args: {},
+        argsPreview: '',
+        iteration: 1,
+        coalesce: true,
+        durationMs: null,
+        ts: 1,
+        previewStatus: 'pending',
+        diffOpen: true,
+        summary: {
+          path: 'src/foo.ts',
+          linesAdded: 1,
+          linesRemoved: 1,
+          hunks: 1,
+          diff: '--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-old\n+new\n'
+        }
+      }
+    ])
+
+    const { lastFrame, unmount } = render(<ChatTranscript />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Update')
+    expect(frame).toContain('src/foo.ts')
+    expect(frame).toContain('pending approval')
+    expect(frame).toContain('old')
+    expect(frame).toContain('new')
+    unmount()
+  })
+
+  it('keeps an approved permission diff visible in the transcript', () => {
+    chatItems.set([
+      {
+        kind: 'tool-call',
+        id: 'tc1',
+        toolCallId: 'tc1',
+        toolName: 'file_edit',
+        args: {},
+        argsPreview: '',
+        iteration: 1,
+        coalesce: true,
+        durationMs: null,
+        ts: 1,
+        diffOpen: true,
+        summary: {
+          path: 'src/foo.ts',
+          linesAdded: 1,
+          linesRemoved: 1,
+          hunks: 1,
+          diff: '--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-old\n+new\n'
+        }
+      }
+    ])
+
+    const { lastFrame, unmount } = render(<ChatTranscript />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Update')
+    expect(frame).toContain('src/foo.ts')
+    expect(frame).not.toContain('pending approval')
+    expect(frame).toContain('old')
+    expect(frame).toContain('new')
+    unmount()
+  })
+
   it('treats fullscreen leading content as scrollback, not pinned chrome', () => {
     chatItems.set([
       {

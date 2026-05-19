@@ -1,7 +1,15 @@
 import { Box, Static, Text, useInput, useStdin } from 'ink'
 import { useStore } from '@nanostores/react'
 import stringWidth from 'string-width'
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode
+} from 'react'
 
 import { stripToolBlocks } from '../lib/phantomTool.js'
 import { mouseButtonCodes } from '../lib/terminalMouse.js'
@@ -34,7 +42,7 @@ export interface ChatTranscriptProps {
  * the user presses Tab; this hook hands focus back to the composer when the
  * user Tabs past the last row (or has nothing focusable to begin with).
  */
-export function ChatTranscript({
+export const ChatTranscript = memo(function ChatTranscript({
   viewportRows,
   width = terminalWidth(),
   leading,
@@ -278,6 +286,7 @@ export function ChatTranscript({
             previous={previousStaticEntryItem(staticItems, index - (leading ? 1 : 0))}
             focused={false}
             expanded={false}
+            width={width}
           />
         )
       }}
@@ -302,7 +311,7 @@ export function ChatTranscript({
   // the banner above and the activity bar below; the per-item ChatMessage
   // marginTop already supplies visual breathing between turns.
   return (
-    <Box flexDirection="column" {...containerProps}>
+    <Box flexDirection="column" width="100%" {...containerProps}>
       {staticNode}
       {showPlaceholderBeforeTranscript ? (
         <>
@@ -336,6 +345,7 @@ export function ChatTranscript({
                 focused={item.kind === 'tool-call' && item.toolCallId === focusedToolCallId}
                 expanded={item.kind === 'tool-call' && expanded.has(item.toolCallId)}
                 startRow={viewportEntry?.startRow ?? 0}
+                width={width}
               />
             )
           })}
@@ -346,7 +356,7 @@ export function ChatTranscript({
       )}
     </Box>
   )
-}
+})
 
 interface StaticLeadingEntry {
   kind: 'leading'
@@ -375,25 +385,31 @@ function previousStaticEntryItem(staticItems: ChatItem[], staticItemIndex: numbe
   return staticItems[staticItemIndex - 1] ?? null
 }
 
-function TranscriptItemRow({
+const TranscriptItemRow = memo(function TranscriptItemRow({
   item,
   previous,
   focused,
   expanded,
+  width,
   startRow = 0
 }: {
   item: ChatItem
   previous: ChatItem | null
   focused: boolean
   expanded: boolean
+  width: number
   startRow?: number
 }): ReactElement {
   const spacedAbove = startRow === 0 && shouldInsertSpacer(previous, item)
   return (
-    <Box key={item.id} marginTop={spacedAbove ? 1 : 0}>
-      <ChatMessage item={item} focused={focused} expanded={expanded} />
+    <Box key={item.id} marginTop={spacedAbove ? 1 : 0} width="100%">
+      <ChatMessage item={item} focused={focused} expanded={expanded} width={contentWidth(width)} />
     </Box>
   )
+})
+
+function contentWidth(width: number): number {
+  return Math.max(40, width - 2)
 }
 
 function splitStaticPrefix(
@@ -553,7 +569,7 @@ function renderKind(item: ChatItem): RenderKind | null {
     case 'assistant':
       return stripToolBlocks(item.text).trim() ? 'assistant' : null
     case 'tool-call':
-      return item.coalesce ? null : 'tool-call'
+      return item.coalesce && !item.summary ? null : 'tool-call'
     case 'tool-group':
       return 'tool-group'
     case 'tool-result':

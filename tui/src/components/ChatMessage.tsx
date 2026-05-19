@@ -15,9 +15,10 @@ export interface ChatMessageProps {
   item: ChatItem
   expanded: boolean
   focused: boolean
+  width?: number
 }
 
-export function ChatMessage({ item, expanded, focused }: ChatMessageProps): ReactElement {
+export function ChatMessage({ item, expanded, focused, width }: ChatMessageProps): ReactElement {
   if (item.kind === 'user') {
     // Mirrors Python `ui.py:render_input_echo` — `›` bullet in brand colour
     // followed by the message text on the same line. Multi-line messages
@@ -81,8 +82,10 @@ export function ChatMessage({ item, expanded, focused }: ChatMessageProps): Reac
           <EditSummary
             summary={item.summary}
             toolName={item.toolName}
-            expanded={expanded}
+            expanded={expanded || Boolean(item.diffOpen)}
             focused={focused}
+            {...(width !== undefined ? { width } : {})}
+            {...(item.previewStatus ? { previewStatus: item.previewStatus } : {})}
           />
         )
       }

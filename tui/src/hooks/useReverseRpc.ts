@@ -8,12 +8,15 @@ import type {
   JsonObject,
   PermissionRequestParams
 } from '../gatewayTypes.js'
+import { chatActions } from '../store/chatStore.js'
 import {
   OVERLAY_PRIORITY,
   overlayActions,
   type DismissReason,
   type OverlayKind
 } from '../store/overlayStore.js'
+
+const FILE_EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'write_file'])
 
 // The server enforces its own timeout on reverse RPCs (default 120s in
 // reverse_rpc.py). The client-side timer here is a UX safety net: if a modal
@@ -79,13 +82,19 @@ export function handleReverseRpcEvent(
   }
 
   if (method === 'permission.request') {
+    const permissionParams = (params ?? {}) as PermissionRequestParams
+    const request = permissionParams.request
+    const previewSyncedToTranscript = maybeAttachFileEditPreview(request)
     pushReverseRpcOverlay({
       kind: 'permission',
       id,
       method,
-      payload: (params ?? {}) as PermissionRequestParams,
+      payload: permissionParams,
       deadlineMs: getDeadlineMs(params),
-      client
+      client,
+      ...(previewSyncedToTranscript && request?.tool_call_id
+        ? { onResolve: resolveFileEditPreview(request.tool_call_id) }
+        : {})
     })
     return
   }
@@ -102,6 +111,10 @@ interface PushOptions<TPayload> {
   payload: TPayload
   deadlineMs: number | null
   client: ReverseRpcResponder
+  // Optional side-effect run on every dismiss before respond() fires.
+  // Used by file_edit/write_file permission flows to update the
+  // pre-execution preview row in the transcript.
+  onResolve?: (reason: DismissReason, result?: unknown) => void
 }
 
 function pushReverseRpcOverlay<TPayload>(opts: PushOptions<TPayload>): void {
@@ -128,6 +141,13 @@ function pushReverseRpcOverlay<TPayload>(opts: PushOptions<TPayload>): void {
     createdAt: Date.now(),
     priority: OVERLAY_PRIORITY[opts.kind],
     onDismiss(reason: DismissReason, result?: unknown) {
+      if (opts.onResolve) {
+        try {
+          opts.onResolve(reason, result)
+        } catch {
+          // Preview update is best-effort; never block respond().
+        }
+      }
       const payload =
         reason === 'commit' && result !== undefined ? result : defaultDeny(opts.method)
       respond(payload)
@@ -166,6 +186,75 @@ export function defaultDeny(method: string): JsonObject {
     return { type: 'abort', feedback: 'overlay dismissed' }
   }
   return {}
+}
+
+/**
+ * For file_edit / write_file permission requests, mirror the engine's
+ * `preview.diff` into the transcript as a pending EditSummary row so the
+ * user sees the proposed change before approving. Returns `true` when a
+ * preview was pushed, so the caller can register a matching resolver on
+ * dismiss.
+ */
+function maybeAttachFileEditPreview(
+  request: PermissionRequestParams['request'] | undefined
+): boolean {
+  if (!request) {
+    return false
+  }
+  if (!FILE_EDIT_TOOLS.has(request.tool_name)) {
+    return false
+  }
+  const preview = request.preview ?? null
+  if (!preview) {
+    return false
+  }
+  const diff = typeof preview.diff === 'string' ? preview.diff : ''
+  if (!diff.trim()) {
+    return false
+  }
+  chatActions.attachPermissionPreview({
+    toolCallId: request.tool_call_id,
+    toolName: request.tool_name,
+    preview: {
+      diff,
+      path: typeof preview.path === 'string' ? preview.path : null,
+      body: typeof preview.body === 'string' ? preview.body : null
+    }
+  })
+  return true
+}
+
+function resolveFileEditPreview(
+  toolCallId: string
+): (reason: DismissReason, result?: unknown) => void {
+  return (reason, result) => {
+    if (reason === 'cancel' || reason === 'timeout') {
+      chatActions.resolvePermissionPreview(toolCallId, 'aborted')
+      return
+    }
+    if (reason !== 'commit') {
+      return
+    }
+    const decision = extractPermissionDecision(result)
+    if (decision === 'allow_once' || decision === 'allow_session') {
+      chatActions.resolvePermissionPreview(toolCallId, 'approved')
+      return
+    }
+    if (decision === 'deny') {
+      chatActions.resolvePermissionPreview(toolCallId, 'rejected')
+      return
+    }
+    // 'abort' or unknown: erase the preview to avoid a phantom row.
+    chatActions.resolvePermissionPreview(toolCallId, 'aborted')
+  }
+}
+
+function extractPermissionDecision(result: unknown): string | null {
+  if (!result || typeof result !== 'object') {
+    return null
+  }
+  const raw = (result as { type?: unknown }).type
+  return typeof raw === 'string' ? raw : null
 }
 
 function getDeadlineMs(params: unknown): number | null {

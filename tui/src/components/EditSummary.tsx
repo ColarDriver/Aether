@@ -12,6 +12,12 @@ export interface EditSummaryProps {
   toolName: string
   expanded: boolean
   focused: boolean
+  width?: number
+  // When set, the row is being shown alongside an open permission
+  // modal. 'pending' forces the diff visible (user can't accidentally
+  // collapse what they're about to approve) and tags the subline.
+  // 'rejected' keeps the diff visible but marks the row as declined.
+  previewStatus?: 'pending' | 'rejected'
 }
 
 /**
@@ -28,13 +34,37 @@ export interface EditSummaryProps {
  * identical content), the subline collapses to `(no-op)` and the diff is
  * omitted — there is nothing to render.
  */
-export function EditSummary({ summary, toolName, expanded }: EditSummaryProps): ReactElement {
+export function EditSummary({
+  summary,
+  toolName,
+  expanded,
+  previewStatus,
+  width
+}: EditSummaryProps): ReactElement {
   const brand = theme.colorProps('brand')
-  const verb = headerVerb(toolName, summary)
+  const verb = headerVerb(toolName, summary, previewStatus)
   const path = displayPath(summary.path)
-  const subline = summary.noOp ? '(no-op)' : buildCountsLine(summary)
+  // Force the diff open during the permission prompt — the user is about
+  // to approve this change and should always see the diff. After the
+  // user decides, `previewStatus` is cleared (approved) or flipped to
+  // `'rejected'` (still shown), so we keep showing the diff in both
+  // cases. Post-execution rows fall back to the user-controlled
+  // `expanded` toggle.
+  const showDiff =
+    summary.diff !== undefined &&
+    !summary.noOp &&
+    (previewStatus !== undefined || expanded)
+
+  const subline = buildSubline(summary, previewStatus)
+  const sublineProps =
+    previewStatus === 'pending'
+      ? theme.colorProps('accent')
+      : previewStatus === 'rejected'
+        ? { color: 'red' as const }
+        : { dimColor: true }
+
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} width="100%">
       <Box>
         <Text bold {...brand}>
           {theme.icon('assistant') || '●'}{' '}
@@ -45,38 +75,68 @@ export function EditSummary({ summary, toolName, expanded }: EditSummaryProps): 
         <Text>)</Text>
       </Box>
       <Box marginLeft={2}>
-        <Text dimColor>{subline}</Text>
+        <Text {...sublineProps}>{subline}</Text>
       </Box>
-      {expanded && summary.diff && !summary.noOp ? (
-        <Box marginLeft={2} marginTop={1}>
-          <CodeDiffView diff={summary.diff} expanded={true} />
+      {showDiff ? (
+        <Box marginTop={1} width={width}>
+          <CodeDiffView
+            diff={summary.diff ?? ''}
+            expanded={true}
+            {...(width !== undefined ? { width } : {})}
+          />
         </Box>
       ) : null}
     </Box>
   )
 }
 
+function buildSubline(
+  summary: ToolCallSummary,
+  previewStatus: 'pending' | 'rejected' | undefined
+): string {
+  if (summary.noOp) {
+    return '(no-op)'
+  }
+  const counts = buildCountsLine(summary, previewStatus === 'pending')
+  if (previewStatus === 'pending') {
+    return `${counts} (pending approval)`
+  }
+  if (previewStatus === 'rejected') {
+    return `${counts} (rejected)`
+  }
+  return counts
+}
+
 /**
  * Choose the action verb shown next to the path. write_file with a
  * non-zero `linesRemoved` count is treated as an overwrite (Update);
  * with zero removed lines it is a fresh create. file_edit is always
- * an Update.
+ * an Update. While the permission modal is open we switch to the
+ * future tense ("Create" → "Create" stays; copy reads naturally with
+ * the "(pending approval)" subline) but we leave the verb unchanged
+ * to keep the row stable across the pending → applied transition.
  */
-function headerVerb(toolName: string, summary: ToolCallSummary): string {
+function headerVerb(
+  toolName: string,
+  summary: ToolCallSummary,
+  _previewStatus: 'pending' | 'rejected' | undefined
+): string {
   if (toolName === 'write_file' && summary.linesRemoved === 0) {
     return 'Create'
   }
   return 'Update'
 }
 
-function buildCountsLine(summary: ToolCallSummary): string {
+function buildCountsLine(summary: ToolCallSummary, futureTense: boolean): string {
+  const addVerb = futureTense ? 'Will add' : 'Added'
+  const removeVerb = futureTense ? 'remove' : 'removed'
   const parts: string[] = []
   if (summary.linesAdded > 0) {
-    parts.push(`Added ${summary.linesAdded} line${summary.linesAdded === 1 ? '' : 's'}`)
+    parts.push(`${addVerb} ${summary.linesAdded} line${summary.linesAdded === 1 ? '' : 's'}`)
   }
   if (summary.linesRemoved > 0) {
     parts.push(
-      `removed ${summary.linesRemoved} line${summary.linesRemoved === 1 ? '' : 's'}`
+      `${removeVerb} ${summary.linesRemoved} line${summary.linesRemoved === 1 ? '' : 's'}`
     )
   }
   if (parts.length === 0) {

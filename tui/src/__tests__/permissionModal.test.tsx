@@ -270,10 +270,28 @@ describe('PermissionModal — file_edit question', () => {
   it('renders the tool-specific edit question with the basename', () => {
     const overlay = makeOverlay(DIFF_PARAMS)
     const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
-    expect(lastFrame()).toContain('Do you want to make this edit to bar.ts?')
-    expect(lastFrame()).toContain('-old')
-    expect(lastFrame()).toContain('+new')
-    expect(lastFrame()).toContain('2. Yes, allow edits in this path during this session')
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('Do you want to make this edit to bar.ts?')
+    // The diff for file_edit / write_file is mirrored into the transcript
+    // via chatActions.attachPermissionPreview (see useReverseRpc.ts) and
+    // rendered by EditSummary above the modal. The modal itself is
+    // intentionally diff-free so the user is not shown the same change
+    // twice. We assert the question + options remain.
+    expect(frame).toContain('2. Yes, allow edits in this path during this session')
+    expect(frame).toContain('3. No')
+    unmount()
+  })
+
+  it('does not embed the diff inside the file_edit modal', () => {
+    const overlay = makeOverlay(DIFF_PARAMS)
+    const { lastFrame, unmount } = render(<PermissionModal overlay={overlay} />)
+    const frame = lastFrame() ?? ''
+    // DIFF_PARAMS' preview.diff has the unique strings `old`/`new` inside
+    // a unified diff block. With the post-split rendering they live in
+    // the transcript EditSummary, never in the modal.
+    expect(frame).not.toContain('-old')
+    expect(frame).not.toContain('+new')
+    expect(frame).not.toContain('@@')
     unmount()
   })
 

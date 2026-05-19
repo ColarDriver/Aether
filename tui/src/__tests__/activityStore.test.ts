@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { activityActions, activityState } from '../store/activityStore.js'
+import {
+  activityActions,
+  activityInterruptPending,
+  activityState,
+  activityStatus,
+  activityTodoCount
+} from '../store/activityStore.js'
 
 describe('activityStore', () => {
   beforeEach(() => {
@@ -109,5 +115,29 @@ describe('activityStore', () => {
     activityActions.bumpAnimation()
     activityActions.bumpAnimation()
     expect(activityState.get().animationTick).toBe(start + 2)
+  })
+
+  it('does not notify narrow UI stores for animation-only ticks', () => {
+    const statusListener = vi.fn()
+    const interruptListener = vi.fn()
+    const todoCountListener = vi.fn()
+    const unlistenStatus = activityStatus.listen(statusListener)
+    const unlistenInterrupt = activityInterruptPending.listen(interruptListener)
+    const unlistenTodoCount = activityTodoCount.listen(todoCountListener)
+
+    statusListener.mockClear()
+    interruptListener.mockClear()
+    todoCountListener.mockClear()
+
+    activityActions.bumpAnimation()
+    activityActions.bumpAnimation()
+
+    expect(statusListener).not.toHaveBeenCalled()
+    expect(interruptListener).not.toHaveBeenCalled()
+    expect(todoCountListener).not.toHaveBeenCalled()
+
+    unlistenStatus()
+    unlistenInterrupt()
+    unlistenTodoCount()
   })
 })

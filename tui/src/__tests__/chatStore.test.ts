@@ -261,3 +261,180 @@ describe('chat store event mapping', () => {
     expect(sessionState.get().mode).toBe('agent')
   })
 })
+
+describe('chatActions.attachPermissionPreview', () => {
+  beforeEach(() => {
+    chatActions.resetForTests()
+    activityActions.resetForTests()
+    sessionActions.resetForTests()
+    resetGatewayEventDedupeForTests()
+  })
+
+  const SAMPLE_DIFF = [
+    '--- src/foo.ts',
+    '+++ src/foo.ts',
+    '@@ -1,2 +1,3 @@',
+    ' const a = 1',
+    '+const b = 2',
+    ' const c = 3'
+  ].join('\n')
+
+  it('hydrates an existing tool-call row with summary + pending status', () => {
+    chatActions.pushToolCall({
+      id: 'tc1',
+      toolName: 'file_edit',
+      args: { file_path: 'src/foo.ts' },
+      iteration: 1,
+      coalesce: true
+    })
+
+    chatActions.attachPermissionPreview({
+      toolCallId: 'tc1',
+      toolName: 'file_edit',
+      preview: { diff: SAMPLE_DIFF, path: 'src/foo.ts' }
+    })
+
+    const items = chatItems.get()
+    expect(items).toHaveLength(1)
+    const item = items[0]
+    expect(item?.kind).toBe('tool-call')
+    if (item?.kind === 'tool-call') {
+      expect(item.previewStatus).toBe('pending')
+      expect(item.diffOpen).toBe(true)
+      expect(item.summary?.path).toBe('src/foo.ts')
+      expect(item.summary?.linesAdded).toBe(1)
+      expect(item.summary?.linesRemoved).toBe(0)
+      expect(item.summary?.diff).toBe(SAMPLE_DIFF)
+    }
+  })
+
+  it('inserts a placeholder when the tool.call has not arrived yet, and pushToolCall is idempotent', () => {
+    chatActions.attachPermissionPreview({
+      toolCallId: 'tc2',
+      toolName: 'write_file',
+      preview: { diff: SAMPLE_DIFF, path: 'src/bar.ts' }
+    })
+    chatActions.pushToolCall({
+      id: 'tc2',
+      toolName: 'write_file',
+      args: { file_path: 'src/bar.ts', contents: 'x' },
+      iteration: 2,
+      coalesce: true
+    })
+
+    const items = chatItems.get()
+    expect(items).toHaveLength(1)
+    const item = items[0]
+    if (item?.kind === 'tool-call') {
+      // The summary survives the late tool.call event.
+      expect(item.previewStatus).toBe('pending')
+      expect(item.diffOpen).toBe(true)
+      expect(item.summary?.diff).toBe(SAMPLE_DIFF)
+      // The args from pushToolCall hydrated the placeholder.
+      expect(item.args).toMatchObject({ file_path: 'src/bar.ts', contents: 'x' })
+      expect(item.iteration).toBe(2)
+    }
+  })
+
+  it('skips preview synthesis when the preview lacks a path or diff', () => {
+    chatActions.pushToolCall({
+      id: 'tc3',
+      toolName: 'file_edit',
+      args: {},
+      iteration: 1,
+      coalesce: true
+    })
+
+    chatActions.attachPermissionPreview({
+      toolCallId: 'tc3',
+      toolName: 'file_edit',
+      preview: { diff: '', path: 'src/baz.ts' }
+    })
+    chatActions.attachPermissionPreview({
+      toolCallId: 'tc3',
+      toolName: 'file_edit',
+      preview: { diff: SAMPLE_DIFF, path: null }
+    })
+
+    const item = chatItems.get()[0]
+    if (item?.kind === 'tool-call') {
+      expect(item.summary).toBeUndefined()
+      expect(item.previewStatus).toBeUndefined()
+      expect(item.diffOpen).toBeUndefined()
+    }
+  })
+})
+
+describe('chatActions.resolvePermissionPreview', () => {
+  beforeEach(() => {
+    chatActions.resetForTests()
+  })
+
+  function seedPending(toolCallId: string): void {
+    chatActions.pushToolCall({
+      id: toolCallId,
+      toolName: 'file_edit',
+      args: {},
+      iteration: 1,
+      coalesce: true
+    })
+    chatActions.attachPermissionPreview({
+      toolCallId,
+      toolName: 'file_edit',
+      preview: {
+        diff: '--- a\n+++ a\n@@ -1 +1 @@\n-old\n+new\n',
+        path: 'src/q.ts'
+      }
+    })
+  }
+
+  it("'approved' clears the pending label but keeps the diff open", () => {
+    seedPending('tcA')
+    chatActions.resolvePermissionPreview('tcA', 'approved')
+    const item = chatItems.get()[0]
+    if (item?.kind === 'tool-call') {
+      expect(item.previewStatus).toBeUndefined()
+      expect(item.diffOpen).toBe(true)
+      expect(item.summary?.path).toBe('src/q.ts')
+    }
+  })
+
+  it("'rejected' flips the previewStatus", () => {
+    seedPending('tcB')
+    chatActions.resolvePermissionPreview('tcB', 'rejected')
+    const item = chatItems.get()[0]
+    if (item?.kind === 'tool-call') {
+      expect(item.previewStatus).toBe('rejected')
+      expect(item.diffOpen).toBe(true)
+    }
+  })
+
+  it('preserves the preview diff when the approved tool result has summary metadata without a diff', () => {
+    seedPending('tcD')
+    chatActions.resolvePermissionPreview('tcD', 'approved')
+    chatActions.pushToolResult({
+      toolCallId: 'tcD',
+      toolName: 'file_edit',
+      text: 'ok',
+      isError: false,
+      metadata: {
+        path: 'src/q.ts',
+        lines_added: 1,
+        lines_removed: 1
+      }
+    })
+    const item = chatItems.get()[0]
+    if (item?.kind === 'tool-call') {
+      expect(item.previewStatus).toBeUndefined()
+      expect(item.diffOpen).toBe(true)
+      expect(item.summary?.diff).toContain('-old')
+      expect(item.summary?.diff).toContain('+new')
+    }
+  })
+
+  it("'aborted' removes the preview row entirely", () => {
+    seedPending('tcC')
+    chatActions.resolvePermissionPreview('tcC', 'aborted')
+    expect(chatItems.get()).toHaveLength(0)
+  })
+})

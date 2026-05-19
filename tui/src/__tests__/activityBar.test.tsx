@@ -94,6 +94,29 @@ describe('ActivityBar', () => {
     unmount()
   })
 
+  it('keeps animation ticks local instead of mutating the activity store', () => {
+    activityActions.beginTurn()
+    const before = activityState.get().animationTick
+    const { lastFrame, unmount } = render(<ActivityBar />)
+
+    vi.advanceTimersByTime(500)
+
+    expect(activityState.get().animationTick).toBe(before)
+    expect(lastFrame() ?? '').toContain('Thinking')
+    unmount()
+  })
+
+  it('can disable animation rendering explicitly', () => {
+    activityActions.beginTurn()
+    const { lastFrame, unmount } = render(<ActivityBar animate={false} />)
+
+    vi.advanceTimersByTime(500)
+
+    expect(lastFrame() ?? '').toContain('Thinking')
+    expect(activityState.get().animationTick).toBe(0)
+    unmount()
+  })
+
   it('renders todo_write items as an activity checklist', () => {
     activityActions.beginTurn()
     activityActions.setTodos([

@@ -6,7 +6,7 @@ import { useMemo, useRef, useState, type ReactElement, type ReactNode } from 're
 import { applyCompletion, buildCompleterState } from '../lib/slashCompleter.js'
 import { isOnlyMouseTrackingInput, stripMouseTrackingSequences } from '../lib/terminalMouse.js'
 import { theme } from '../lib/theme.js'
-import { activityState } from '../store/activityStore.js'
+import { activityInterruptPending } from '../store/activityStore.js'
 import { chatActions } from '../store/chatStore.js'
 import { composerActions, composerState } from '../store/composerStore.js'
 import { focusActions, focusOwner } from '../store/focusStore.js'
@@ -489,10 +489,10 @@ function ComposerFooter({
   queued: number
   busy: boolean
 }): ReactElement {
-  const activity = useStore(activityState)
+  const interruptPending = useStore(activityInterruptPending)
   const dim = theme.colorProps('dim')
   const accent = theme.colorProps('accent')
-  const escLabel = activity.interruptPending
+  const escLabel = interruptPending
     ? ' interrupted'
     : busy
       ? ' interrupt'
@@ -518,7 +518,7 @@ function ComposerFooter({
           <Text {...accent}>Ctrl-D</Text> exit
         </Text>
       </Box>
-      {queued > 0 || busy || hint || activity.interruptPending ? (
+      {queued > 0 || busy || hint || interruptPending ? (
         <Box>
           {queued > 0 ? (
             <Text bold color="magenta">
@@ -527,7 +527,7 @@ function ComposerFooter({
           ) : null}
           {/* Interrupt-pending takes precedence over the plain busy hint — */}
           {/* mirrors Python `app.py:1222` priority order. */}
-          {activity.interruptPending ? (
+          {interruptPending ? (
             <Text {...dim} italic>interrupting… </Text>
           ) : busy ? (
             <Text {...dim} italic>running… </Text>

@@ -21,7 +21,11 @@ import { stripToolBlocks } from './lib/phantomTool.js'
 import { envBaseUrl, resolveDiscoveredBaseUrl } from './lib/sessionBaseUrl.js'
 import { buildCompleterState } from './lib/slashCompleter.js'
 import { OverlayFrame } from './overlays/OverlayFrame.js'
-import { activityActions, activityState } from './store/activityStore.js'
+import {
+  activityActions,
+  activityInterruptPending,
+  activityTodoCount
+} from './store/activityStore.js'
 import { chatActions, chatItems } from './store/chatStore.js'
 import { composerActions, composerState } from './store/composerStore.js'
 import {
@@ -63,7 +67,8 @@ export function App({
   const transcript = useStore(chatItems)
   const overlays = useStore(overlayStack)
   const composer = useStore(composerState)
-  const activity = useStore(activityState)
+  const interruptPending = useStore(activityInterruptPending)
+  const todoCount = useStore(activityTodoCount)
   const reasoning = useStore(reasoningState)
   const [bootError, setBootError] = useState<string | null>(null)
   const [bannerReady, setBannerReady] = useState(false)
@@ -102,12 +107,12 @@ export function App({
       catalog: session.catalog,
       queuedCount: composer.queued.length,
       running,
-      interruptPending: activity.interruptPending
+      interruptPending
     }),
     activityRows: estimateActivityRows({
       show: showBottomActivity,
       hasReasoning: Boolean(reasoning.text && reasoning.updatedAt),
-      todoCount: activity.todos.length
+      todoCount
     })
   })
 
@@ -437,7 +442,7 @@ export function App({
       <Box flexDirection="column" paddingX={1} width={terminalWidth}>
         <Banner />
         {bootError ? <Text color="red">{bootError}</Text> : null}
-        <ChatTranscript staticScrollback={bannerReady} />
+        <ChatTranscript staticScrollback={bannerReady} width={terminalWidth} />
         <OverlayFrame />
         {showBottomActivity ? (
           <Box flexDirection="column" marginTop={1} width="100%">

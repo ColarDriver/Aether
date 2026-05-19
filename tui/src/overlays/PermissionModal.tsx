@@ -2,7 +2,6 @@ import { Box, Text, useInput } from 'ink'
 import { useMemo, useState, type ReactElement } from 'react'
 
 import { ShellCommandPreview } from '../components/ShellCommandPreview.js'
-import { DiffView } from '../lib/diffView.js'
 import { reportPermissionPreviewFallback } from '../lib/permissionTelemetry.js'
 import type {
   JsonObject,
@@ -145,15 +144,13 @@ export function PermissionModal({
   const accentTextProps = theme.colorProps('accent')
   const dimTextProps = theme.colorProps('dim')
   const textTextProps = theme.colorProps('text')
-  const backgroundColor = theme.color('popup_bg')
-  const backgroundProps = backgroundColor ? { backgroundColor } : {}
   const hasLeadIn = Boolean(request.reason || cachedRule)
   const previewRows = maxRows ? Math.max(1, maxRows - 12 - options.length) : undefined
 
   return (
     <Box flexDirection="column" width="100%">
-      <Text {...backgroundProps} {...dividerProps}>{permissionDivider()}</Text>
-      <Box flexDirection="column" paddingX={1} paddingBottom={1} {...backgroundProps}>
+      <Text {...dividerProps}>{permissionDivider()}</Text>
+      <Box flexDirection="column" paddingX={1} paddingBottom={1}>
         {request.reason ? (
           <Box>
             <Text {...accentTextProps}>reason: </Text>
@@ -213,7 +210,7 @@ export function PermissionModal({
           </Box>
         </Box>
       </Box>
-      <Text {...backgroundProps} {...dividerProps}>{permissionDivider()}</Text>
+      <Text {...dividerProps}>{permissionDivider()}</Text>
     </Box>
   )
 }
@@ -251,17 +248,16 @@ function PreviewBody({
   // as null so we do not render an empty Diff/Shell block AND we do not
   // fall through to the raw-JSON escape hatch when the tool actually had
   // something to say via a sibling field.
-  if (preview?.diff && preview.diff.trim().length > 0) {
-    const foldThreshold = maxRows ? Math.max(3, maxRows) : undefined
-    return (
-      <Box marginTop={1} flexDirection="column">
-        <DiffView
-          diff={preview.diff}
-          expanded={false}
-          {...(foldThreshold !== undefined ? { foldThreshold } : {})}
-        />
-      </Box>
-    )
+  // For file_edit / write_file the diff is mirrored into the transcript
+  // via `chatActions.attachPermissionPreview` (see useReverseRpc.ts) and
+  // shown above the modal by `EditSummary`. Skip the in-modal preview so
+  // the user is not asked to read the same diff twice.
+  if (
+    (request.tool_name === 'file_edit' || request.tool_name === 'write_file') &&
+    preview?.diff &&
+    preview.diff.trim().length > 0
+  ) {
+    return null
   }
   if (preview?.command && preview.command.trim().length > 0) {
     return <ShellCommandPreview command={preview.command} />
@@ -396,8 +392,9 @@ function truncate(value: string, max: number): string {
 
 function permissionDivider(): string {
   const cols = process.stdout?.columns
-  // Keep one spare column so terminals do not auto-wrap a full-width rule
-  // onto the next row, which visually creates a fake blank gap below it.
-  const width = Number.isFinite(cols) && cols ? Math.max(20, cols - 3) : 79
+  // Match App's content width: the root TUI owns one column of horizontal
+  // padding on each side. This keeps the permission rule aligned with
+  // transcript CodeDiff rows without spilling into the terminal edge.
+  const width = Number.isFinite(cols) && cols ? Math.max(20, cols - 2) : 80
   return '─'.repeat(width)
 }

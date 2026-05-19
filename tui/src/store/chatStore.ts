@@ -6,6 +6,7 @@ import type {
   TranscriptMessage,
   TranscriptToolCall
 } from '../gatewayTypes.js'
+import { parseUnifiedDiff } from '../lib/diffRender.js'
 import {
   EXPLORE_CATEGORIES,
   categoryFor,
@@ -14,6 +15,12 @@ import {
   type ToolCategory
 } from '../lib/toolCategory.js'
 import type { ToolGroupEntry, ToolGroupRecord } from './toolGroupStore.js'
+
+export type PermissionPreviewSnapshot = {
+  diff?: string | null
+  path?: string | null
+  body?: string | null
+}
 
 export interface ToolCallSummary {
   path: string
@@ -45,6 +52,15 @@ export type ChatItem =
       // Set when the matching tool.result arrives with edit/write
       // metadata. Drives the EditSummary chat row ("● Edited X (+N −M)").
       summary?: ToolCallSummary
+      // Set when a permission.request preview surfaces a diff before the
+      // tool actually executes. `'pending'` while the modal is open;
+      // `'rejected'` if the user declined. Cleared on approval so the
+      // transcript no longer reads as blocked by a modal.
+      previewStatus?: 'pending' | 'rejected'
+      // Keeps a permission-preview diff visible in the transcript after the
+      // modal closes. This is separate from `previewStatus`: approving a
+      // permission should remove the pending label, not fold the diff away.
+      diffOpen?: boolean
     }
   | {
       kind: 'tool-result'
@@ -216,8 +232,34 @@ export const chatActions = {
     iteration: number
     coalesce: boolean
   }): void {
+    const items = chatItems.get()
+    // Idempotency guard: a permission.request can arrive before the
+    // matching tool.call event in pathological reorderings (and the
+    // `attachPermissionPreview` action below already synthesises a
+    // placeholder row in that case). When the real tool.call shows up
+    // afterwards, hydrate the existing row in place instead of
+    // duplicating it.
+    const existingIdx = lastIndex(items, (item) =>
+      item.kind === 'tool-call' && item.toolCallId === input.id
+    )
+    if (existingIdx !== -1) {
+      const next = [...items]
+      const existing = next[existingIdx]
+      if (existing?.kind === 'tool-call') {
+        next[existingIdx] = {
+          ...existing,
+          toolName: input.toolName,
+          args: input.args,
+          argsPreview: previewArgs(input.args),
+          iteration: input.iteration,
+          coalesce: input.coalesce
+        }
+        chatItems.set(next)
+      }
+      return
+    }
     chatItems.set([
-      ...chatItems.get(),
+      ...items,
       {
         kind: 'tool-call',
         id: makeId('tool-call'),
@@ -231,6 +273,101 @@ export const chatActions = {
         ts: Date.now()
       }
     ])
+  },
+
+  /**
+   * Mirror a `permission.request` preview into the transcript so the
+   * model's proposed diff is visible *before* the user approves. Sets
+   * the matching tool-call's `summary` from the preview (using the
+   * same shape `buildEditSummary` later overrides on tool.result) and
+   * marks `previewStatus: 'pending'`. If no matching tool-call exists
+   * yet, inserts a placeholder row that `pushToolCall` will hydrate.
+   */
+  attachPermissionPreview(input: {
+    toolCallId: string
+    toolName: string
+    preview: PermissionPreviewSnapshot
+  }): void {
+    const summary = summaryFromPermissionPreview(input.preview)
+    if (!summary) {
+      return
+    }
+    const items = chatItems.get()
+    const existingIdx = lastIndex(items, (item) =>
+      item.kind === 'tool-call' && item.toolCallId === input.toolCallId
+    )
+    if (existingIdx !== -1) {
+      const next = [...items]
+      const existing = next[existingIdx]
+      if (existing?.kind === 'tool-call') {
+        next[existingIdx] = {
+          ...existing,
+          summary,
+          previewStatus: 'pending',
+          diffOpen: true
+        }
+        chatItems.set(next)
+      }
+      return
+    }
+    chatItems.set([
+      ...items,
+      {
+        kind: 'tool-call',
+        id: makeId('tool-call'),
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        args: {},
+        argsPreview: previewArgs({}),
+        iteration: 0,
+        coalesce: true,
+        durationMs: null,
+        ts: Date.now(),
+        summary,
+        previewStatus: 'pending',
+        diffOpen: true
+      }
+    ])
+  },
+
+  /**
+   * Update the preview status after the user closes the permission
+   * modal. `'approved'` clears the pending label while leaving the diff
+   * open in transcript. `'rejected'` flips the row to a "(rejected)"
+   * visual. `'aborted'` removes the row.
+   */
+  resolvePermissionPreview(
+    toolCallId: string,
+    outcome: 'approved' | 'rejected' | 'aborted'
+  ): void {
+    const items = chatItems.get()
+    const matchIdx = lastIndex(items, (item) =>
+      item.kind === 'tool-call' && item.toolCallId === toolCallId
+    )
+    if (matchIdx === -1) {
+      return
+    }
+    if (outcome === 'aborted') {
+      const next = items.slice(0, matchIdx).concat(items.slice(matchIdx + 1))
+      chatItems.set(next)
+      return
+    }
+    const next = [...items]
+    const existing = next[matchIdx]
+    if (existing?.kind !== 'tool-call') {
+      return
+    }
+    if (outcome === 'approved') {
+      const { previewStatus: _removed, ...rest } = existing
+      next[matchIdx] = { ...rest, diffOpen: Boolean(existing.summary?.diff) }
+    } else {
+      next[matchIdx] = {
+        ...existing,
+        previewStatus: 'rejected',
+        diffOpen: Boolean(existing.summary?.diff)
+      }
+    }
+    chatItems.set(next)
   },
 
   pushToolResult(input: {
@@ -264,9 +401,13 @@ export const chatActions = {
     const existing = next[matchIdx]
     if (existing?.kind === 'tool-call') {
       const durationMs = Date.now() - existing.ts
-      const summary = input.isError
+      const resultSummary = input.isError
         ? undefined
         : buildEditSummary(existing.toolName, input.metadata)
+      const summary =
+        resultSummary && existing.summary?.diff && !resultSummary.diff
+          ? { ...resultSummary, diff: existing.summary.diff }
+          : resultSummary
       next[matchIdx] = {
         ...existing,
         durationMs,
@@ -363,6 +504,37 @@ export function buildEditSummary(
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/**
+ * Synthesise the same `ToolCallSummary` shape that `buildEditSummary`
+ * produces post-execution, but from the `preview.diff` / `preview.path`
+ * fields the engine sends on a `permission.request`. Returns `undefined`
+ * when the preview lacks a path or a non-empty diff — the EditSummary
+ * row only renders when there is something concrete to display.
+ */
+export function summaryFromPermissionPreview(
+  preview: PermissionPreviewSnapshot
+): ToolCallSummary | undefined {
+  const path = typeof preview.path === 'string' ? preview.path : undefined
+  if (!path) {
+    return undefined
+  }
+  const diff = typeof preview.diff === 'string' ? preview.diff : ''
+  if (!diff.trim()) {
+    return undefined
+  }
+  const parsed = parseUnifiedDiff(diff)
+  const summary: ToolCallSummary = {
+    path,
+    linesAdded: parsed.stats.additions,
+    linesRemoved: parsed.stats.deletions,
+    diff
+  }
+  if (parsed.stats.hunks > 0) {
+    summary.hunks = parsed.stats.hunks
+  }
+  return summary
 }
 
 /**

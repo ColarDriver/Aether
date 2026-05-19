@@ -1,12 +1,12 @@
 import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type ReactElement } from 'react'
 
 import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
 import { theme } from '../lib/theme.js'
 import { categoryFor, verbForCategory } from '../lib/toolCategory.js'
 import { activeTodoTitle, formatTodoPreviewLines } from '../lib/todos.js'
-import { activityActions, activityState, type ActivityStatus } from '../store/activityStore.js'
+import { activityState, type ActivityStatus } from '../store/activityStore.js'
 import { sessionState } from '../store/sessionStore.js'
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -85,24 +85,28 @@ function loopStateLabel(state: string | null): string | null {
   return state
 }
 
-export function ActivityBar(): ReactElement {
+export function ActivityBar({ animate = true }: { animate?: boolean } = {}): ReactElement {
   const activity = useStore(activityState)
   const session = useStore(sessionState)
   const ascii = !theme.isUnicodeAllowed()
   const tokenTurnStartedAtRef = useRef<number | null | undefined>(undefined)
   const displayedResponseLengthRef = useRef(0)
+  const [animationTick, setAnimationTick] = useState(0)
 
   useEffect(() => {
+    if (!animate) {
+      return
+    }
     if (!ACTIVE_STATES.has(activity.status)) {
       return
     }
     const handle = setInterval(() => {
-      activityActions.bumpAnimation()
+      setAnimationTick((tick) => tick + 1)
     }, SPINNER_INTERVAL_MS)
     return () => {
       clearInterval(handle)
     }
-  }, [activity.status])
+  }, [animate, activity.status])
 
   const isError = activity.status === 'error' || activity.status === 'cancelled'
   const colorName = isError ? 'error' : activity.status === 'idle' ? 'dim' : 'status'
@@ -124,8 +128,8 @@ export function ActivityBar(): ReactElement {
   }
   const isActive = ACTIVE_STATES.has(activity.status)
   const frames = ascii ? SPINNER_FRAMES_ASCII : SPINNER_FRAMES
-  const icon = isActive
-    ? frames[activity.animationTick % frames.length]
+  const icon = isActive && animate
+    ? frames[animationTick % frames.length]
     : (ascii ? STATIC_ICON_ASCII : STATIC_ICON)[activity.status]
 
   const todoTitle = activeTodoTitle(activity.todos)
@@ -229,7 +233,7 @@ export function ActivityBar(): ReactElement {
     runningWidth += addition
   }
 
-  const shimmerSlices = isActive ? shimmer(verb, activity.animationTick) : null
+  const shimmerSlices = isActive && animate ? shimmer(verb, animationTick) : null
   const shimmerColor = theme.color('text') ?? 'white'
 
   const todoLines = formatTodoPreviewLines(activity.todos, {

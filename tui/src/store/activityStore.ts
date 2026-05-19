@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import type { TodoItem } from '../lib/todos.js'
 
@@ -95,6 +95,12 @@ export interface TurnSummary {
 }
 
 export const activityState = atom<ActivityState>(initialState)
+export const activityStatus = computed(activityState, (state) => state.status)
+export const activityInterruptPending = computed(
+  activityState,
+  (state) => state.interruptPending
+)
+export const activityTodoCount = computed(activityState, (state) => state.todos.length)
 
 // ──────────────────────────────────────────────────────────────────────────
 // Token throttle

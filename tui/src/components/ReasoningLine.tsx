@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState, type ReactElement } from 'react'
 
 import { theme } from '../lib/theme.js'
-import { activityState } from '../store/activityStore.js'
+import { activityStatus } from '../store/activityStore.js'
 import { reasoningState } from '../store/reasoningStore.js'
 
 const FADE_AFTER_MS = 8000
@@ -18,7 +18,7 @@ const TICK_MS = 1000
  */
 export function ReasoningLine(): ReactElement | null {
   const reasoning = useStore(reasoningState)
-  const activity = useStore(activityState)
+  const status = useStore(activityStatus)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export function ReasoningLine(): ReactElement | null {
     return null
   }
   const stale = now - reasoning.updatedAt > FADE_AFTER_MS
-  if (stale && activity.status === 'idle') {
+  if (stale && status === 'idle') {
     return null
   }
   const flat = reasoning.text.replace(/[\r\n]+/g, ' ').trim()

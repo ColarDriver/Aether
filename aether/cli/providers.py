@@ -86,7 +86,7 @@ def build_provider(
         return CodexChatModel(
             model=model or d["model"],
             reasoning_effort=str(kwargs.pop("reasoning_effort", d["reasoning_effort"])),
-            access_token=api_key or os.getenv("CODEX_ACCESS_TOKEN"),
+            access_token=api_key or os.getenv("CODEX_ACCESS_TOKEN") or os.getenv("CODEX_API_KEY"),
             **kwargs,
         )
 

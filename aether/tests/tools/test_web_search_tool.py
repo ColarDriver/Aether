@@ -59,6 +59,12 @@ class _StubClient:
             raise self.response
         return self.response
 
+    def post(self, url: str, json: dict[str, Any] | None = None) -> Any:
+        self.calls.append((url, json or {}))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
 
 def _brave_payload(*, count: int) -> dict[str, Any]:
     return {
@@ -71,6 +77,36 @@ def _brave_payload(*, count: int) -> dict[str, Any]:
                 }
                 for i in range(count)
             ]
+        }
+    }
+
+
+def _tavily_payload(*, count: int) -> dict[str, Any]:
+    return {
+        "results": [
+            {
+                "title": f"Tavily {i}",
+                "url": f"https://tavily.example/{i}",
+                "content": f"Tavily content {i}.",
+            }
+            for i in range(count)
+        ]
+    }
+
+
+def _bocha_payload(*, count: int) -> dict[str, Any]:
+    return {
+        "data": {
+            "webPages": {
+                "value": [
+                    {
+                        "name": f"Bocha {i}",
+                        "url": f"https://bocha.example/{i}",
+                        "summary": f"Bocha summary {i}.",
+                    }
+                    for i in range(count)
+                ]
+            }
         }
     }
 
@@ -123,12 +159,46 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(result.metadata["max_results"], 20)
         self.assertEqual(client.calls[0][1]["count"], 20)
 
+    def test_c6b_env_provider_routes_to_tavily_with_generic_key(self) -> None:
+        cfg = EngineConfig(web_search_api_key=None)
+        client = _StubClient(_StubResponse(json_payload=_tavily_payload(count=2)))
+        with patch.dict(
+            os.environ,
+            {"WEB_SEARCH_PROVIDER": "tavily", "WEB_SEARCH_API_KEY": "from-env"},
+        ):
+            tool = WebSearchTool(client_factory=lambda: client)
+            result = tool.execute(
+                ToolCall(id="c1", name="web_search", arguments={"query": "x"}),
+                _ctx(config=cfg),
+            )
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(result.metadata["provider"], "tavily")
+        self.assertEqual(result.metadata["result_count"], 2)
+        self.assertTrue(client.calls[0][0].endswith("/search"))
+        self.assertEqual(client.calls[0][1]["api_key"], "from-env")
+        self.assertEqual(client.calls[0][1]["query"], "x")
+
+    def test_c6c_config_provider_routes_to_bocha_with_generic_key(self) -> None:
+        cfg = EngineConfig(web_search_provider="bocha", web_search_api_key=None)
+        client = _StubClient(_StubResponse(json_payload=_bocha_payload(count=1)))
+        with patch.dict(os.environ, {"WEB_SEARCH_API_KEY": "from-env"}):
+            tool = WebSearchTool(client_factory=lambda: client)
+            result = tool.execute(
+                ToolCall(id="c1", name="web_search", arguments={"query": "x"}),
+                _ctx(config=cfg),
+            )
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(result.metadata["provider"], "bocha")
+        self.assertIn("https://bocha.example/0", result.content)
+        self.assertEqual(client.calls[0][1]["query"], "x")
+        self.assertEqual(client.calls[0][1]["count"], 10)
+
 
 class FailureTests(unittest.TestCase):
     def test_c1_no_api_key_returns_error(self) -> None:
         cfg = EngineConfig(web_search_api_key=None)
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("BRAVE_API_KEY", None)
+            os.environ.pop("WEB_SEARCH_API_KEY", None)
             tool = WebSearchTool(client_factory=lambda: _StubClient(_StubResponse()))
             result = tool.execute(
                 ToolCall(id="c1", name="web_search", arguments={"query": "x"}),
@@ -140,7 +210,7 @@ class FailureTests(unittest.TestCase):
     def test_c1b_env_var_satisfies_key(self) -> None:
         cfg = EngineConfig(web_search_api_key=None)
         client = _StubClient(_StubResponse(json_payload=_brave_payload(count=1)))
-        with patch.dict(os.environ, {"BRAVE_API_KEY": "from-env"}):
+        with patch.dict(os.environ, {"WEB_SEARCH_API_KEY": "from-env"}):
             tool = WebSearchTool(client_factory=lambda: client)
             result = tool.execute(
                 ToolCall(id="c1", name="web_search", arguments={"query": "x"}),
@@ -184,7 +254,7 @@ class FailureTests(unittest.TestCase):
             _ctx(config=cfg),
         )
         self.assertTrue(result.is_error)
-        self.assertIn("not implemented", result.content)
+        self.assertIn("not supported", result.content)
 
     def test_c10_empty_query_rejected(self) -> None:
         tool = WebSearchTool(client_factory=lambda: _StubClient(_StubResponse()))

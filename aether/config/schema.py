@@ -383,13 +383,12 @@ class EngineConfig:
     # storage, or to a tmpfs path on ephemeral CI workers.
     tool_result_spill_dir: Path | None = None
     # web tool master switches and limits.
-    # ``web_search_provider`` selects the search backend; only ``brave``
-    # is implemented today, but having an explicit knob keeps the door
-    # open for ddgs / tavily / serpapi without touching tool code.
+    # ``web_search_provider`` selects the search backend.  ``None`` means
+    # "use WEB_SEARCH_PROVIDER, else brave".
     web_fetch_enabled: bool = True
     web_search_enabled: bool = True
     web_search_api_key: str | None = None
-    web_search_provider: str = "brave"
+    web_search_provider: str | None = None
     web_fetch_max_download_bytes: int = 5 * 1024 * 1024
     web_fetch_timeout_seconds: int = 30
     # subagent dispatch master switch.  When

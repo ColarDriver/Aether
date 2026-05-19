@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SUBAGENT_MODEL_ENV = "AETHER_SUBAGENT_MODEL"
-_SUBAGENT_MODEL_CHOICES = {"sonnet", "sonnect", "gpt"}
+_AETHER_PROVIDER_ENV = "AETHER_PROVIDER"
+_AETHER_PROVIDER_CHOICES = {"codex", "claude", "anthropic", "openai", "openai-compatible"}
 
 
 class AgentTool(ToolExecutor):
@@ -132,10 +132,10 @@ class AgentTool(ToolExecutor):
                             "`sonnet` uses Claude Sonnet, `gpt` uses the "
                             "OpenAI-compatible GPT subagent model. Takes "
                             "precedence over the agent type definition's "
-                            f"model and `{_SUBAGENT_MODEL_ENV}`. If omitted, "
-                            f"`{_SUBAGENT_MODEL_ENV}` may choose `sonnet` "
-                            "or `gpt`; otherwise the type definition or "
-                            "parent model is inherited."
+                            f"model and `{_AETHER_PROVIDER_ENV}`. If omitted, "
+                            f"`{_AETHER_PROVIDER_ENV}` may choose `codex`, "
+                            "`claude`, or `openai-compatible`; otherwise "
+                            "the type definition or parent model is inherited."
                         ),
                     },
                     "run_in_background": {
@@ -173,15 +173,18 @@ class AgentTool(ToolExecutor):
         if model_arg is not None and not isinstance(model_arg, str):
             return _error(call, "'model' must be a string when provided")
         model_override: str | None = None
+        provider_override: str | None = None
         if isinstance(model_arg, str):
             normalized_model = model_arg.strip()
             if normalized_model and normalized_model.lower() != "inherit":
                 model_override = normalized_model
         elif model_arg is None:
             try:
-                model_override = _default_subagent_model()
+                default_profile = _default_subagent_profile()
             except ValueError as exc:
                 return _error(call, str(exc))
+            if default_profile is not None:
+                provider_override, model_override = default_profile
 
         run_in_background_arg = args.get("run_in_background", False)
         if run_in_background_arg is not None and not isinstance(run_in_background_arg, bool):
@@ -259,6 +262,8 @@ class AgentTool(ToolExecutor):
         }
         if model_override is not None:
             task_metadata["model_override"] = model_override
+        if provider_override is not None:
+            task_metadata["provider_override"] = provider_override
         task = SubagentTask(
             task_id=task_id,
             goal=goal,
@@ -425,16 +430,21 @@ def _error(
     )
 
 
-def _default_subagent_model() -> str | None:
-    raw = os.getenv(_SUBAGENT_MODEL_ENV)
+def _default_subagent_profile() -> tuple[str, str] | None:
+    raw = os.getenv(_AETHER_PROVIDER_ENV)
     if raw is None or not raw.strip():
         return None
     value = raw.strip().lower()
-    if value not in _SUBAGENT_MODEL_CHOICES:
+    if value not in _AETHER_PROVIDER_CHOICES:
         raise ValueError(
-            f"{_SUBAGENT_MODEL_ENV} must be sonnet or gpt; got {raw!r}"
+            f"{_AETHER_PROVIDER_ENV} must be codex, claude, or "
+            f"openai-compatible; got {raw!r}"
         )
-    return "sonnet" if value == "sonnect" else value
+    if value == "codex":
+        return ("codex", "gpt")
+    if value in {"claude", "anthropic"}:
+        return ("claude", "sonnet")
+    return ("openai", "gpt")
 
 
 __all__ = ["AgentTool"]

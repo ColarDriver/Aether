@@ -34,6 +34,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.claude import ClaudeChatModel
 from aether.runtime.core.contracts import TurnContext
+from aether.tools.base import ToolDescriptor
 
 
 def _make_context() -> TurnContext:
@@ -327,6 +328,75 @@ class ClaudeStreamingFallbackTests(unittest.TestCase):
         # content" fallback after streaming — preventing the bar from
         # double-counting the visible portion.
         self.assertEqual(received, ["Let me check that file."])
+
+
+class ClaudeHostedWebSearchTests(unittest.TestCase):
+    def test_web_search_descriptor_converts_to_anthropic_hosted_tool(self) -> None:
+        model, _, _ = _build_model_with_fakes(chunks=[], final={})
+
+        payload = model._build_request_payload(
+            messages=[{"role": "user", "content": "latest docs"}],
+            tools=[ToolDescriptor(name="web_search")],
+            config=_make_call_config(),
+            context=_make_context(),
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
+        )
+
+    def test_hosted_web_search_response_is_metadata_not_tool_call(self) -> None:
+        model, _, _ = _build_model_with_fakes(chunks=[], final={})
+        response = {
+            "model": "claude-sonnet-4-6",
+            "content": [
+                {
+                    "type": "server_tool_use",
+                    "id": "srvu_1",
+                    "name": "web_search",
+                    "input": {"query": "Aether docs"},
+                },
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvu_1",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "title": "Aether Docs",
+                            "url": "https://docs.example/aether",
+                            "encrypted_content": "...",
+                        }
+                    ],
+                },
+                {
+                    "type": "text",
+                    "text": "Aether has docs.",
+                    "citations": [
+                        {
+                            "type": "web_search_result_location",
+                            "title": "Aether Docs",
+                            "url": "https://docs.example/aether",
+                            "cited_text": "Aether has docs",
+                            "encrypted_index": "...",
+                        }
+                    ],
+                },
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }
+
+        result = model._parse_response(response)
+
+        self.assertEqual(result.tool_calls, [])
+        self.assertIn("Sources:", result.content or "")
+        self.assertIn("[Aether Docs](https://docs.example/aether)", result.content or "")
+        hosted = result.metadata.get("hosted_web_search")
+        self.assertIsInstance(hosted, dict)
+        self.assertEqual(hosted["provider"], "anthropic")
+        self.assertEqual(hosted["source_count"], 1)
+        self.assertEqual(hosted["calls"][0]["input"], {"query": "Aether docs"})
 
 
 if __name__ == "__main__":

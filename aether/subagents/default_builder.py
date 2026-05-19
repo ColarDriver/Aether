@@ -55,13 +55,33 @@ _MODEL_PROVIDER_MAP: dict[str, str] = {
     "haiku": "claude",
 }
 
+_PROVIDER_ALIAS_MAP: dict[str, str] = {
+    "anthropic": "claude",
+    "claude": "claude",
+    "codex": "codex",
+    "openai": "openai",
+    "openai-compatible": "openai",
+}
+
 
 def _resolve_model_alias(name: str) -> str:
     return _MODEL_ALIAS_MAP.get(name.strip().lower(), name.strip())
 
 
-def _provider_for_model_alias(name: str) -> ModelProvider | None:
-    provider_name = _MODEL_PROVIDER_MAP.get(name.strip().lower())
+def _resolve_provider_alias(name: str) -> str:
+    return _PROVIDER_ALIAS_MAP.get(name.strip().lower(), name.strip().lower())
+
+
+def _provider_for_model_alias(
+    name: str,
+    *,
+    provider_override: str | None = None,
+) -> ModelProvider | None:
+    provider_name = (
+        _resolve_provider_alias(provider_override)
+        if isinstance(provider_override, str) and provider_override.strip()
+        else _MODEL_PROVIDER_MAP.get(name.strip().lower())
+    )
     if provider_name is None:
         return None
     from aether.cli.providers import build_provider
@@ -129,6 +149,7 @@ class DefaultSubagentBuilder(SubagentBuilder):
         # the Claude provider picks them up at request-build time
         # without mutating the shared provider instance.
         caller_model = task.metadata.get("model_override")
+        provider_override = task.metadata.get("provider_override")
         type_model = getattr(agent_type_def, "model", None)
         effective_model = (
             caller_model
@@ -137,7 +158,12 @@ class DefaultSubagentBuilder(SubagentBuilder):
         )
         provider = task.provider
         if isinstance(effective_model, str) and effective_model.strip():
-            provider = provider or _provider_for_model_alias(effective_model)
+            provider = provider or _provider_for_model_alias(
+                effective_model,
+                provider_override=provider_override
+                if isinstance(provider_override, str)
+                else None,
+            )
             resolved = _resolve_model_alias(effective_model)
             if task.request.model_config is not None:
                 task.request.model_config.extra["model"] = resolved

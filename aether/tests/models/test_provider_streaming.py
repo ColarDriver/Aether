@@ -86,6 +86,68 @@ class ProviderStreamingTests(unittest.TestCase):
         self.assertEqual(payload.get("tool_choice"), "auto")
         self.assertIn("tools", payload)
 
+    def test_web_search_descriptor_converts_to_codex_hosted_tool(self) -> None:
+        provider = CodexChatModel(access_token="test-token", account_id="acct")
+        payload = provider._build_payload(
+            messages=[{"role": "user", "content": "latest docs"}],
+            tools=[ToolDescriptor(name="web_search")],
+            config=ModelCallConfig(),
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [{"type": "web_search", "search_context_size": "medium"}],
+        )
+        self.assertEqual(payload.get("tool_choice"), "auto")
+
+    def test_parse_response_keeps_hosted_web_search_out_of_tool_calls(self) -> None:
+        provider = CodexChatModel(access_token="test-token", account_id="acct")
+        response = {
+            "model": "gpt-5.4",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "query": "Aether docs",
+                        "sources": [{"type": "url", "url": "https://docs.example/aether"}],
+                    },
+                },
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Aether has docs.",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "title": "Aether Docs",
+                                    "url": "https://docs.example/aether",
+                                    "start_index": 0,
+                                    "end_index": 5,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        }
+
+        result = provider._parse_response(response)
+
+        self.assertEqual(result.tool_calls, [])
+        self.assertIn("Sources:", result.content or "")
+        self.assertIn("[Aether Docs](https://docs.example/aether)", result.content or "")
+        hosted = result.metadata.get("hosted_web_search")
+        self.assertIsInstance(hosted, dict)
+        self.assertEqual(hosted["provider"], "codex")
+        self.assertEqual(hosted["source_count"], 1)
+        self.assertEqual(hosted["calls"][0]["action"]["query"], "Aether docs")
+
 
 if __name__ == "__main__":
     unittest.main()

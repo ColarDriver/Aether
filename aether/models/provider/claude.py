@@ -21,6 +21,11 @@ from aether.models.credential_loader import (
     load_claude_code_credential,
 )
 from aether.models.provider.base import ModelProvider
+from aether.models.provider.hosted_web_search import (
+    append_sources_section,
+    dedupe_sources,
+    is_web_search_tool,
+)
 from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
@@ -386,7 +391,8 @@ class ClaudeChatModel(ModelProvider):
         if not isinstance(raw_call, dict):
             return None
 
-        fn = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+        function_raw = raw_call.get("function")
+        fn: dict[str, Any] = function_raw if isinstance(function_raw, dict) else {}
         name = fn.get("name") or raw_call.get("name")
         if not name:
             return None
@@ -414,6 +420,16 @@ class ClaudeChatModel(ModelProvider):
     def _convert_tools(self, tools: list[ToolDescriptor]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
         for tool in tools:
+            if is_web_search_tool(tool):
+                converted.append(
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": 8,
+                    }
+                )
+                continue
+
             schema = dict(tool.parameters)
             if "type" not in schema and "properties" not in schema:
                 schema = {
@@ -599,6 +615,9 @@ class ClaudeChatModel(ModelProvider):
 
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        hosted_search_calls: list[dict[str, Any]] = []
+        hosted_search_results: list[dict[str, Any]] = []
+        hosted_search_sources: list[dict[str, Any]] = []
 
         for block in response_dict.get("content", []):
             if not isinstance(block, dict):
@@ -607,27 +626,59 @@ class ClaudeChatModel(ModelProvider):
             block_type = block.get("type")
             if block_type == "text":
                 content_parts.append(str(block.get("text", "")))
+                hosted_search_sources.extend(
+                    _web_search_sources_from_citations(block.get("citations"))
+                )
             elif block_type == "tool_use":
+                input_raw = block.get("input")
+                tool_arguments: dict[str, Any] = (
+                    input_raw if isinstance(input_raw, dict) else {}
+                )
                 tool_calls.append(
                     ToolCall(
                         id=str(block.get("id", "")),
                         name=str(block.get("name", "")),
-                        arguments=block.get("input") if isinstance(block.get("input"), dict) else {},
+                        arguments=tool_arguments,
                     )
                 )
+            elif block_type == "server_tool_use" and block.get("name") == "web_search":
+                input_raw = block.get("input")
+                hosted_search_calls.append(
+                    {
+                        "id": str(block.get("id") or ""),
+                        "name": "web_search",
+                        "input": input_raw if isinstance(input_raw, dict) else {},
+                    }
+                )
+            elif block_type == "web_search_tool_result":
+                result_entry, sources = _parse_anthropic_web_search_result(block)
+                hosted_search_results.append(result_entry)
+                hosted_search_sources.extend(sources)
 
         usage = response_dict.get("usage") if isinstance(response_dict.get("usage"), dict) else {}
+        sources = dedupe_sources(hosted_search_sources)
+        content = "".join(content_parts)
+        if sources:
+            content = append_sources_section(content, sources)
         metadata: dict[str, Any] = {
             "model": response_dict.get("model", self.model),
             "usage": usage,
         }
+        if hosted_search_calls or hosted_search_results or sources:
+            metadata["hosted_web_search"] = {
+                "provider": "anthropic",
+                "calls": hosted_search_calls,
+                "results": hosted_search_results,
+                "sources": sources,
+                "source_count": len(sources),
+            }
 
         stop_reason = str(response_dict.get("stop_reason") or "")
         if not stop_reason:
             stop_reason = "tool_calls" if tool_calls else "stop"
 
         return NormalizedResponse(
-            content="".join(content_parts),
+            content=content,
             tool_calls=tool_calls,
             finish_reason=stop_reason,
             metadata=metadata,
@@ -670,6 +721,68 @@ def _as_dict(value: Any) -> dict[str, Any]:
             return dumped
 
     return {}
+
+
+def _web_search_sources_from_citations(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    sources: list[dict[str, str]] = []
+    for citation in raw:
+        data = _as_dict(citation)
+        if data.get("type") != "web_search_result_location":
+            continue
+        url = str(data.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(data.get("title") or "").strip() or url
+        sources.append({"title": title, "url": url})
+    return sources
+
+
+def _parse_anthropic_web_search_result(
+    block: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    tool_use_id = str(block.get("tool_use_id") or "")
+    content = block.get("content")
+    if isinstance(content, dict):
+        error = str(content.get("error_code") or content.get("message") or "unknown")
+        return (
+            {
+                "tool_use_id": tool_use_id,
+                "is_error": True,
+                "error": error,
+                "result_count": 0,
+            },
+            [],
+        )
+    if not isinstance(content, list):
+        return (
+            {
+                "tool_use_id": tool_use_id,
+                "is_error": False,
+                "result_count": 0,
+            },
+            [],
+        )
+
+    sources: list[dict[str, str]] = []
+    for item in content:
+        data = _as_dict(item)
+        if data.get("type") != "web_search_result":
+            continue
+        url = str(data.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(data.get("title") or "").strip() or url
+        sources.append({"title": title, "url": url})
+    return (
+        {
+            "tool_use_id": tool_use_id,
+            "is_error": False,
+            "result_count": len(sources),
+        },
+        sources,
+    )
 
 
 def _anthropic_status_code(error: anthropic.APIStatusError) -> int | None:

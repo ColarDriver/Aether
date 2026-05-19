@@ -12,6 +12,11 @@ import httpx
 from aether.config.schema import ModelCallConfig
 from aether.models.credential_loader import CodexCliCredential, load_codex_cli_credential
 from aether.models.provider.base import ModelProvider
+from aether.models.provider.hosted_web_search import (
+    append_sources_section,
+    dedupe_sources,
+    is_web_search_tool,
+)
 from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
@@ -304,6 +309,15 @@ class CodexChatModel(ModelProvider):
     def _convert_tools(self, tools: Iterable[ToolDescriptor]) -> list[dict[str, Any]]:
         responses_tools: list[dict[str, Any]] = []
         for tool in tools:
+            if is_web_search_tool(tool):
+                responses_tools.append(
+                    {
+                        "type": "web_search",
+                        "search_context_size": "medium",
+                    }
+                )
+                continue
+
             parameters = dict(tool.parameters)
             if "type" not in parameters and "properties" not in parameters:
                 parameters = {
@@ -480,6 +494,8 @@ class CodexChatModel(ModelProvider):
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         reasoning_content = ""
+        hosted_search_calls: list[dict[str, Any]] = []
+        hosted_search_sources: list[dict[str, Any]] = []
 
         for output_item in response.get("output", []):
             if not isinstance(output_item, dict):
@@ -496,6 +512,9 @@ class CodexChatModel(ModelProvider):
                 for part in output_item.get("content", []):
                     if isinstance(part, dict) and part.get("type") == "output_text":
                         content_parts.append(str(part.get("text", "")))
+                        hosted_search_sources.extend(
+                            _web_search_sources_from_annotations(part.get("annotations"))
+                        )
             elif item_type == "function_call":
                 parsed_arguments, invalid_reason = self._parse_tool_call_arguments(output_item)
                 if invalid_reason:
@@ -508,8 +527,14 @@ class CodexChatModel(ModelProvider):
                         arguments=parsed_arguments,
                     )
                 )
+            elif item_type == "web_search_call":
+                hosted_search_calls.append(_codex_web_search_call_metadata(output_item))
 
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        sources = dedupe_sources(hosted_search_sources)
+        content = "".join(content_parts)
+        if sources:
+            content = append_sources_section(content, sources)
         metadata: dict[str, Any] = {
             "model": response.get("model", self.model),
             "usage": usage,
@@ -521,9 +546,16 @@ class CodexChatModel(ModelProvider):
         }
         if reasoning_content:
             metadata["reasoning_content"] = reasoning_content
+        if hosted_search_calls or sources:
+            metadata["hosted_web_search"] = {
+                "provider": "codex",
+                "calls": hosted_search_calls,
+                "sources": sources,
+                "source_count": len(sources),
+            }
 
         return NormalizedResponse(
-            content="".join(content_parts),
+            content=content,
             tool_calls=tool_calls,
             finish_reason="tool_calls" if tool_calls else "stop",
             metadata=metadata,
@@ -554,3 +586,29 @@ class CodexChatModel(ModelProvider):
     @staticmethod
     def _calc_backoff_ms(attempt: int) -> int:
         return 2000 * (1 << (attempt - 1))
+
+
+def _web_search_sources_from_annotations(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    sources: list[dict[str, str]] = []
+    for annotation in raw:
+        if not isinstance(annotation, dict):
+            continue
+        if annotation.get("type") != "url_citation":
+            continue
+        url = str(annotation.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(annotation.get("title") or "").strip() or url
+        sources.append({"title": title, "url": url})
+    return sources
+
+
+def _codex_web_search_call_metadata(output_item: dict[str, Any]) -> dict[str, Any]:
+    action = output_item.get("action")
+    return {
+        "id": str(output_item.get("id") or ""),
+        "status": str(output_item.get("status") or ""),
+        "action": action if isinstance(action, dict) else {},
+    }

@@ -182,6 +182,43 @@ class ModelOverrideTests(unittest.TestCase):
         self.assertIs(child.services.provider, fake_provider)
         self.assertEqual(task.request.model_config.extra.get("model"), "gpt-5.4")
 
+    def test_provider_override_selects_codex_provider_for_gpt_alias(self) -> None:
+        parent = _build_parent(_registry("read_file"))
+        task = _typed_task(
+            self._definition(model=None),
+            model_override="gpt",
+            provider_override="codex",
+        )
+        fake_provider = ScriptedProvider([NormalizedResponse(content="ok")])
+        with mock.patch(
+            "aether.cli.providers.build_provider",
+            return_value=fake_provider,
+        ) as build_provider:
+            child = DefaultSubagentBuilder().build_child(parent, task, child_depth=1)
+        build_provider.assert_called_once_with("codex", model="gpt-5.4")
+        self.assertIs(child.services.provider, fake_provider)
+        self.assertEqual(task.request.model_config.extra.get("model"), "gpt-5.4")
+
+    def test_provider_override_selects_claude_provider_for_sonnet_alias(self) -> None:
+        parent = _build_parent(_registry("read_file"))
+        task = _typed_task(
+            self._definition(model=None),
+            model_override="sonnet",
+            provider_override="anthropic",
+        )
+        fake_provider = ScriptedProvider([NormalizedResponse(content="ok")])
+        with mock.patch(
+            "aether.cli.providers.build_provider",
+            return_value=fake_provider,
+        ) as build_provider:
+            child = DefaultSubagentBuilder().build_child(parent, task, child_depth=1)
+        build_provider.assert_called_once_with("claude", model="claude-sonnet-4-6")
+        self.assertIs(child.services.provider, fake_provider)
+        self.assertEqual(
+            task.request.model_config.extra.get("model"),
+            "claude-sonnet-4-6",
+        )
+
     def test_no_override_keeps_extra_clean(self) -> None:
         parent = _build_parent(_registry("read_file"))
         task = _typed_task(self._definition(model=None))
@@ -408,7 +445,7 @@ class AgentToolModelParameterTests(unittest.TestCase):
         )
         self.assertNotIn("model_override", captured["task"].metadata)
 
-    def test_env_model_default_writes_metadata(self) -> None:
+    def test_env_provider_default_writes_metadata(self) -> None:
         from aether.tools.builtins.agent_tool import AgentTool
 
         registry = AgentTypeRegistry(search_paths=[])
@@ -432,7 +469,7 @@ class AgentToolModelParameterTests(unittest.TestCase):
             agent_type_registry=registry,
         )
         ctx = TurnContext(session_id="s", iteration=0, metadata={})
-        with mock.patch.dict(os.environ, {"AETHER_SUBAGENT_MODEL": "gpt"}):
+        with mock.patch.dict(os.environ, {"AETHER_PROVIDER": "openai-compatible"}):
             result = tool.execute(
                 ToolCall(
                     id="c1",
@@ -446,6 +483,7 @@ class AgentToolModelParameterTests(unittest.TestCase):
             )
         self.assertFalse(result.is_error, msg=result.content)
         self.assertEqual(captured["task"].metadata.get("model_override"), "gpt")
+        self.assertEqual(captured["task"].metadata.get("provider_override"), "openai")
 
     def test_non_string_model_returns_error(self) -> None:
         from aether.tools.builtins.agent_tool import AgentTool

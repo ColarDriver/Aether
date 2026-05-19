@@ -146,16 +146,19 @@ class DetectPhantomToolIntentTests(unittest.TestCase):
         self.assertTrue(intent.is_empty())
         self.assertEqual(intent.raw_intents_count, 0)
 
-    def test_extracts_single_fenced_shell_block(self) -> None:
+    def test_fenced_bash_block_is_ignored_as_tool_intent(self) -> None:
+        # Markdown bash fences in assistant prose are NOT tool intent.
+        # OCC's contract: assistant text (including README-style
+        # answers with install commands) is just text; only structured
+        # tool_use API blocks are dispatched.
         intent = detect_phantom_tool_intent(
             "我来帮你看看这个项目是做什么的。让我先浏览一下项目结构和关键文件。"
             "```bash ls -la /workspace/Aether"
         )
-        self.assertEqual(len(intent.shell_commands), 1)
-        self.assertEqual(intent.shell_commands[0], "ls -la /workspace/Aether")
-        self.assertEqual(intent.invoke_calls, [])
+        self.assertTrue(intent.is_empty())
+        self.assertEqual(intent.raw_intents_count, 0)
 
-    def test_extracts_multiple_fenced_shell_blocks(self) -> None:
+    def test_multiple_fenced_bash_blocks_are_ignored(self) -> None:
         intent = detect_phantom_tool_intent(
             "我先看看：```bash cd /workspace && ls -la\n\n"
             "实际上让我用更系统的方式查看：```bash\n"
@@ -163,9 +166,21 @@ class DetectPhantomToolIntentTests(unittest.TestCase):
             "```\n"
             "让我执行这些命令。"
         )
-        self.assertEqual(len(intent.shell_commands), 2)
-        self.assertIn("cd /workspace && ls -la", intent.shell_commands[0])
-        self.assertIn("cat /workspace/README.md", intent.shell_commands[1])
+        self.assertTrue(intent.is_empty())
+
+    def test_readme_style_answer_with_install_block_is_ignored(self) -> None:
+        # Regression: previously a README-style final answer with an
+        # install snippet was synthesized into a real pip-install
+        # permission prompt.  Now it stays prose.
+        intent = detect_phantom_tool_intent(
+            "## Installation\n\n"
+            "```bash\n"
+            "pip install -U pip\n"
+            "pip install -e .\n"
+            "```\n\n"
+            "Then run `python main.py`."
+        )
+        self.assertTrue(intent.is_empty())
 
     def test_extracts_function_equals_inline_tag(self) -> None:
         intent = detect_phantom_tool_intent(
@@ -200,32 +215,35 @@ class DetectPhantomToolIntentTests(unittest.TestCase):
         self.assertEqual(name, "shell")
         self.assertEqual(args.get("cmd"), "ls")
 
-    def test_mixed_syntaxes_are_collected_into_one_intent(self) -> None:
+    def test_mixed_fence_and_structured_tag_only_counts_structured(self) -> None:
+        # Fenced bash is ignored; the <function=...> tag is the only
+        # tool intent in the response.
         intent = detect_phantom_tool_intent(
             "I'll run two things.\n"
             "```bash\nls -la\n```\n"
             "<function=read_file> /workspace/README.md"
         )
-        self.assertEqual(len(intent.shell_commands), 1)
         self.assertEqual(len(intent.invoke_calls), 1)
-        self.assertEqual(intent.raw_intents_count, 2)
-
-    def test_empty_or_whitespace_body_is_not_counted(self) -> None:
-        intent = detect_phantom_tool_intent("Trying.\n```bash\n   \n```\nLet me retry.")
-        self.assertTrue(intent.is_empty())
+        self.assertEqual(intent.raw_intents_count, 1)
+        self.assertEqual(intent.invoke_calls[0][0], "read_file")
 
 
 class CorrectiveMessageTests(unittest.TestCase):
     def test_corrective_message_is_role_user_with_attempt_index(self) -> None:
-        intent = PhantomToolIntent(shell_commands=["ls -la"], invoke_calls=[])
+        intent = PhantomToolIntent(
+            invoke_calls=[("shell", {"command": "ls -la"})],
+        )
         msg = build_corrective_user_message(intent, attempt_index=1)
         self.assertEqual(msg["role"], "user")
         self.assertIn("attempt 1", msg["content"])
 
     def test_corrective_message_lists_every_attempted_command(self) -> None:
         intent = PhantomToolIntent(
-            shell_commands=["ls -la /workspace", "cat README.md"],
-            invoke_calls=[("read_file", {"path": "/etc/passwd"})],
+            invoke_calls=[
+                ("shell", {"command": "ls -la /workspace"}),
+                ("shell", {"command": "cat README.md"}),
+                ("read_file", {"path": "/etc/passwd"}),
+            ],
         )
         msg = build_corrective_user_message(intent, attempt_index=2)
         self.assertIn("ls -la /workspace", msg["content"])
@@ -235,8 +253,7 @@ class CorrectiveMessageTests(unittest.TestCase):
 
     def test_corrective_message_truncates_runaway_attempts(self) -> None:
         intent = PhantomToolIntent(
-            shell_commands=[f"echo {i}" for i in range(20)],
-            invoke_calls=[],
+            invoke_calls=[("shell", {"command": f"echo {i}"}) for i in range(20)],
         )
         msg = build_corrective_user_message(intent, attempt_index=1)
         # Limit is 6, plus a "+ N more" line.
@@ -262,11 +279,19 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         spy = _SpyShellTool("execute_command")
         provider = _RecordingProvider(
             [
-                # Iteration 1 — model writes the command in prose.
+                # Iteration 1 — model emits a Kimi-style structured
+                # tool-call tag in the prose channel instead of using
+                # the API's ``tool_calls`` field.  The recovery layer
+                # should see this as phantom intent.  Markdown bash
+                # fences would NOT be recovered (OCC parity) — we use
+                # the structured ``<function=>`` form here so the test
+                # exercises the recovery path.
                 NormalizedResponse(
                     content=(
                         "我来看看这个项目的结构。让我先浏览一下。"
-                        "```bash ls -la /workspace/Aether"
+                        "<function=execute_command>"
+                        '{"command": "ls -la /workspace/Aether"}'
+                        "</function>"
                     ),
                     tool_calls=[],
                     finish_reason="stop",
@@ -333,18 +358,21 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         spy = _SpyShellTool()
         provider = ScriptedProvider(
             [
-                # Three consecutive phantom-tool responses; the engine
-                # only has 2 retries so iteration 3 finalises.
+                # Three consecutive structured phantom-tag responses;
+                # the engine only has 2 retries so iteration 3
+                # finalises.  Uses ``<function=shell>`` so the
+                # detector treats each as recoverable phantom intent
+                # (markdown fences would be ignored).
                 NormalizedResponse(
-                    content="先看看 ```bash ls /workspace",
+                    content='先看看 <function=shell>{"command":"ls /workspace"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(
-                    content="再看 ```bash ls /tmp",
+                    content='再看 <function=shell>{"command":"ls /tmp"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(
-                    content="最后试试 ```bash ls /etc",
+                    content='最后试试 <function=shell>{"command":"ls /etc"}</function>',
                     finish_reason="stop",
                 ),
             ]
@@ -386,7 +414,7 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         provider = ScriptedProvider(
             [
                 NormalizedResponse(
-                    content="我来跑一下 ```bash ls /workspace",
+                    content='我来跑一下 <function=shell>{"command":"ls /workspace"}</function>',
                     finish_reason="stop",
                 ),
             ]
@@ -419,7 +447,7 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         provider = ScriptedProvider(
             [
                 NormalizedResponse(
-                    content="我来跑一下 ```bash ls /workspace",
+                    content='我来跑一下 <function=shell>{"command":"ls /workspace"}</function>',
                     finish_reason="stop",
                 ),
             ]
@@ -486,7 +514,7 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         provider = ScriptedProvider(
             [
                 NormalizedResponse(
-                    content="先看看：```bash\nls -la /tmp\n```",
+                    content='先看看：<function=shell>{"command":"ls -la /tmp"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(content="ok done.", finish_reason="stop"),
@@ -518,7 +546,7 @@ class PhantomToolRecoveryRunLoopTests(unittest.TestCase):
         provider = ScriptedProvider(
             [
                 NormalizedResponse(
-                    content="```bash\necho hi\n```",
+                    content='<function=shell>{"command":"echo hi"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(content="ok.", finish_reason="stop"),

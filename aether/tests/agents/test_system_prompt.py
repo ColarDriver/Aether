@@ -98,6 +98,7 @@ class SystemPromptSectionsTests(unittest.TestCase):
                 include_verification_directive=False,
                 include_faithful_reporting=False,
                 include_verifier_gate=False,
+                include_shell_tool_contract=False,
             ),
         )
         self.assertEqual(result, "user prompt")
@@ -111,6 +112,7 @@ class SystemPromptSectionsTests(unittest.TestCase):
                 include_verification_directive=False,
                 include_faithful_reporting=False,
                 include_verifier_gate=False,
+                include_shell_tool_contract=False,
             ),
         )
         self.assertIsNone(result)

@@ -52,14 +52,40 @@ class RecordingProvider(ModelProvider):
         return self.responses.pop(0)
 
 
+def _find_plan_reminder(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the user-role plan-mode ``<system-reminder>`` message, or
+    None if no such message is present in *messages*.
+
+    Matches on both the role and a stable substring of the new
+    template so a generic ``<system-reminder>`` (e.g. the verifier
+    gate) doesn't accidentally pass."""
+    for m in messages:
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        if "Plan mode is active" in content and "## Plan File Info:" in content:
+            return m
+    return None
+
+
 # ----------------------------------------------------------------- helper
 
 class HelperTests(unittest.TestCase):
+    """Tests for the deprecated ``append_plan_mode_reminder`` shim.
+
+    The shim is kept for backward compatibility with callers that
+    splice into the system prompt, but new injection happens via
+    :func:`build_plan_mode_attachment` as a user-role message.
+    """
+
     def test_append_to_existing_prompt(self) -> None:
         out = append_plan_mode_reminder("you are helpful")
         assert out is not None
         self.assertTrue(out.startswith("you are helpful\n\n"))
-        self.assertIn("<plan_mode_reminder>", out)
+        self.assertIn("<system-reminder>", out)
+        self.assertIn("Plan mode is active", out)
 
     def test_append_to_none(self) -> None:
         out = append_plan_mode_reminder(None)
@@ -92,7 +118,7 @@ class InjectionTests(unittest.TestCase):
             ),
         )
 
-    def test_plan_mode_injects_reminder(self) -> None:
+    def test_plan_mode_injects_reminder_as_user_message(self) -> None:
         set_mode(self.session_id, SessionMode.PLAN)
         provider = RecordingProvider([NormalizedResponse(content="ok")])
         engine = self._engine(provider)
@@ -103,12 +129,25 @@ class InjectionTests(unittest.TestCase):
                 system_message="you are helpful",
             )
         )
+        # The plan-mode reminder must NOT live in the system prompt
+        # — it's a user-role <system-reminder> appended at the pre-LLM
+        # boundary for high salience adjacent to the user turn.
         system = provider.calls[0]["messages"][0]
         self.assertEqual(system["role"], "system")
-        self.assertIn("<plan_mode_reminder>", system["content"])
-        self.assertIn("Plan file:", system["content"])
-        self.assertIn("The only file you may write or edit", system["content"])
-        self.assertIn("exit_plan_mode", system["content"])
+        self.assertNotIn("Plan mode is active", system["content"])
+
+        reminder = _find_plan_reminder(provider.calls[0]["messages"])
+        self.assertIsNotNone(reminder, "expected user-role plan reminder")
+        assert reminder is not None  # for the type checker
+        self.assertEqual(reminder["role"], "user")
+        self.assertIn("<system-reminder>", reminder["content"])
+        self.assertIn("## Plan File Info:", reminder["content"])
+        self.assertIn("Phase 1: Initial Understanding", reminder["content"])
+        self.assertIn("Phase 5", reminder["content"])
+        self.assertIn("exit_plan_mode", reminder["content"])
+        self.assertEqual(
+            reminder.get("metadata", {}).get("source"), "plan_mode"
+        )
 
     def test_agent_mode_does_not_inject_reminder(self) -> None:
         # Default mode is "agent" — never set_mode(plan).
@@ -122,12 +161,12 @@ class InjectionTests(unittest.TestCase):
             )
         )
         system = provider.calls[0]["messages"][0]
-        self.assertNotIn("<plan_mode_reminder>", system["content"])
+        self.assertNotIn("Plan mode is active", system["content"])
+        self.assertIsNone(_find_plan_reminder(provider.calls[0]["messages"]))
 
     def test_reminder_stable_across_turns(self) -> None:
-        # PR 12.3 promises stable text so the prompt-cache prefix
-        # doesn't churn; assert the reminder block is identical on
-        # consecutive LLM calls.
+        # Stable text so the prompt-cache prefix doesn't churn; assert
+        # the reminder body is identical across consecutive LLM calls.
         set_mode(self.session_id, SessionMode.PLAN)
         provider = RecordingProvider(
             [
@@ -169,18 +208,19 @@ class InjectionTests(unittest.TestCase):
             EngineRequest(session_id=self.session_id, user_message="go")
         )
         self.assertGreaterEqual(len(provider.calls), 2)
-        first = provider.calls[0]["messages"][0]["content"]
-        second = provider.calls[1]["messages"][0]["content"]
-        self.assertEqual(first, second)
-        self.assertIn("<plan_mode_reminder>", first)
-        self.assertIn("Plan file:", first)
+        first = _find_plan_reminder(provider.calls[0]["messages"])
+        second = _find_plan_reminder(provider.calls[1]["messages"])
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        assert first is not None and second is not None
+        self.assertEqual(first["content"], second["content"])
 
     def test_build_reminder_mentions_plan_path(self) -> None:
         from aether.runtime.session.plan_artifact import get_plan_path
 
         out = build_plan_mode_reminder(self.session_id)
         self.assertIn(str(get_plan_path(self.session_id)), out)
-        self.assertIn("no plan file exists yet", out)
+        self.assertIn("No plan file exists yet", out)
 
     def test_plan_mode_active_metadata_set(self) -> None:
         # context.metadata['plan_mode_active'] should be set so the

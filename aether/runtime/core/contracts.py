@@ -178,6 +178,16 @@ class EngineRequest:
     # by the engine, not a tool-internal interaction helper.
     tool_permission_prompter: Any = None
     interrupt_signal: "InterruptSignal | None" = None
+    # Optional project root for this turn.  When set, seeds the
+    # session CWD on first use and becomes the ``default_cwd`` passed
+    # to file-aware tools (``read_file``, ``grep``, ``glob``,
+    # ``write_file``, ``file_edit``, ``shell``).  Lets the TUI / CLI
+    # decouple "where the engine was launched" from "where the agent
+    # should operate" — e.g. running ``npm run dev`` from
+    # ``/workspace/Aether/tui`` but pointing the agent at
+    # ``/workspace/some-project``.  ``None`` (the default) keeps the
+    # legacy behaviour: tools inherit ``os.getcwd()``.
+    cwd: str | None = None
 
 
 @dataclass(slots=True)

@@ -316,7 +316,13 @@ class AgentEngine:
                 # their own registry.
                 from aether.tools.builtins import build_default_tool_registry
 
+                _cwd_for_tools = (
+                    Path(self.config.default_cwd)
+                    if self.config.default_cwd
+                    else None
+                )
                 tool_registry = build_default_tool_registry(
+                    cwd=_cwd_for_tools,
                     agent_type_registry=agent_type_registry,
                 )
             else:
@@ -574,6 +580,7 @@ class AgentEngine:
     def run_loop(self, request: EngineRequest) -> EngineResult:
         """Execute one full agent loop turn until completion/failure/interruption."""
         self._current_session_id = request.session_id
+        self._seed_session_cwd(request)
         context: TurnContext | None = None
         active_system_prompt: str | None = None
         stream_callback_wrapped = None
@@ -663,6 +670,15 @@ class AgentEngine:
                     # without one.
                     messages = self._maybe_inject_verifier_reminder(
                         messages, context
+                    )
+                    # When the session is in plan mode, inject the
+                    # 5-phase plan workflow as a user-role
+                    # ``<system-reminder>`` adjacent to the latest user
+                    # turn.  High-salience placement is the key lever
+                    # against the model regressing to ``shell``-based
+                    # exploration.
+                    messages = self._maybe_inject_plan_mode_attachment(
+                        messages, context, session_id=request.session_id
                     )
 
                     hook_outcome = self._collect_pre_llm_hook_outcome(
@@ -1776,11 +1792,12 @@ class AgentEngine:
                     else listing
                 )
 
-        # Sprint 12 PR 12.3: when the session is in plan mode, append a
-        # short reminder to the system prompt every turn so the model
-        # cannot drift back into normal agent behavior on long runs.
-        # Keep this as the final system-prompt section so its
-        # restrictions are the closest instructions to the user turn.
+        # When the session is in plan mode, record it on context.metadata
+        # here.  The actual plan-mode reminder is injected as a user-role
+        # ``<system-reminder>`` message at the pre-LLM splice point
+        # (``_maybe_inject_plan_mode_attachment``), not appended to the
+        # system prompt — salience adjacent to the user turn is the
+        # lever that makes the model obey.
         if request.session_id:
             try:
                 from aether.runtime.session.session_state import (
@@ -1791,14 +1808,6 @@ class AgentEngine:
                 pass
             else:
                 if get_mode(request.session_id) == SessionMode.PLAN.value:
-                    from aether.agents.core.system_prompt import (
-                        append_plan_mode_reminder,
-                    )
-
-                    prompt_for_messages = append_plan_mode_reminder(
-                        prompt_for_messages,
-                        session_id=request.session_id,
-                    )
                     context.metadata["plan_mode_active"] = True
 
         if prompt_for_messages:
@@ -2063,6 +2072,75 @@ class AgentEngine:
         )
         return attached
 
+    def _maybe_inject_plan_mode_attachment(
+        self,
+        messages: list[dict[str, Any]],
+        context: TurnContext,
+        *,
+        session_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """Append a user-role ``<system-reminder>`` carrying the 5-phase
+        plan-mode workflow when the session is in plan mode.
+
+        Read-only with respect to the session state — only inspects
+        ``get_mode`` and resolves the plan path.  Idempotent across
+        retries within a turn: the reminder is appended every pre-LLM
+        boundary it fires, but the message list is reset per iteration
+        so the prompt-cache prefix stays stable.
+
+        Also emits a structured log line so future "shell ran in plan
+        mode" reports can be diagnosed at a glance — we want to know
+        whether the engine saw mode=plan for the session_id it actually
+        processed, vs. the slash command setting mode on a different
+        id.
+        """
+        if not session_id:
+            return messages
+        try:
+            from aether.runtime.session.session_state import (
+                SessionMode,
+                get_mode,
+            )
+        except ImportError:  # pragma: no cover - defensive
+            return messages
+        if get_mode(session_id) != SessionMode.PLAN.value:
+            return messages
+        from aether.agents.core.system_prompt import (
+            build_plan_mode_attachment,
+        )
+
+        attachment = build_plan_mode_attachment(session_id)
+        plan_path = "(unavailable)"
+        plan_exists: bool | None = None
+        try:
+            from aether.runtime.session.plan_artifact import (
+                get_plan_path,
+                read_plan,
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+        else:
+            try:
+                plan_path = str(get_plan_path(session_id))
+            except ValueError:
+                pass
+            try:
+                plan_exists = read_plan(session_id) is not None
+            except Exception:  # pragma: no cover - defensive
+                plan_exists = None
+        self.services.logger.info(
+            "plan_mode_state session_id=%s mode=plan plan_path=%s plan_exists=%s iteration=%d",
+            session_id,
+            plan_path,
+            plan_exists,
+            context.iteration,
+        )
+        context.metadata["plan_mode_attachment_injected"] = True
+        context.metadata["plan_mode_active"] = True
+        attached = list(messages)
+        attached.append(attachment)
+        return attached
+
     def _maybe_recover_phantom_tool_intent(
         self,
         *,
@@ -2118,7 +2196,6 @@ class AgentEngine:
         # diagnostic).  Stored as plain dicts so middleware can
         # serialise it without importing the dataclass.
         context.metadata["phantom_tool_attempts"] = {
-            "shell_commands": list(intent.shell_commands),
             "invoke_calls": [
                 {"name": name, "arguments": dict(args)}
                 for name, args in intent.invoke_calls
@@ -2195,10 +2272,9 @@ class AgentEngine:
         context.metadata[TURN_KEY_EMPTY_RESPONSE_RETRIES] = 0
         try:
             self.services.logger.debug(
-                "phantom_tool_recovery: attempt=%d / max=%d shell=%d invoke=%d session=%s",
+                "phantom_tool_recovery: attempt=%d / max=%d invoke=%d session=%s",
                 attempts + 1,
                 max_attempts,
-                len(intent.shell_commands),
                 len(intent.invoke_calls),
                 context.session_id,
             )
@@ -3504,6 +3580,38 @@ class AgentEngine:
         if context is not None and context.interrupt_signal is not None:
             return context.interrupt_signal.is_aborted()
         return self.services.interrupt_controller.is_interrupted(session_id)
+
+    def _seed_session_cwd(self, request: EngineRequest) -> None:
+        """Seed the session CWD from ``request.cwd`` on the first turn.
+
+        Idempotent across turns: only writes when the session has no
+        tracked CWD yet.  Once the model runs ``shell cd /workspace/foo``
+        the post-command ``pwd -P`` round-trip takes over and this
+        helper stays a no-op for the rest of the session.
+
+        This is what lets the TUI / CLI launcher pin a project root
+        (``EngineRequest(cwd="/workspace/some-project", ...)``) so the
+        first ``read_file('README.md')`` reads from that project
+        instead of from wherever the engine process happened to be
+        started (e.g. ``/workspace/Aether/tui`` when launched via
+        ``npm run dev``).
+        """
+        target = (request.cwd or "").strip() if isinstance(request.cwd, str) else ""
+        if not target or not request.session_id:
+            return
+        try:
+            from aether.runtime.session.session_state import get_cwd, set_cwd
+        except ImportError:  # pragma: no cover - defensive
+            return
+        if get_cwd(request.session_id):
+            return
+        try:
+            resolved = Path(target).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        if not resolved.is_dir():
+            return
+        set_cwd(request.session_id, resolved)
 
     @staticmethod
     def _resolve_terminal_exit_reason(

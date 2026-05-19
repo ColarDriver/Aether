@@ -56,33 +56,25 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Fenced shell-block extraction (multi-block, language-tag aware)
+# Structured-tag extraction
 # ---------------------------------------------------------------------------
 #
-# Body capture is non-greedy and ends at the *earliest* of:
-#   1. ``\u0060\u0060\u0060`` *not* followed by a shell-language tag — a real
-#      closing fence; consume it (so ``sub`` also drops the fence text).
-#   2. (lookahead) a blank line — paragraph break, treated as the
-#      implicit end of an unclosed phantom-tool block since models
-#      never embed real prose-paragraphs inside a shell command.
-#   3. (lookahead) ``\u0060\u0060\u0060<lang>`` — opener of the next fenced block.
-#   4. End-of-string — models routinely truncate the line they were
-#      about to call a tool on.
+# Note: this module intentionally does NOT parse markdown bash code
+# fences as tool intent.  open-claude-code's contract — and the
+# contract we now match — is that assistant prose (including bash
+# code blocks inside README-style answers, install instructions, or
+# example snippets) is just text; only structured ``tool_use`` API
+# blocks are dispatched.  Earlier revisions synthesized shell calls
+# from fenced blocks, which turned documentation into real
+# permission prompts.
 #
-# The negative lookahead in branch 1 is critical: without it the
-# non-greedy ``.*?`` would happily stop at the *opening* ``\u0060\u0060\u0060`` of
-# the *next* shell fence and substitution would leave a stranded
-# ``bash\n...`` behind that fails to re-match.
-_SHELL_LANG_GROUP = r"(?:bash|sh|shell|zsh|console|cmd|ps1?|powershell)"
-_COMMAND_FENCE_RE = re.compile(
-    r"(?is)```" + _SHELL_LANG_GROUP + r"\b"
-    r"[ \t]*\n?(.*?)"
-    r"(?:\n?```(?!" + _SHELL_LANG_GROUP + r"\b)"
-    r"|(?=\n[ \t]*\n)"
-    r"|(?=\n?```" + _SHELL_LANG_GROUP + r"\b)"
-    r"|\Z)"
-)
-
+# The parsers below recover *structured* malformed tool calls that
+# the official Anthropic API would never produce — Kimi-style
+# ``<function=NAME>``, Anthropic-style ``<invoke>``, OpenAI-ish
+# ``<tool_call>``, and Moonshot ``<functions.NAME:N>``.  These are
+# always tool intent (the model emitted XML/JSON for a tool call
+# but put it in the prose channel instead of the structured
+# ``tool_calls`` field), so recovering them is net-positive.
 # The non-standard ``<function=NAME> <body>`` tag (Kimi-style).  Body
 # extends until the next ``<function=`` / ``</function`` / end-of-text.
 _FUNCTION_EQ_TAG_RE = re.compile(
@@ -138,35 +130,37 @@ _FUNCTIONS_SLOT_TAG_RE = re.compile(
 class PhantomToolIntent:
     """What the model *attempted* to invoke when it bypassed ``tool_calls``.
 
-    Three optional fields are populated independently:
-
-    * ``shell_commands`` — every fenced shell block we could parse,
-      one entry per block, multi-line bodies collapsed to a single
-      space-joined line so the corrective message lists each attempt
-      compactly.
+    Two fields, populated independently by the structured-tag
+    parsers:
 
     * ``invoke_calls`` — parsed ``(name, args)`` pairs for every
-      ``<invoke>``/``<tool_call>``/``<function=>`` style tag.  When the
-      model mixed XML/JSON inline tags with ``\u0060\u0060\u0060bash`` blocks
-      (yes, this happens) we collect both.
+      ``<invoke>`` / ``<tool_call>`` / ``<function=>`` /
+      ``<functions.NAME:N>`` style tag found in the assistant
+      content.
 
     * ``raw_intents_count`` — total inline intent markers we found
       across all syntaxes.  Used by the diagnostic / footer to say
-      "3 attempted commands" without re-counting on the consumer side.
+      "3 attempted commands" without re-counting on the consumer
+      side.
 
-    A populated instance with ``raw_intents_count > 0`` is the trigger
-    for the engine to send a corrective message instead of finalising
-    the turn.  An empty instance (every field default) means the
-    response was prose and the engine should fall through to the
-    normal TEXT_RESPONSE / EMPTY_RESPONSE branch.
+    A populated instance with ``raw_intents_count > 0`` is the
+    trigger for the engine to send a corrective message instead of
+    finalising the turn.  An empty instance (every field default)
+    means the response was prose and the engine should fall
+    through to the normal TEXT_RESPONSE / EMPTY_RESPONSE branch.
+
+    Note: markdown bash fences in the assistant content are
+    *deliberately* not ingested here — they are treated as prose,
+    matching open-claude-code's contract.  Only structured tag
+    forms (which the official Anthropic API would never emit) are
+    recovered.
     """
 
-    shell_commands: List[str] = field(default_factory=list)
     invoke_calls: List[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     @property
     def raw_intents_count(self) -> int:
-        return len(self.shell_commands) + len(self.invoke_calls)
+        return len(self.invoke_calls)
 
     def is_empty(self) -> bool:
         return self.raw_intents_count == 0
@@ -180,36 +174,29 @@ class PhantomToolIntent:
 def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
     """Return every parsed phantom-tool intent in *content*.
 
-    Combines the three known failure-mode parsers (fenced shell
-    blocks, ``<function=NAME>`` inline tags, Anthropic-style
-    ``<invoke>`` / OpenAI-ish ``<tool_call>`` XML).  Returns an empty
-    :class:`PhantomToolIntent` for a normal prose response — callers
-    should test with ``is_empty()`` before deciding whether to send a
-    corrective message.
+    Combines the four structured-tag parsers (Kimi-style
+    ``<function=NAME>``, Anthropic-style ``<invoke>``, OpenAI-ish
+    ``<tool_call>``, and Moonshot ``<functions.NAME:N>``).  Returns
+    an empty :class:`PhantomToolIntent` for a normal prose response
+    — callers should test with ``is_empty()`` before deciding whether
+    to send a corrective message.
 
-    The function is intentionally conservative: a fenced shell block
-    body of pure whitespace, an ``<invoke>`` tag with an empty name,
-    or a malformed JSON ``<tool_call>`` payload all contribute zero
-    intents.  False positives would turn legitimate answers into
-    confusing self-correction loops.
+    Markdown bash fences in the assistant content are intentionally
+    NOT treated as intent: open-claude-code's contract is that
+    only structured ``tool_use`` API blocks are dispatched, and
+    earlier revisions of this module mis-fired on README-style
+    answers that happened to contain example commands.
+
+    The function is intentionally conservative: an ``<invoke>`` tag
+    with an empty name or a malformed JSON ``<tool_call>`` payload
+    contributes zero intents.  False positives would turn
+    legitimate answers into confusing self-correction loops.
     """
     intent = PhantomToolIntent()
     if not content:
         return intent
 
-    # 1) Fenced shell blocks.
-    if "```" in content:
-        for match in _COMMAND_FENCE_RE.finditer(content):
-            body = (match.group(1) or "").strip()
-            if not body:
-                continue
-            flat = " ".join(
-                line.strip() for line in body.splitlines() if line.strip()
-            )
-            if flat:
-                intent.shell_commands.append(flat)
-
-    # 2) <function=NAME> ... inline tags.
+    # 1) <function=NAME> ... inline tags.
     for match in _FUNCTION_EQ_TAG_RE.finditer(content):
         name = (match.group(1) or "").strip()
         body = (match.group(2) or "").strip()
@@ -236,7 +223,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
                 function_args["command"] = " ".join(body.split())
         intent.invoke_calls.append((name, function_args))
 
-    # 3) Anthropic-style <invoke>...</invoke>.
+    # 2) Anthropic-style <invoke>...</invoke>.
     for invoke in _INVOKE_BLOCK_RE.finditer(content):
         name = (invoke.group(1) or "").strip()
         if not name:
@@ -249,7 +236,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
                 params[key] = value
         intent.invoke_calls.append((name, params))
 
-    # 4) OpenAI-ish <tool_call>{json}</tool_call>.
+    # 3) OpenAI-ish <tool_call>{json}</tool_call>.
     for call in _TOOL_CALL_JSON_RE.finditer(content):
         try:
             payload = json.loads(call.group(1))
@@ -269,7 +256,7 @@ def detect_phantom_tool_intent(content: str) -> PhantomToolIntent:
         if name:
             intent.invoke_calls.append((name, raw_args))
 
-    # 5) Moonshot/Kimi <functions.NAME:N>{json}</functions.NAME:N>.
+    # 4) Moonshot/Kimi <functions.NAME:N>{json}</functions.NAME:N>.
     for match in _FUNCTIONS_SLOT_TAG_RE.finditer(content):
         name = (match.group(1) or "").strip()
         body = (match.group(2) or "").strip()
@@ -378,17 +365,12 @@ def _format_attempt_digest(intent: PhantomToolIntent, limit: int = 6) -> str:
     """Render a bullet list of what the model tried to invoke.
 
     Caps the entries at *limit* so a runaway response with 20 inline
-    intents doesn't balloon the corrective message.  Each shell
-    command is shown as ``- $ <cmd>``; each invoke / function-eq /
-    tool_call entry is shown as ``- <name>(arg=value, …)`` so the
-    model recognises exactly what it tried.  Truncated lines end in
-    a single ``…``.
+    intents doesn't balloon the corrective message.  Each invoke /
+    function-eq / tool_call entry is shown as ``- <name>(arg=value, …)``
+    so the model recognises exactly what it tried.  Truncated lines
+    end in a single ``…``.
     """
     lines: list[str] = []
-    for cmd in intent.shell_commands:
-        if len(lines) >= limit:
-            break
-        lines.append(f"- $ {_truncate(cmd)}")
     for name, args in intent.invoke_calls:
         if len(lines) >= limit:
             break
@@ -557,12 +539,6 @@ def synthesize_tool_calls_from_phantom(
 
     Synthesis rules:
 
-    * **Fenced shell blocks** — emit a :class:`ToolCall` for the
-      registry's shell-style tool (resolved via
-      :data:`_SHELL_ALIASES`), passing the full body as ``command``.
-      Each block becomes one call so the model can recover from
-      typos in any individual block independently.
-
     * **``<function=NAME>`` / ``<invoke>`` / ``<tool_call>`` /
       ``<functions.NAME:N>``** — try to resolve ``NAME`` against the
       registry (case-fold, underscore-normalise, namespace-strip).
@@ -570,6 +546,9 @@ def synthesize_tool_calls_from_phantom(
       Special case: when the resolved alias is shell-flavoured but
       args don't include ``command``, but include exactly one string
       value, treat that value as the command.
+
+    Markdown ``` ```bash ``` fences in assistant prose are NOT
+    synthesized — they are treated as text, matching OCC's contract.
     """
     if intent.is_empty():
         return None
@@ -586,16 +565,6 @@ def synthesize_tool_calls_from_phantom(
         nonlocal counter
         counter += 1
         return f"{id_prefix}_{counter}"
-
-    # --- fenced shell blocks ------------------------------------------------
-    for cmd in intent.shell_commands:
-        if shell_tool is None:
-            unresolved.append((cmd, "no shell-style tool registered"))
-            continue
-        calls.append(
-            ToolCall(id=_next_id(), name=shell_tool, arguments={"command": cmd})
-        )
-        notes.append(f"{shell_tool}({_truncate(cmd, limit=80)})")
 
     # --- inline tags --------------------------------------------------------
     for raw_name, args in intent.invoke_calls:

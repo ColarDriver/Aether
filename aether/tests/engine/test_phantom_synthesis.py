@@ -96,18 +96,20 @@ def _registry_with(*tools: ToolExecutor) -> ToolRegistry:
 
 
 class SynthesisFromIntentTests(unittest.TestCase):
-    def test_bash_fence_synthesizes_shell_call(self) -> None:
-        intent = PhantomToolIntent(shell_commands=["ls -la"])
-        reg = build_default_tool_registry()
-        out = synthesize_tool_calls_from_phantom(intent, reg)
-        self.assertIsNotNone(out)
-        assert out is not None
-        self.assertEqual(len(out.tool_calls), 1)
-        call = out.tool_calls[0]
-        self.assertEqual(call.name, "shell")
-        self.assertEqual(call.arguments, {"command": "ls -la"})
-        self.assertEqual(out.notes[0], "shell(ls -la)")
-        self.assertEqual(out.unresolved, [])
+    def test_bash_fence_is_not_synthesized_as_tool_call(self) -> None:
+        # Markdown ``` ```bash ``` fences in assistant prose are NOT
+        # tool intent and must never round-trip into a synthesized
+        # ToolCall — matches open-claude-code's contract and prevents
+        # README-style install snippets from triggering real
+        # permission prompts.
+        intent = detect_phantom_tool_intent(
+            "## Installation\n```bash\nls -la\npip install -e .\n```\n"
+        )
+        self.assertTrue(intent.is_empty())
+        out = synthesize_tool_calls_from_phantom(
+            intent, build_default_tool_registry()
+        )
+        self.assertIsNone(out)
 
     def test_function_eq_tag_with_json_body_round_trips(self) -> None:
         intent = detect_phantom_tool_intent(
@@ -144,11 +146,15 @@ class SynthesisFromIntentTests(unittest.TestCase):
         self.assertEqual(out.tool_calls[0].name, "read_file")
         self.assertEqual(out.tool_calls[0].arguments, {"path": "README.md"})
 
-    def test_multiple_phantoms_yield_multiple_tool_calls(self) -> None:
+    def test_multiple_structured_tags_yield_multiple_tool_calls(self) -> None:
+        # Two distinct structured tags in one prose response — both
+        # should round-trip into synthesized ToolCalls.  (Markdown
+        # fences mixed in would be ignored; we don't include one here
+        # to keep the assertions tight.)
         intent = detect_phantom_tool_intent(
             "I'll do two things.\n"
-            "```bash\nls -la\n```\n"
-            "<functions.read_file:1>{\"path\":\"/etc/hosts\"}</functions.read_file:1>"
+            '<functions.shell:0>{"command":"ls -la"}</functions.shell:0>\n'
+            '<functions.read_file:1>{"path":"/etc/hosts"}</functions.read_file:1>'
         )
         reg = build_default_tool_registry()
         out = synthesize_tool_calls_from_phantom(intent, reg)
@@ -176,8 +182,12 @@ class SynthesisFromIntentTests(unittest.TestCase):
         self.assertIsNone(out)
 
     def test_partial_synthesis_returns_outcome_with_unresolved(self) -> None:
+        # One resolvable + one unresolvable structured tag.  The
+        # resolvable one synthesizes, the unresolvable one shows up
+        # in ``unresolved`` so the UI can surface a partial-recovery
+        # hint.
         intent = detect_phantom_tool_intent(
-            "```bash\nls\n```\n"
+            '<function=shell>{"command":"ls"}</function>\n'
             "<function=do_magic>{}</function>"
         )
         out = synthesize_tool_calls_from_phantom(
@@ -190,12 +200,6 @@ class SynthesisFromIntentTests(unittest.TestCase):
         self.assertEqual(out.tool_calls[0].name, "shell")
         self.assertEqual(len(out.unresolved), 1)
         self.assertEqual(out.unresolved[0][0], "do_magic")
-
-    def test_no_shell_tool_registered_skips_bash_fence(self) -> None:
-        intent = PhantomToolIntent(shell_commands=["ls -la"])
-        reg = ToolRegistry()  # empty
-        out = synthesize_tool_calls_from_phantom(intent, reg)
-        self.assertIsNone(out)
 
 
 class FuzzyResolutionTests(unittest.TestCase):
@@ -255,8 +259,12 @@ class SynthesisRunLoopTests(unittest.TestCase):
         spy = _SpyShell("shell")
         provider = ScriptedProvider(
             [
+                # Structured ``<function=shell>`` tag in prose — the
+                # recovery layer detects + synthesizes it.  Markdown
+                # bash fences would NOT be synthesized (OCC parity);
+                # see ``test_bash_fence_is_not_synthesized_as_tool_call``.
                 NormalizedResponse(
-                    content="先看看：```bash\nls -la /tmp\n```",
+                    content='先看看：<function=shell>{"command":"ls -la /tmp"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(content="ok done.", finish_reason="stop"),
@@ -291,8 +299,10 @@ class SynthesisRunLoopTests(unittest.TestCase):
         spy = _SpyShell("shell")
         provider = ScriptedProvider(
             [
+                # Structured tag triggers detection → corrective
+                # retry (synthesis is disabled here).
                 NormalizedResponse(
-                    content="```bash\nls\n```",
+                    content='<function=shell>{"command":"ls"}</function>',
                     finish_reason="stop",
                 ),
                 NormalizedResponse(
@@ -327,16 +337,17 @@ class SynthesisRunLoopTests(unittest.TestCase):
         self.assertEqual(len(spy.calls), 1)
 
     def test_synthesis_skips_when_no_matching_tool(self) -> None:
-        # Empty tool registry except for read_file: bash fence has
-        # nowhere to land, so the engine falls through to corrective.
-        # We pin this with use_builtin_tools=False + a single
-        # registered non-shell tool.
+        # Empty tool registry except for read_file: a structured
+        # ``<function=shell>`` phantom has nowhere to land, so the
+        # engine falls through to corrective.  We pin this with
+        # use_builtin_tools=False + a single registered non-shell
+        # tool.
         from aether.tools.builtins.read_file import ReadFileTool
 
         provider = ScriptedProvider(
             [
                 NormalizedResponse(
-                    content="```bash\nls\n```",
+                    content='<function=shell>{"command":"ls"}</function>',
                     finish_reason="stop",
                 ),
             ]

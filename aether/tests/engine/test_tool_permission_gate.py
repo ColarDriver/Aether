@@ -338,5 +338,103 @@ class ToolPermissionGateTests(unittest.TestCase):
         self.assertEqual(result.final_response, "allowed")
 
 
+class PlanModeGateRefusalTests(unittest.TestCase):
+    """Direct unit tests for ``_check_plan_mode_block``.
+
+    Tests the refusal text and the read-only-subagent carve-out
+    without spinning up the whole engine loop.
+    """
+
+    def setUp(self) -> None:
+        self.session_id = "gate-refusal-test"
+        set_mode(self.session_id, SessionMode.PLAN)
+        self.addCleanup(clear_mode, self.session_id)
+        self._context = TurnContext(session_id=self.session_id, iteration=1)
+
+    def test_shell_refusal_lists_read_only_tools(self) -> None:
+        # The model commonly regresses to ``shell read_file <path>``
+        # or ``shell pip install`` in plan mode (see error2/tool.png).
+        # The refusal text must redirect explicitly to the dedicated
+        # read tools and call out the "not shell binaries" gotcha.
+        from aether.tools.registry import _check_plan_mode_block
+
+        refusal = _check_plan_mode_block(
+            "shell", self._context, {"command": "read_file /tmp/x"}
+        )
+        self.assertIsNotNone(refusal)
+        assert refusal is not None  # type checker
+        msg = refusal.message
+        self.assertIn("'shell' is blocked", msg)
+        self.assertIn("read_file", msg)
+        self.assertIn("list_dir", msg)
+        self.assertIn("grep", msg)
+        self.assertIn("glob", msg)
+        self.assertIn("not shell binaries", msg)
+        self.assertIn("exit_plan_mode", msg)
+        self.assertTrue(refusal.metadata["plan_mode_blocked"])
+
+    def test_write_file_refusal_keeps_plan_file_redirect(self) -> None:
+        # Sanity check: the generic refusal path (write_file/file_edit/
+        # notebook_edit/todo_write/memory_*) still points at the plan
+        # file and exit_plan_mode.
+        from aether.tools.registry import _check_plan_mode_block
+
+        refusal = _check_plan_mode_block(
+            "write_file", self._context, {"path": "/tmp/other.txt", "content": "x"}
+        )
+        self.assertIsNotNone(refusal)
+        assert refusal is not None
+        self.assertIn("'write_file' is blocked", refusal.message)
+        self.assertIn("plan file", refusal.message)
+        self.assertIn("exit_plan_mode", refusal.message)
+
+    def test_task_explore_subagent_allowed_in_plan_mode(self) -> None:
+        # The read-only carve-out is the lever that makes the 5-phase
+        # workflow's Phase 1 ("launch Explore subagents") actually
+        # executable.
+        from aether.tools.registry import _check_plan_mode_block
+
+        refusal = _check_plan_mode_block(
+            "task",
+            self._context,
+            {
+                "subagent_type": "Explore",
+                "description": "find auth helpers",
+                "prompt": "...",
+            },
+        )
+        self.assertIsNone(refusal)
+
+    def test_task_plan_subagent_allowed_in_plan_mode(self) -> None:
+        from aether.tools.registry import _check_plan_mode_block
+
+        refusal = _check_plan_mode_block(
+            "task",
+            self._context,
+            {"subagent_type": "Plan", "description": "design", "prompt": "..."},
+        )
+        self.assertIsNone(refusal)
+
+    def test_task_general_purpose_blocked_in_plan_mode(self) -> None:
+        # A ``general-purpose`` subagent could trivially mutate state,
+        # which would defeat plan-mode's purpose.  Blocked.
+        from aether.tools.registry import _check_plan_mode_block
+
+        refusal = _check_plan_mode_block(
+            "task",
+            self._context,
+            {
+                "subagent_type": "general-purpose",
+                "description": "do stuff",
+                "prompt": "...",
+            },
+        )
+        self.assertIsNotNone(refusal)
+        assert refusal is not None
+        self.assertIn("'task' is blocked", refusal.message)
+        self.assertIn("Explore", refusal.message)
+        self.assertIn("Plan", refusal.message)
+
+
 if __name__ == "__main__":
     unittest.main()

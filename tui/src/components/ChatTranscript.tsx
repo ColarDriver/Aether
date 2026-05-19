@@ -24,7 +24,6 @@ const MAX_VISIBLE = 80
 const DEFAULT_WIDTH = 80
 const WHEEL_SCROLL_ROWS = 3
 const DEFAULT_LIVE_CONTEXT_ROWS = 12
-const LIVE_CONTEXT_MIN_ITEMS = 1
 
 export interface ChatTranscriptProps {
   viewportRows?: number
@@ -63,6 +62,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [scrollOffset, setScrollOffset] = useState(0)
   const previousLastIdRef = useRef<string | null>(null)
+  const chunkedAssistantRunIdsRef = useRef<Set<string>>(new Set())
 
   const rowBudget = normaliseRows(viewportRows)
   const usesStaticScrollback = rowBudget === null && staticScrollback
@@ -74,9 +74,20 @@ export const ChatTranscript = memo(function ChatTranscript({
     () => (usesStaticScrollback ? renderableItems : renderableItems.slice(-MAX_VISIBLE)),
     [renderableItems, usesStaticScrollback]
   )
+  const chunkedAssistantRunIds = chunkedAssistantRunIdsRef.current
+  if (usesStaticScrollback) {
+    rememberChunkedStreamingAssistants(allVisible, chunkedAssistantRunIds)
+  }
   const split = useMemo(
-    () => splitStaticPrefix(allVisible, usesStaticScrollback, width, liveContextRows),
-    [allVisible, liveContextRows, usesStaticScrollback, width]
+    () =>
+      splitStaticPrefix(
+        allVisible,
+        usesStaticScrollback,
+        width,
+        liveContextRows,
+        chunkedAssistantRunIds
+      ),
+    [allVisible, chunkedAssistantRunIds, liveContextRows, usesStaticScrollback, width]
   )
   const staticItems = usesStaticScrollback ? split.staticItems : []
   const visible = usesStaticScrollback ? split.liveItems : allVisible
@@ -328,7 +339,7 @@ export const ChatTranscript = memo(function ChatTranscript({
           {viewport?.hiddenAbove ? (
             <Text color="gray">↑ older transcript · PageUp/Home</Text>
           ) : null}
-          {leading && (!viewport || viewport.leadingVisible) ? (
+          {leading && !usesStaticScrollback && (!viewport || viewport.leadingVisible) ? (
             <Box flexDirection="column">{leading}</Box>
           ) : null}
           {visible.length === 0 && leading && !showPlaceholderBeforeTranscript ? (
@@ -419,37 +430,119 @@ export function splitStaticPrefix(
   items: ChatItem[],
   enabled: boolean,
   width = DEFAULT_WIDTH,
-  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
+  _liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS,
+  chunkedAssistantRunIds?: Set<string>
 ): { staticItems: ChatItem[]; liveItems: ChatItem[] } {
+  void width
+  void _liveContextRows
   if (!enabled) {
     return { staticItems: [], liveItems: items }
   }
+
   let stablePrefixEnd = 0
   while (stablePrefixEnd < items.length && isStaticTranscriptItem(items[stablePrefixEnd])) {
     stablePrefixEnd += 1
   }
-  const rowBudget = Math.max(1, Math.floor(liveContextRows))
-  let liveRows = 0
-  let liveItems = 0
-  let staticEnd = stablePrefixEnd
-  for (let index = stablePrefixEnd - 1; index >= 0; index -= 1) {
-    const item = items[index]
-    if (!item) {
-      continue
+
+  const staticItems = expandStaticItems(
+    items.slice(0, stablePrefixEnd),
+    chunkedAssistantRunIds
+  )
+  const firstLive = items[stablePrefixEnd]
+  if (firstLive?.kind === 'assistant' && firstLive.streaming) {
+    const splitAssistant = splitStreamingAssistant(firstLive)
+    if (splitAssistant.staticChunks.length > 0) {
+      chunkedAssistantRunIds?.add(firstLive.runId)
     }
-    const rows = Math.max(1, estimateItemRows(item, width))
-    const mustKeep = liveItems < LIVE_CONTEXT_MIN_ITEMS
-    if (!mustKeep && liveRows + rows > rowBudget) {
-      break
+    return {
+      staticItems: [...staticItems, ...splitAssistant.staticChunks],
+      liveItems: [...splitAssistant.liveItems, ...items.slice(stablePrefixEnd + 1)]
     }
-    liveRows += rows
-    liveItems += 1
-    staticEnd = index
   }
+
   return {
-    staticItems: items.slice(0, staticEnd),
-    liveItems: items.slice(staticEnd)
+    staticItems,
+    liveItems: items.slice(stablePrefixEnd)
   }
+}
+
+
+type AssistantChatItem = Extract<ChatItem, { kind: 'assistant' }>
+type AssistantChunkItem = AssistantChatItem & { continuation?: boolean }
+
+function rememberChunkedStreamingAssistants(
+  items: ChatItem[],
+  chunkedAssistantRunIds: Set<string>
+): void {
+  for (const item of items) {
+    if (item.kind === 'assistant' && item.streaming && completeLineEnd(item.text) !== -1) {
+      chunkedAssistantRunIds.add(item.runId)
+    }
+  }
+}
+
+function expandStaticItems(
+  items: ChatItem[],
+  chunkedAssistantRunIds: Set<string> | undefined
+): ChatItem[] {
+  if (!chunkedAssistantRunIds || chunkedAssistantRunIds.size === 0) {
+    return items
+  }
+  return items.flatMap((item) => {
+    if (item.kind === 'assistant' && chunkedAssistantRunIds.has(item.runId)) {
+      return assistantChunksFromLines(item, visibleAssistantLines(item.text), false)
+    }
+    return [item]
+  })
+}
+
+function splitStreamingAssistant(
+  item: AssistantChatItem
+): { staticChunks: ChatItem[]; liveItems: ChatItem[] } {
+  const end = completeLineEnd(item.text)
+  if (end === -1) {
+    return { staticChunks: [], liveItems: [item] }
+  }
+
+  const prefix = item.text.slice(0, end)
+  const suffix = item.text.slice(end + 1)
+  const staticChunks = assistantChunksFromLines(item, visibleAssistantLines(prefix), true)
+  const liveItems = suffix.trim()
+    ? [assistantChunk(item, suffix, staticChunks.length, true, true)]
+    : []
+  return { staticChunks, liveItems }
+}
+
+function visibleAssistantLines(text: string): string[] {
+  return text.split('\n').filter((line) => stripToolBlocks(line).trim().length > 0)
+}
+
+function assistantChunksFromLines(
+  item: AssistantChatItem,
+  lines: string[],
+  streaming: boolean
+): ChatItem[] {
+  return lines.map((line, index) => assistantChunk(item, line, index, index > 0, streaming))
+}
+
+function assistantChunk(
+  item: AssistantChatItem,
+  text: string,
+  index: number,
+  continuation: boolean,
+  streaming: boolean
+): ChatItem {
+  return {
+    ...item,
+    id: index === 0 ? item.id : `${item.id}:chunk:${index}`,
+    text,
+    streaming,
+    continuation
+  } as AssistantChunkItem as ChatItem
+}
+
+function completeLineEnd(text: string): number {
+  return text.lastIndexOf('\n')
 }
 
 function isStaticTranscriptItem(item: ChatItem | undefined): boolean {
@@ -786,6 +879,9 @@ function shouldInsertSpacer(previous: ChatItem | null, current: ChatItem): boole
     return false
   }
   if (!SPACED_KINDS.has(prevKind) || !SPACED_KINDS.has(nextKind)) {
+    return false
+  }
+  if (previous?.kind === 'assistant' && current.kind === 'assistant') {
     return false
   }
   if (prevKind === 'status' && nextKind === 'footer') {

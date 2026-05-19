@@ -52,6 +52,9 @@ import {
   type ToolsListResult
 } from './slash/dispatcher.js'
 
+const DEFAULT_HORIZONTAL_PADDING_COLS = 0
+const FULLSCREEN_HORIZONTAL_PADDING_COLS = 1
+
 export function App({
   client,
   repoRoot,
@@ -89,6 +92,7 @@ export function App({
   // user is trying to inspect a long permission/plan body.
   const hasBlockingOverlay =
     snapshotHasKind(overlays, 'permission') || snapshotHasKind(overlays, 'approval')
+  const showComposer = !hasBlockingOverlay
   const showBottomActivity =
     running && !hasVisibleStreamingAssistant && !hasBlockingOverlay
   // The fullscreen/alt-screen shell is experimental. Aether's default TUI
@@ -102,13 +106,15 @@ export function App({
     terminalRows,
     hasOverlay: overlays.length > 0,
     hasPermissionPrompt: hasBlockingOverlay,
-    composerRows: estimateComposerRows({
-      draft: composer.draft,
-      catalog: session.catalog,
-      queuedCount: composer.queued.length,
-      running,
-      interruptPending
-    }),
+    composerRows: showComposer
+      ? estimateComposerRows({
+          draft: composer.draft,
+          catalog: session.catalog,
+          queuedCount: composer.queued.length,
+          running,
+          interruptPending
+        })
+      : 0,
     activityRows: estimateActivityRows({
       show: showBottomActivity,
       hasReasoning: Boolean(reasoning.text && reasoning.updatedAt),
@@ -125,16 +131,20 @@ export function App({
       hasReasoning: Boolean(reasoning.text && reasoning.updatedAt),
       todoCount
     }),
-    composerRows: hasBlockingOverlay
-      ? 0
-      : estimateComposerRows({
+    composerRows: showComposer
+      ? estimateComposerRows({
           draft: composer.draft,
           catalog: session.catalog,
           queuedCount: composer.queued.length,
           running,
           interruptPending
         })
+      : 0
   })
+  const appHorizontalPadding = fullscreen
+    ? FULLSCREEN_HORIZONTAL_PADDING_COLS
+    : DEFAULT_HORIZONTAL_PADDING_COLS
+  const bottomChromeWidth = Math.max(20, terminalWidth - appHorizontalPadding * 2)
 
   useGatewayEvents(client)
   useReverseRpc(client)
@@ -459,38 +469,50 @@ export function App({
 
   if (!fullscreen) {
     return (
-      <Box flexDirection="column" paddingX={1} width={terminalWidth}>
-        <Banner />
-        {bootError ? <Text color="red">{bootError}</Text> : null}
+      <Box flexDirection="column" paddingX={appHorizontalPadding} width={terminalWidth}>
         <ChatTranscript
           staticScrollback={bannerReady}
           width={terminalWidth}
           liveContextRows={defaultLiveContextRows}
+          leading={
+            <>
+              <Banner />
+              {bootError ? <Text color="red">{bootError}</Text> : null}
+            </>
+          }
         />
         <OverlayFrame />
         {showBottomActivity ? (
-          <Box flexDirection="column" marginTop={1} width="100%">
+          <Box
+            flexDirection="column"
+            marginTop={1}
+            width={bottomChromeWidth}
+          >
             <ReasoningLine />
             <ActivityBar />
           </Box>
         ) : null}
-        {hasBlockingOverlay ? null : (
-          <Box marginTop={showBottomActivity ? 1 : 0} width="100%">
+        {showComposer ? (
+          <Box
+            marginTop={showBottomActivity ? 1 : 0}
+            width={bottomChromeWidth}
+          >
             <Composer
+              availableColumns={bottomChromeWidth}
               disabled={session.status === 'starting'}
               busy={running}
               onSubmit={(text) => void handleSubmit(text)}
               onCancel={() => void handleCancel()}
             />
           </Box>
-        )}
+        ) : null}
       </Box>
     )
   }
 
   return (
     <FullscreenShell rows={terminalRows} width={terminalWidth}>
-      <Box flexDirection="column" paddingX={1} width={terminalWidth} height={terminalRows}>
+      <Box flexDirection="column" paddingX={appHorizontalPadding} width={terminalWidth} height={terminalRows}>
         <Box
           flexDirection="column"
           height={fullscreenLayout.transcriptRows}
@@ -528,21 +550,29 @@ export function App({
             />
           ) : null}
           {showBottomActivity ? (
-            <Box flexDirection="column" marginTop={1} width="100%">
+            <Box
+              flexDirection="column"
+              marginTop={1}
+              width={bottomChromeWidth}
+            >
               <ReasoningLine />
               <ActivityBar />
             </Box>
           ) : null}
-          {hasBlockingOverlay ? null : (
-            <Box marginTop={showBottomActivity ? 1 : 0} width="100%">
+          {showComposer ? (
+            <Box
+              marginTop={showBottomActivity ? 1 : 0}
+              width={bottomChromeWidth}
+            >
               <Composer
+                availableColumns={bottomChromeWidth}
                 disabled={session.status === 'starting'}
                 busy={running}
                 onSubmit={(text) => void handleSubmit(text)}
                 onCancel={() => void handleCancel()}
               />
             </Box>
-          )}
+          ) : null}
         </Box>
       </Box>
     </FullscreenShell>

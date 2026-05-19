@@ -115,6 +115,26 @@ export function App({
       todoCount
     })
   })
+  const defaultLiveContextRows = computeDefaultLiveContextRows({
+    terminalRows,
+    bannerRows: estimateBannerRows(session),
+    bootErrorRows: bootError ? 1 : 0,
+    overlayRows: estimateDefaultOverlayRows(terminalRows, overlays.length),
+    activityRows: estimateActivityRows({
+      show: showBottomActivity,
+      hasReasoning: Boolean(reasoning.text && reasoning.updatedAt),
+      todoCount
+    }),
+    composerRows: hasBlockingOverlay
+      ? 0
+      : estimateComposerRows({
+          draft: composer.draft,
+          catalog: session.catalog,
+          queuedCount: composer.queued.length,
+          running,
+          interruptPending
+        })
+  })
 
   useGatewayEvents(client)
   useReverseRpc(client)
@@ -442,7 +462,11 @@ export function App({
       <Box flexDirection="column" paddingX={1} width={terminalWidth}>
         <Banner />
         {bootError ? <Text color="red">{bootError}</Text> : null}
-        <ChatTranscript staticScrollback={bannerReady} width={terminalWidth} />
+        <ChatTranscript
+          staticScrollback={bannerReady}
+          width={terminalWidth}
+          liveContextRows={defaultLiveContextRows}
+        />
         <OverlayFrame />
         {showBottomActivity ? (
           <Box flexDirection="column" marginTop={1} width="100%">
@@ -658,6 +682,33 @@ function readTerminalWidth(stream: NodeJS.WriteStream | undefined): number {
 function readTerminalRows(stream: NodeJS.WriteStream | undefined): number {
   const rows = stream?.rows
   return typeof rows === 'number' && rows > 0 ? rows : 24
+}
+
+function computeDefaultLiveContextRows(input: {
+  terminalRows: number
+  bannerRows: number
+  bootErrorRows: number
+  overlayRows: number
+  activityRows: number
+  composerRows: number
+}): number {
+  const rows = Math.max(1, Math.floor(input.terminalRows))
+  const reservedRows =
+    input.bannerRows +
+    input.bootErrorRows +
+    input.overlayRows +
+    input.activityRows +
+    input.composerRows +
+    2
+  return clampNumber(rows - reservedRows, 1, 12)
+}
+
+function estimateDefaultOverlayRows(terminalRows: number, overlayCount: number): number {
+  if (overlayCount === 0) {
+    return 0
+  }
+  const rows = Math.max(1, Math.floor(terminalRows))
+  return clampNumber(Math.floor(rows * 0.4), 4, Math.max(4, rows - 4))
 }
 
 interface FullscreenLayoutState {

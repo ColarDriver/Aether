@@ -23,7 +23,8 @@ import { ChatMessage } from './ChatMessage.js'
 const MAX_VISIBLE = 80
 const DEFAULT_WIDTH = 80
 const WHEEL_SCROLL_ROWS = 3
-const LIVE_CONTEXT_ITEMS = 10
+const DEFAULT_LIVE_CONTEXT_ROWS = 12
+const LIVE_CONTEXT_MIN_ITEMS = 1
 
 export interface ChatTranscriptProps {
   viewportRows?: number
@@ -32,6 +33,7 @@ export interface ChatTranscriptProps {
   leadingRows?: number
   items?: ChatItem[]
   staticScrollback?: boolean
+  liveContextRows?: number
 }
 
 /**
@@ -48,7 +50,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   leading,
   leadingRows = 0,
   items: inputItems,
-  staticScrollback = true
+  staticScrollback = true,
+  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
 }: ChatTranscriptProps = {}): ReactElement | null {
   const storeItems = useStore(chatItems)
   const staticEpoch = useStore(chatEpoch)
@@ -72,8 +75,8 @@ export const ChatTranscript = memo(function ChatTranscript({
     [renderableItems, usesStaticScrollback]
   )
   const split = useMemo(
-    () => splitStaticPrefix(allVisible, usesStaticScrollback),
-    [allVisible, usesStaticScrollback]
+    () => splitStaticPrefix(allVisible, usesStaticScrollback, width, liveContextRows),
+    [allVisible, liveContextRows, usesStaticScrollback, width]
   )
   const staticItems = usesStaticScrollback ? split.staticItems : []
   const visible = usesStaticScrollback ? split.liveItems : allVisible
@@ -412,9 +415,11 @@ function contentWidth(width: number): number {
   return Math.max(40, width - 2)
 }
 
-function splitStaticPrefix(
+export function splitStaticPrefix(
   items: ChatItem[],
-  enabled: boolean
+  enabled: boolean,
+  width = DEFAULT_WIDTH,
+  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
 ): { staticItems: ChatItem[]; liveItems: ChatItem[] } {
   if (!enabled) {
     return { staticItems: [], liveItems: items }
@@ -423,10 +428,24 @@ function splitStaticPrefix(
   while (stablePrefixEnd < items.length && isStaticTranscriptItem(items[stablePrefixEnd])) {
     stablePrefixEnd += 1
   }
-  // Keep the recent stable tail live so the user can still see the previous
-  // turn and the just-submitted prompt while the next assistant response
-  // streams. Older stable rows are printed once into terminal scrollback.
-  const staticEnd = Math.max(0, stablePrefixEnd - LIVE_CONTEXT_ITEMS)
+  const rowBudget = Math.max(1, Math.floor(liveContextRows))
+  let liveRows = 0
+  let liveItems = 0
+  let staticEnd = stablePrefixEnd
+  for (let index = stablePrefixEnd - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (!item) {
+      continue
+    }
+    const rows = Math.max(1, estimateItemRows(item, width))
+    const mustKeep = liveItems < LIVE_CONTEXT_MIN_ITEMS
+    if (!mustKeep && liveRows + rows > rowBudget) {
+      break
+    }
+    liveRows += rows
+    liveItems += 1
+    staticEnd = index
+  }
   return {
     staticItems: items.slice(0, staticEnd),
     liveItems: items.slice(staticEnd)

@@ -99,7 +99,7 @@ class ListDirTool(ToolExecutor):
         if not raw_path:
             return _error(call, "'path' must be a non-empty string")
 
-        path = self._resolve_path(raw_path)
+        path = self._resolve_path(raw_path, session_id=context.session_id)
         if not path.exists():
             return _error(call, f"directory not found: {path}", metadata={"path": str(path)})
         if not path.is_dir():
@@ -177,11 +177,12 @@ class ListDirTool(ToolExecutor):
             },
         )
 
-    def _resolve_path(self, raw: Any) -> Path:
-        candidate = Path(str(raw)).expanduser()
-        if not candidate.is_absolute() and self.default_cwd is not None:
-            return (self.default_cwd / candidate).resolve()
-        return candidate.resolve()
+    def _resolve_path(self, raw: Any, *, session_id: str | None = None) -> Path:
+        from aether.tools.path_resolution import resolve_tool_path
+
+        return resolve_tool_path(
+            raw, default_cwd=self.default_cwd, session_id=session_id
+        )
 
     def _resolve_max_entries(self, value: Any) -> int:
         try:

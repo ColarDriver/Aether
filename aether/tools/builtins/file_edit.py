@@ -127,7 +127,7 @@ class FileEditTool(ToolExecutor):
         call: ToolCall,
         context: TurnContext,
     ) -> ToolPermissionPreview | ToolResult:
-        plan = self.plan_edit(call)
+        plan = self.plan_edit(call, context=context)
         if isinstance(plan, ToolResult):
             return plan
         context.metadata.setdefault("_tool_permission_preview_plans", {})[call.id] = plan
@@ -166,7 +166,7 @@ class FileEditTool(ToolExecutor):
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
         plan = self._plan_from_context(call, context)
         if plan is None:
-            planned = self.plan_edit(call)
+            planned = self.plan_edit(call, context=context)
             if isinstance(planned, ToolResult):
                 return planned
             plan = planned
@@ -229,7 +229,12 @@ class FileEditTool(ToolExecutor):
             metadata=result_metadata,
         )
 
-    def plan_edit(self, call: ToolCall) -> FileEditPlan | ToolResult:
+    def plan_edit(
+        self,
+        call: ToolCall,
+        *,
+        context: TurnContext | None = None,
+    ) -> FileEditPlan | ToolResult:
         args = call.arguments or {}
         raw_path = args.get("path")
         if not raw_path:
@@ -243,7 +248,8 @@ class FileEditTool(ToolExecutor):
             return _error(call, "'new_string' must be a string")
         replace_all = bool(args.get("replace_all") or False)
 
-        path = self._resolve_path(raw_path)
+        session_id = context.session_id if context is not None else None
+        path = self._resolve_path(raw_path, session_id=session_id)
 
         if self._is_under_spill_root(path):
             return _error(
@@ -342,11 +348,12 @@ class FileEditTool(ToolExecutor):
     # helpers
     # ------------------------------------------------------------------
 
-    def _resolve_path(self, raw: Any) -> Path:
-        candidate = Path(str(raw)).expanduser()
-        if not candidate.is_absolute() and self.default_cwd is not None:
-            return (self.default_cwd / candidate).resolve()
-        return candidate.resolve()
+    def _resolve_path(self, raw: Any, *, session_id: str | None = None) -> Path:
+        from aether.tools.path_resolution import resolve_tool_path
+
+        return resolve_tool_path(
+            raw, default_cwd=self.default_cwd, session_id=session_id
+        )
 
     @staticmethod
     def _is_under_spill_root(path: Path) -> bool:

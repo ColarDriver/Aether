@@ -26,6 +26,16 @@ class EngineConfig:
     # so CLI, SDK callers, subagents, and unattended tests share the
     # same headroom.
     max_iterations: int = 32
+    # Default project root for path-aware tools.  Passed into
+    # :func:`build_default_tool_registry` as ``cwd=``, becoming each
+    # tool's fallback ``default_cwd``.  Per-session CWD tracking
+    # (via :class:`ShellTool`'s ``pwd -P`` round-trip into
+    # ``session_state.set_cwd``) still wins over this for any session
+    # that has actually ``cd``-ed somewhere; the value here only
+    # matters for first-call defaults and for sessions that never
+    # touch shell.  Most callers should set this from
+    # :attr:`EngineRequest.cwd` at the gateway layer.
+    default_cwd: str | None = None
     fail_on_tool_error: bool = False
     raise_on_middleware_error: bool = False
     fail_on_unknown_tool: bool = True

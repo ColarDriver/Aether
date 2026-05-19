@@ -116,7 +116,7 @@ class GrepTool(ToolExecutor):
             return _error(call, "'pattern' must be a non-empty string")
 
         raw_path = args.get("path")
-        path = self._resolve_path(raw_path)
+        path = self._resolve_path(raw_path, session_id=context.session_id)
         if not path.exists():
             return _error(call, f"path not found: {path}", metadata={"path": str(path)})
 
@@ -252,13 +252,12 @@ class GrepTool(ToolExecutor):
     # helpers
     # ------------------------------------------------------------------
 
-    def _resolve_path(self, raw: Any) -> Path:
-        if not raw:
-            return self.default_cwd or Path.cwd()
-        candidate = Path(str(raw)).expanduser()
-        if not candidate.is_absolute() and self.default_cwd is not None:
-            return (self.default_cwd / candidate).resolve()
-        return candidate.resolve()
+    def _resolve_path(self, raw: Any, *, session_id: str | None = None) -> Path:
+        from aether.tools.path_resolution import resolve_tool_dir
+
+        return resolve_tool_dir(
+            raw, default_cwd=self.default_cwd, session_id=session_id
+        )
 
 
 def _format_result(

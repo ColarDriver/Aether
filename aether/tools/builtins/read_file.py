@@ -91,7 +91,7 @@ class ReadFileTool(ToolExecutor):
         if not raw_path:
             return _error(call, "'path' must be a non-empty string")
 
-        path = self._resolve_path(raw_path)
+        path = self._resolve_path(raw_path, session_id=context.session_id)
 
         if not path.exists():
             return _error(call, f"file not found: {path}", metadata={"path": str(path)})
@@ -214,11 +214,16 @@ class ReadFileTool(ToolExecutor):
     # helpers
     # ------------------------------------------------------------------
 
-    def _resolve_path(self, raw: Any) -> Path:
-        candidate = Path(str(raw)).expanduser()
-        if not candidate.is_absolute() and self.default_cwd is not None:
-            return (self.default_cwd / candidate).resolve()
-        return candidate.resolve()
+    def _resolve_path(self, raw: Any, *, session_id: str | None = None) -> Path:
+        # Routed through the shared helper so relative paths honour
+        # the round-tripped session CWD (set by ``ShellTool``'s
+        # ``pwd -P`` capture after each command) before falling back
+        # to ``default_cwd`` / ``Path.cwd()``.
+        from aether.tools.path_resolution import resolve_tool_path
+
+        return resolve_tool_path(
+            raw, default_cwd=self.default_cwd, session_id=session_id
+        )
 
     def _resolve_offset(self, value: Any, total_lines: int) -> int:
         try:

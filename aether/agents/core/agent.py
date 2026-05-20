@@ -35,6 +35,10 @@ from aether.agents.runtime.recovery_controller import (
     RecoveryAttemptInput,
     RecoveryController,
 )
+from aether.agents.runtime.response_finalization import (
+    LegacyResponseFinalizationAdapter,
+    ResponseFinalizationController,
+)
 from aether.agents.runtime.session_lifecycle import (
     LegacySessionLifecycleAdapter,
     SessionLifecycleController,
@@ -449,11 +453,15 @@ class AgentEngine:
             services=self.services,
             adapter=LegacySessionLifecycleAdapter(self),
         )
+        self._response_finalization_controller = ResponseFinalizationController(
+            adapter=LegacyResponseFinalizationAdapter(self),
+        )
         self._turn_runner = TurnRunner(
             services=self.services,
             config=self.config,
             session_lifecycle_controller=self._session_lifecycle_controller,
             context_assembly_pipeline=self._context_assembly_pipeline,
+            response_finalization_controller=self._response_finalization_controller,
             tool_dispatch_controller=self._tool_dispatch_controller,
             adapter=LegacyTurnRunnerAdapter(self),
         )

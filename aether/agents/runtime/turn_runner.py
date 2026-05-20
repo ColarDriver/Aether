@@ -9,6 +9,10 @@ from aether.agents.runtime.context_assembly import (
     ContextAssemblyInput,
     ContextAssemblyPipeline,
 )
+from aether.agents.runtime.response_finalization import (
+    ResponseFinalizationController,
+    ResponseFinalizationInput,
+)
 from aether.agents.runtime.session_lifecycle import (
     SessionLifecycleController,
     TurnFinalizationInput,
@@ -116,14 +120,6 @@ class TurnRunnerAdapter(Protocol):
         response: NormalizedResponse,
     ) -> None: ...
 
-    def maybe_recover_phantom_tool_intent(
-        self,
-        *,
-        response_to_store: NormalizedResponse,
-        messages: list[dict[str, Any]],
-        context: TurnContext,
-    ) -> str: ...
-
     def dispatch_synthesized_tool_calls(
         self,
         *,
@@ -133,20 +129,6 @@ class TurnRunnerAdapter(Protocol):
         state_machine: Any,
         request: EngineRequest,
     ) -> tuple[str, ExitReason | None, str | None]: ...
-
-    def finalize_empty_response(
-        self,
-        *,
-        response: NormalizedResponse,
-        response_to_store: NormalizedResponse,
-        messages: list[dict[str, Any]],
-        context: TurnContext,
-        request: EngineRequest,
-        phantom_outcome: str,
-        prefix: str,
-    ) -> Any: ...
-
-    def is_continue_loop_finalization(self, finalized: Any) -> bool: ...
 
 
 class LegacyTurnRunnerAdapter:
@@ -210,17 +192,8 @@ class LegacyTurnRunnerAdapter:
     ) -> None:
         self._engine._append_assistant_tool_message(messages, response)  # noqa: SLF001
 
-    def maybe_recover_phantom_tool_intent(self, **kwargs: Any) -> str:
-        return self._engine._maybe_recover_phantom_tool_intent(**kwargs)  # noqa: SLF001
-
     def dispatch_synthesized_tool_calls(self, **kwargs: Any) -> tuple[str, ExitReason | None, str | None]:
         return self._engine._dispatch_synthesized_tool_calls(**kwargs)  # noqa: SLF001
-
-    def finalize_empty_response(self, **kwargs: Any) -> Any:
-        return self._engine._finalize_empty_response(**kwargs)  # noqa: SLF001
-
-    def is_continue_loop_finalization(self, finalized: Any) -> bool:
-        return self._engine._is_continue_loop_finalization(finalized)  # noqa: SLF001
 
 
 class TurnRunner:
@@ -233,6 +206,7 @@ class TurnRunner:
         config: EngineConfig,
         session_lifecycle_controller: SessionLifecycleController,
         context_assembly_pipeline: ContextAssemblyPipeline,
+        response_finalization_controller: ResponseFinalizationController,
         tool_dispatch_controller: ToolDispatchController,
         adapter: TurnRunnerAdapter,
     ) -> None:
@@ -240,6 +214,7 @@ class TurnRunner:
         self._config = config
         self._session_lifecycle_controller = session_lifecycle_controller
         self._context_assembly_pipeline = context_assembly_pipeline
+        self._response_finalization_controller = response_finalization_controller
         self._tool_dispatch_controller = tool_dispatch_controller
         self._adapter = adapter
 
@@ -504,39 +479,19 @@ class TurnRunner:
                         state_machine.transition(LoopState.PRE_LLM)
                         continue
 
-                    prefix_parts = context.metadata.pop("truncated_response_prefix_parts", None)
-                    prefix = (
-                        " ".join(
-                            part.strip()
-                            for part in prefix_parts
-                            if isinstance(part, str) and part.strip()
+                    finalized = self._response_finalization_controller.finalize(
+                        ResponseFinalizationInput(
+                            response=response,
+                            messages=messages,
+                            context=context,
+                            request=request,
                         )
-                        if isinstance(prefix_parts, list)
-                        else ""
                     )
-                    suffix = (response.content or "").strip()
-                    combined_content = (
-                        (prefix + " " + suffix).strip()
-                        if prefix and suffix
-                        else (prefix or suffix)
-                    )
-                    response_to_store = response
-                    if combined_content != (response.content or ""):
-                        response_to_store = NormalizedResponse(
-                            content=combined_content,
-                            tool_calls=list(response.tool_calls),
-                            finish_reason=response.finish_reason,
-                            metadata=dict(response.metadata),
-                        )
-
-                    phantom_outcome = self._adapter.maybe_recover_phantom_tool_intent(
-                        response_to_store=response_to_store,
-                        messages=messages,
-                        context=context,
-                    )
-                    if phantom_outcome == "synthesized":
+                    messages = finalized.messages
+                    if finalized.action == "dispatch_synthesized":
+                        assert finalized.synthesized_response is not None
                         synth_outcome, synth_exit, synth_error = self._adapter.dispatch_synthesized_tool_calls(
-                            response=response_to_store,
+                            response=finalized.synthesized_response,
                             messages=messages,
                             context=context,
                             state_machine=state_machine,
@@ -558,7 +513,7 @@ class TurnRunner:
                         state_machine.transition(LoopState.PRE_LLM)
                         continue
 
-                    if phantom_outcome == "retry":
+                    if finalized.action == "continue":
                         state_machine.transition(LoopState.CHECK_EXIT)
                         if budget.exhausted:
                             state_machine.transition(LoopState.FINALIZE)
@@ -567,28 +522,7 @@ class TurnRunner:
                         state_machine.transition(LoopState.PRE_LLM)
                         continue
 
-                    finalized = self._adapter.finalize_empty_response(
-                        response=response,
-                        response_to_store=response_to_store,
-                        messages=messages,
-                        context=context,
-                        request=request,
-                        phantom_outcome=phantom_outcome,
-                        prefix=prefix,
-                    )
-                    if self._adapter.is_continue_loop_finalization(finalized):
-                        state_machine.transition(LoopState.CHECK_EXIT)
-                        if budget.exhausted:
-                            state_machine.transition(LoopState.FINALIZE)
-                            exit_reason = ExitReason.MAX_ITERATIONS
-                            break
-                        state_machine.transition(LoopState.PRE_LLM)
-                        continue
-                    final_response = (
-                        finalized.final_response
-                        if isinstance(finalized.final_response, str)
-                        else None
-                    )
+                    final_response = finalized.final_response
                     exit_reason = finalized.exit_reason or ExitReason.EMPTY_RESPONSE
                     error_text = finalized.error_text
                     state_machine.transition(LoopState.FINALIZE)

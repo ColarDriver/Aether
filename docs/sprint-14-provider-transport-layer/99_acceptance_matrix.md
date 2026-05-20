@@ -40,3 +40,23 @@
 - Do not move credential lookup into transports.
 - Do not change gateway/TUI schema.
 - Do not merge local web-search backend selection with hosted provider search.
+
+## Verification Result
+
+Completed on `provider-transport-layer`:
+
+- `python -m pytest aether/tests/models aether/tests/agents/runtime/test_provider_invocation_controller.py aether/tests/engine/test_streaming_generate.py aether/tests/tools/test_web_search_tool.py -q`
+  - Result: `107 passed`.
+- `python -m pytest aether/tests -q`
+  - Result: `1642 passed`.
+- `uv run pyright aether/models/provider aether/models/transport aether/agents/runtime/provider_invocation.py`
+  - Result: `0 errors, 0 warnings, 0 informations`.
+- Static import review:
+  - `aether/models/transport/` has no `httpx`, `anthropic`, `AgentEngine`, gateway, or TUI imports.
+
+Implementation acceptance:
+
+- OpenAI-compatible, Claude Messages, and Codex Responses providers are backed by pure transport classes.
+- Provider classes still own credentials, HTTP clients, retries, streaming IO, and provider error wrapping.
+- Runtime hooks keep existing field names and add optional `transport` / `transport_api_mode`.
+- `context.metadata["provider_invocation"]` exposes provider, API mode, transport, transport API mode, and model without raw payloads or credentials.

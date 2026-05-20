@@ -16,10 +16,12 @@ from aether.models.provider.scripted import ScriptedProvider
 from aether.runtime.control.interrupts import InterruptController
 from aether.runtime.core.contracts import EngineRequest, NormalizedResponse, TurnContext
 from aether.runtime.core.services import EngineServices
+from aether.runtime.credentials.pool import CredentialPool
 from aether.runtime.recovery.error_classifier import FailoverReason
 from aether.runtime.recovery.provider_errors import ProviderInvocationError, ResponseInvalidError
 from aether.runtime.recovery.strategies import (
     AttemptState,
+    ClassifiedRecoveryStrategy,
     GenericBackoffStrategy,
     RecoveryDecision,
     RecoveryStrategy,
@@ -150,6 +152,31 @@ def _services(strategy: RecoveryStrategy) -> EngineServices:
     )
 
 
+class _RotatableProvider(ScriptedProvider):
+    provider_name = "openai"
+
+    def __init__(self) -> None:
+        super().__init__([NormalizedResponse(content="unused")])
+        self.credential = "sk-primary-secret"
+
+    def set_credential(self, credential: str, *, source: str | None = None) -> bool:
+        del source
+        self.credential = credential
+        return True
+
+
+def _services_with_pool(strategy: RecoveryStrategy, pool: CredentialPool) -> EngineServices:
+    return EngineServices(
+        provider=_RotatableProvider(),
+        tool_registry=ToolRegistry(),
+        middleware_pipeline=MiddlewarePipeline(),
+        interrupt_controller=InterruptController(),
+        logger=logging.getLogger(__name__),
+        recovery_strategy=strategy,
+        credential_pool=pool,
+    )
+
+
 def _attempt(
     context: TurnContext,
     invoker: Any,
@@ -253,6 +280,69 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(result.response.content, "ok")
         self.assertEqual(calls, 2)
         self.assertEqual(adapter.compaction_calls, 1)
+
+    def test_rate_limit_can_rotate_credential_pool_once(self) -> None:
+        adapter = _Adapter()
+        pool = CredentialPool.from_mapping(
+            {
+                "providers": {
+                    "openai": [
+                        {"name": "primary", "api_key_env": "OPENAI_API_KEY"},
+                        {"name": "backup", "api_key_env": "OPENAI_API_KEY_2"},
+                    ]
+                }
+            },
+            environ={
+                "OPENAI_API_KEY": "sk-primary-secret",
+                "OPENAI_API_KEY_2": "sk-backup-secret",
+            },
+        )
+        services = _services_with_pool(
+            ClassifiedRecoveryStrategy(
+                max_attempts=3,
+                base_wait_seconds=0.0,
+                rate_limit_fallback_threshold_seconds=999.0,
+            ),
+            pool,
+        )
+        controller = RecoveryController(
+            services=services,
+            config=EngineConfig(),
+            adapter=adapter,
+        )
+        selection = pool.select("openai")
+        assert selection is not None
+        calls = 0
+
+        def invoker(invocation: ProviderInvocationRequest) -> ProviderInvocationResult:
+            nonlocal calls
+            calls += 1
+            provider = invocation.context.metadata["provider"]
+            if calls == 1:
+                self.assertEqual(provider.credential, "sk-primary-secret")
+                return ProviderInvocationResult(error=ProviderInvocationError(status_code=429))
+            self.assertEqual(provider.credential, "sk-backup-secret")
+            return ProviderInvocationResult(response=NormalizedResponse(content="ok"))
+
+        context = TurnContext(
+            session_id="rotate-creds",
+            iteration=1,
+            metadata={
+                "provider": services.provider,
+                "credential_pool_selection": selection,
+            },
+        )
+
+        result = controller.invoke_with_recovery(_attempt(context, invoker))
+
+        assert result.response is not None
+        self.assertEqual(result.response.content, "ok")
+        self.assertEqual(calls, 2)
+        rotations = context.metadata["credential_pool_rotations"]
+        self.assertEqual(rotations[0]["from"], "primary")
+        self.assertEqual(rotations[0]["to"], "backup")
+        self.assertTrue(rotations[0]["applied"])
+        self.assertNotIn("sk-backup-secret", str(rotations))
 
 
 if __name__ == "__main__":

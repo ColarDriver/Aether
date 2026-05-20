@@ -98,6 +98,7 @@ from aether.runtime.core.exceptions import EngineInterrupted
 from aether.runtime.control.interrupt_messages import select_interrupt_marker
 from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.runtime.recovery.fallback_chain import FallbackChain
+from aether.runtime.credentials.pool import CredentialPool
 from aether.runtime.core.hooks import EngineHooks, HookOutcome
 from aether.runtime.recovery.image_shrink import shrink_image_parts_in_messages
 from aether.runtime.control.interrupts import InterruptController
@@ -279,6 +280,7 @@ class AgentEngine:
         browser_manager: "object | None" = None,
         steer_inbox: SteerInbox | None = None,
         memory_provider: MemoryProvider | None = None,
+        credential_pool: CredentialPool | None = None,
         diagnostic_tracker: "object | None" = None,
     ) -> None:
         self.config = config or EngineConfig()
@@ -362,6 +364,7 @@ class AgentEngine:
             fallback_chain=fallback_chain,
             steer_inbox=steer_inbox,
             memory_provider=effective_memory_provider,
+            credential_pool=credential_pool,
         )
         if self.services.middleware_pipeline.logger is None:
             self.services.middleware_pipeline.logger = self.services.logger

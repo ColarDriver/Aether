@@ -456,6 +456,14 @@ class RecoveryController:
                 ):
                     continue
 
+                if self._maybe_apply_credential_pool_rotation(
+                    decision=decision,
+                    context=attempt.context,
+                    provider=provider,
+                    error=exc,
+                ):
+                    continue
+
                 if getattr(self._config, "error_withholding_enabled", True):
                     applied = self._adapter.apply_recovery_decision_cascade(
                         decision=decision,
@@ -667,6 +675,73 @@ class RecoveryController:
             "compress_context": decision.compress_context,
             "strip_thinking": decision.strip_thinking,
         }
+
+    def _maybe_apply_credential_pool_rotation(
+        self,
+        *,
+        decision: RecoveryDecision,
+        context: TurnContext,
+        provider: ModelProvider,
+        error: ProviderInvocationError,
+    ) -> bool:
+        if decision.classified_reason != FailoverReason.rate_limit.value:
+            return False
+        pool = getattr(self._services, "credential_pool", None)
+        if pool is None:
+            return False
+        current = context.metadata.get("credential_pool_selection")
+        if not hasattr(current, "credential"):
+            return False
+        provider_name = str(getattr(provider, "provider_name", "") or "")
+        selected_provider = str(getattr(current.credential, "provider", ""))
+        if provider_name and selected_provider and provider_name != selected_provider:
+            return False
+        next_selection = pool.rotate_after_error(current, reason=decision.reason or str(error))
+        rotations = context.metadata.setdefault("credential_pool_rotations", [])
+        if next_selection is None:
+            rotations.append(
+                {
+                    "provider": selected_provider or provider_name,
+                    "from": getattr(current.credential, "name", ""),
+                    "to": None,
+                    "reason": decision.reason,
+                    "exhausted": True,
+                }
+            )
+            return False
+        set_credential = getattr(provider, "set_credential", None)
+        if not callable(set_credential):
+            rotations.append(
+                {
+                    "provider": next_selection.credential.provider,
+                    "from": getattr(current.credential, "name", ""),
+                    "to": next_selection.credential.name,
+                    "reason": decision.reason,
+                    "exhausted": False,
+                    "applied": False,
+                    "error": "provider does not support credential rotation",
+                }
+            )
+            return False
+        applied = bool(
+            set_credential(
+                next_selection.credential.credential.value,
+                source=next_selection.credential.credential.source,
+            )
+        )
+        context.metadata["credential_pool_selection"] = next_selection
+        rotations.append(
+            {
+                "provider": next_selection.credential.provider,
+                "from": getattr(current.credential, "name", ""),
+                "to": next_selection.credential.name,
+                "reason": decision.reason,
+                "exhausted": False,
+                "applied": applied,
+            }
+        )
+        context.metadata["credential_pool_rotation_count"] = len(rotations)
+        return applied
 
     def _maybe_surface_terminal_after_recovery(
         self,

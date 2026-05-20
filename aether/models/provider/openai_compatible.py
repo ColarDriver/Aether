@@ -267,6 +267,13 @@ class OpenAICompatibleModel(ModelProvider):
             logger.exception("OpenAI-compatible dead-connection cleanup failed")
             return False
 
+    def set_credential(self, credential: str, *, source: str | None = None) -> bool:
+        del source
+        if not credential:
+            return False
+        self.api_key = credential
+        return True
+
     def _get_client(self) -> httpx.Client:
         if self._client is None:
             self._client = self._build_http_client()

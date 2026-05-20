@@ -104,6 +104,13 @@ class CodexChatModel(ModelProvider):
     def _load_codex_auth(self) -> CodexCliCredential | None:
         return load_codex_cli_credential()
 
+    def set_credential(self, credential: str, *, source: str | None = None) -> bool:
+        del source
+        if not credential:
+            return False
+        self._access_token = credential
+        return True
+
     def _call_codex_api(
         self,
         messages: list[dict],

@@ -22,6 +22,10 @@ from aether.agents.core.phantom_tool import (
     detect_phantom_tool_intent,
     synthesize_tool_calls_from_phantom,
 )
+from aether.agents.runtime.provider_invocation import (
+    ProviderInvocationController,
+    ProviderInvocationRequest,
+)
 from aether.agents.core.tool_hardening import ToolDispatchPlan, prepare_tool_calls
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
@@ -115,7 +119,7 @@ from aether.runtime.observability.unicode_sanitizer import (
     sanitize_structure_surrogates,
     strip_surrogates,
 )
-from aether.runtime.observability.usage import CanonicalUsage, normalize_usage
+from aether.runtime.observability.usage import CanonicalUsage
 from aether.runtime.diagnostics.attachments import (
     collect_pending_diagnostics,
     render_diagnostics_block,
@@ -399,6 +403,10 @@ class AgentEngine:
         self._active_children_lock = RLock()
         self._session_store = session_store or InMemorySessionStore()
         self._hooks = hooks or EngineHooks()
+        self._provider_invocation_controller = ProviderInvocationController(
+            services=self.services,
+            hooks=self._hooks,
+        )
         # External-event queue (PR 10.7).  Used by the root engine to
         # receive ``<task-notification>`` messages routed back from
         # async children that have completed.  Drained at the next
@@ -3733,62 +3741,30 @@ class AgentEngine:
                     provider=provider,
                     context=context,
                 )
-                api_call_count = self._next_api_request_attempt_count(context)
-                api_hook_payload = self._build_api_hook_payload(
-                    request=request,
-                    messages=prepared_messages,
-                    tools=tools,
-                    call_config=call_config,
-                    context=context,
-                    provider=provider,
-                    api_call_count=api_call_count,
-                )
-                self._safe_call_hook("pre_api_request", **api_hook_payload)
-                api_start = time.perf_counter()
-                response: NormalizedResponse | None = None
-                try:
-                    response = provider.generate(
-                        prepared_messages,
-                        tools,
-                        call_config,
-                        context,
+                invocation_result = self._provider_invocation_controller.invoke(
+                    ProviderInvocationRequest(
+                        request=request,
+                        canonical_messages=canonical_messages,
+                        prepared_messages=prepared_messages,
+                        tools=tools,
+                        call_config=call_config,
+                        context=context,
                         stream_callback=stream_callback,
                         stream_silent_callback=stream_silent_callback,
-                    )
-                    # post-LLM response-shape validation.
-                    # ``validate_response`` is non-mutating; if it returns False
-                    # we lift the structured failure into the recovery loop so
-                    # the existing retry / give-up machinery handles it.  The
-                    # default base-class implementation always returns valid,
-                    # so providers that don't care pay zero cost here.
-                    ok, reasons = provider.validate_response(response)
-                    if not ok:
-                        raise ResponseInvalidError(
-                            validation_errors=list(reasons),
-                            body_summary="invalid response: " + "; ".join(reasons[:5]),
-                            metadata={"phase": "validate_response"},
-                        )
-                    self._clear_rate_guard_after_success(provider=provider, context=context)
-                except Exception as exc:
-                    self._safe_call_hook(
-                        "post_api_request",
-                        **self._build_post_api_hook_payload(
-                            api_hook_payload,
-                            elapsed_ms=(time.perf_counter() - api_start) * 1000,
-                            response=response,
-                            error=exc,
+                        on_valid_response=lambda current_provider, current_context: (
+                            self._clear_rate_guard_after_success(
+                                provider=current_provider,
+                                context=current_context,
+                            )
                         ),
                     )
-                    raise
-                self._safe_call_hook(
-                    "post_api_request",
-                    **self._build_post_api_hook_payload(
-                        api_hook_payload,
-                        elapsed_ms=(time.perf_counter() - api_start) * 1000,
-                        response=response,
-                        error=None,
-                    ),
                 )
+                if invocation_result.interrupted:
+                    return AgentEngine._ProviderInvocationOutcome(interrupted=True)
+                if invocation_result.error is not None:
+                    raise invocation_result.error
+                response = invocation_result.response
+                assert response is not None
                 if withholding_state.pending_errors or withholding_state.cascade_log:
                     self._observe_recovery_cascade(
                         context,
@@ -6095,21 +6071,7 @@ class AgentEngine:
         ``context.metadata["usage_accumulator"]`` and bumps
         ``context.metadata["api_calls"]``.
         """
-        try:
-            raw = (response.metadata or {}).get("usage") if response else None
-            provider_name = getattr(self.services.provider, "provider_name", "openai")
-            api_mode = getattr(self.services.provider, "api_mode", "chat")
-            this_call = normalize_usage(raw, provider=provider_name, api_mode=api_mode)
-            acc = context.metadata.get("usage_accumulator")
-            if not isinstance(acc, CanonicalUsage):
-                acc = CanonicalUsage()
-            context.metadata["usage_accumulator"] = acc.add(this_call)
-            context.metadata["api_calls"] = int(context.metadata.get("api_calls", 0)) + 1
-        except Exception:  # noqa: BLE001 — observability path, never crash a turn
-            self.services.logger.debug(
-                "usage accumulation failed; leaving accumulator unchanged",
-                exc_info=True,
-            )
+        self._provider_invocation_controller.accumulate_usage(response, context)
 
     def _is_cheap_tool(self, tool_name: str) -> bool:
         """Whether ``tool_name`` is in the cheap-tool refund whitelist.

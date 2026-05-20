@@ -135,6 +135,7 @@ class ProviderInvocationControllerTests(unittest.TestCase):
         result = controller.invoke(invocation)
 
         self.assertIsNone(result.error)
+        assert result.response is not None
         self.assertEqual(result.response.content, "hello")
         self.assertEqual(result.provider_name, "openai")
         self.assertEqual(result.api_mode, "chat")
@@ -154,6 +155,7 @@ class ProviderInvocationControllerTests(unittest.TestCase):
 
         result = controller.invoke(invocation)
 
+        assert result.response is not None
         self.assertEqual(result.response.tool_calls, [call])
 
     def test_invalid_response_returns_response_invalid_error(self) -> None:
@@ -214,6 +216,7 @@ class ProviderInvocationControllerTests(unittest.TestCase):
 
         result = controller.invoke(invocation)
 
+        assert result.response is not None
         self.assertEqual(result.response.content, "second")
         self.assertEqual(len(first.calls), 0)
         self.assertEqual(len(second.calls), 1)
@@ -235,6 +238,7 @@ class ProviderInvocationControllerTests(unittest.TestCase):
         controller, invocation, context = _invocation(response_provider=provider, hooks=hooks)
         result = controller.invoke(invocation)
 
+        assert result.response is not None
         controller.accumulate_usage(result.response, context)
 
         self.assertEqual(context.metadata["api_calls"], 1)
@@ -243,4 +247,3 @@ class ProviderInvocationControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

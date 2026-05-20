@@ -36,7 +36,7 @@
 
 | 文件 | 覆盖 PR | 目的 |
 |---|---|---|
-| `aether/tests/runtime/core/test_turn_metadata.py` | 13.1 | metadata key grouping、snapshot、internal refs filtering |
+| `aether/tests/runtime/test_turn_metadata.py` | 13.1 | metadata key grouping、snapshot、internal refs filtering |
 | `aether/tests/agents/test_engine_metadata_contract.py` | 13.1 | EngineResult metadata backward compatibility |
 | `aether/tests/agents/runtime/test_provider_invocation_controller.py` | 13.2 | provider call、hooks、usage、validation |
 | `aether/tests/agents/runtime/test_context_assembly_pipeline.py` | 13.3 | PRE_LLM 注入顺序和 canonical/prepared 分离 |
@@ -44,10 +44,17 @@
 | `aether/tests/agents/runtime/test_recovery_controller.py` | 13.5 | provider error、empty、length、context overflow、fallback |
 | `aether/tests/agents/runtime/test_session_lifecycle.py` | 13.6 | session start/end、system prompt、cwd、cleanup |
 | `aether/tests/agents/test_agent_engine_facade_compat.py` | 13.6 | public API compatibility |
+| `aether/tests/agents/runtime/test_sprint13_acceptance.py` | 13.7 | controller stack smoke、stable metadata、tool message shape |
 | existing `aether/tests/agents/**` | 13.7 | full engine regression |
 | existing `aether/tests/tools/**` | 13.7 | tool behavior regression |
 | existing `aether/tests/runtime/**` | 13.7 | runtime behavior regression |
 | existing `aether/tests/subagents/**` | 13.7 | subagent behavior regression |
+
+## Automated Verification
+
+- `python -m pytest aether/tests`
+- `uv run pyright aether/agents/runtime aether/agents/core/agent.py aether/tools/builtins/agent_tool.py aether/tests/agents/runtime/test_provider_invocation_controller.py aether/tests/agents/runtime/test_recovery_controller.py aether/tests/agents/runtime/test_sprint13_acceptance.py aether/tests/runtime/test_turn_metadata.py aether/tests/agents/test_engine_metadata_contract.py aether/tests/agents/test_agent_engine_facade_compat.py`
+- Repository-wide `uv run pyright` is still a tracked follow-up baseline task: as of PR13.7 it reports existing non-Sprint-13 issues such as unresolved optional imports, sandbox prototype imports, provider optional typing, and test stub typing.
 
 ## Manual Checklist
 

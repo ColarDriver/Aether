@@ -126,7 +126,6 @@ class _Adapter:
 class _CompressOnceStrategy(RecoveryStrategy):
     def decide(
         self,
-        *,
         error: ProviderInvocationError,
         attempt_state: AttemptState,
         context: TurnContext,
@@ -197,6 +196,7 @@ class RecoveryControllerTests(unittest.TestCase):
 
         result = controller.invoke_with_recovery(_attempt(context, invoker))
 
+        assert result.response is not None
         self.assertEqual(result.response.content, "ok")
         self.assertEqual(calls, 2)
         self.assertEqual(context.metadata["provider_error_retries"], 1)
@@ -249,6 +249,7 @@ class RecoveryControllerTests(unittest.TestCase):
 
         result = controller.invoke_with_recovery(_attempt(context, invoker))
 
+        assert result.response is not None
         self.assertEqual(result.response.content, "ok")
         self.assertEqual(calls, 2)
         self.assertEqual(adapter.compaction_calls, 1)

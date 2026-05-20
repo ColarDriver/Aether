@@ -178,7 +178,10 @@ class AgentTool(ToolExecutor):
             normalized_model = model_arg.strip()
             if normalized_model and normalized_model.lower() != "inherit":
                 model_override = normalized_model
-        elif model_arg is None:
+        elif model_arg is None and (
+            context.metadata.get("_engine_config") is not None
+            or not bool(args.get("run_in_background", False))
+        ):
             try:
                 default_profile = _default_subagent_profile()
             except ValueError as exc:

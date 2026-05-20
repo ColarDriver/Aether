@@ -1031,6 +1031,8 @@ class AgentEngine:
             #     we never want to clobber a real model answer);
             #   * ``summary_on_budget_exhausted`` is False (rollback);
             #   * the grace round was already consumed (defensive).
+            assert exit_reason is not None
+            final_exit_reason = exit_reason
             return self._session_lifecycle_controller.finalize_turn(
                 TurnFinalizationInput(
                     request=request,
@@ -1038,7 +1040,7 @@ class AgentEngine:
                     context=context,
                     final_response=final_response,
                     error_text=error_text,
-                    exit_reason=exit_reason,
+                    exit_reason=final_exit_reason,
                     iterations=iterations,
                     budget=budget,
                     state_machine=state_machine,

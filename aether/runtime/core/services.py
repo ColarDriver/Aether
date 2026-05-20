@@ -8,6 +8,7 @@ from typing import Optional
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.memory import MemoryProvider, RetrievalMemoryProvider
 from aether.models.provider.base import ModelProvider
+from aether.runtime.credentials.pool import CredentialPool
 from aether.runtime.recovery.fallback_chain import FallbackChain
 from aether.runtime.control.interrupts import InterruptController
 from aether.runtime.recovery.strategies import RecoveryStrategy
@@ -58,6 +59,7 @@ class EngineServices:
         "fallback_chain",
         "steer_inbox",
         "memory_provider",
+        "credential_pool",
     )
 
     def __init__(
@@ -71,6 +73,7 @@ class EngineServices:
         fallback_chain: Optional[FallbackChain] = None,
         steer_inbox: Optional[SteerInbox] = None,
         memory_provider: Optional[MemoryProvider] = None,
+        credential_pool: Optional[CredentialPool] = None,
     ) -> None:
         self._initial_provider = provider
         self.tool_registry = tool_registry
@@ -81,6 +84,7 @@ class EngineServices:
         self.fallback_chain = fallback_chain
         self.steer_inbox = steer_inbox or SteerInbox()
         self.memory_provider = memory_provider or RetrievalMemoryProvider()
+        self.credential_pool = credential_pool
 
     @property
     def provider(self) -> ModelProvider:

@@ -9,6 +9,34 @@
 | Rate limit | provider classified | source known | rotate key | slot unchanged | regression pass |
 | Metadata/logging | provider visible | secrets redacted | pool name only | slot visible | regression pass |
 
+## Implementation Status
+
+- PR17.1 complete: `aether.config.provider_runtime` centralizes provider
+  family mapping, default models, base URL env names, and API key env names.
+- PR17.2 complete: `aether.runtime.credentials` provides env credential
+  lookup and recursive redaction helpers; provider factory now consumes the
+  credential lookup boundary.
+- PR17.3 complete: optional in-process `CredentialPool` supports
+  `fill_first` and `round_robin`, unhealthy marking, safe public metadata, and
+  classifier-aware rate-limit rotation through a typed provider credential
+  update hook. The pool remains optional and disabled unless explicitly wired.
+- PR17.4 complete: `aether.config.auxiliary_slots` resolves subagent,
+  compression, verifier, and title slots. `AgentTool` no longer parses
+  provider env values itself; caller `model=` and `inherit` semantics are
+  preserved.
+- PR17.5 complete: gateway read-only status RPCs expose provider runtime,
+  credential status, and auxiliary slots without raw secrets.
+
+## Gateway Status RPCs
+
+- `provider.runtime_current`
+- `provider.credentials_status`
+- `provider.auxiliary_slots`
+
+These methods return provider family/model, credential source/name/configured
+state, redacted credential display, and auxiliary slot provider/model. They do
+not return raw API keys, Authorization headers, or refresh tokens.
+
 ## Unit Test Map
 
 | File | Purpose |

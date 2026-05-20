@@ -217,6 +217,16 @@ class ClaudeChatModel(ModelProvider):
             self._patch_client_oauth(client)
         return client
 
+    def set_credential(self, credential: str, *, source: str | None = None) -> bool:
+        del source
+        if not credential:
+            return False
+        self._is_oauth = is_oauth_token(credential)
+        self._oauth_access_token = credential if self._is_oauth else ""
+        self._api_key = credential
+        self._client = self._build_client()
+        return True
+
     def _patch_client_oauth(self, client: Any) -> None:
         if hasattr(client, "api_key") and hasattr(client, "auth_token"):
             client.api_key = None

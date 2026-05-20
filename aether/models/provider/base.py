@@ -99,3 +99,13 @@ class ModelProvider(ABC):
         """
         if hasattr(self, "model"):
             setattr(self, "model", model)
+
+    def set_credential(self, credential: str, *, source: str | None = None) -> bool:
+        """Swap the active credential in place when the provider supports it.
+
+        Recovery credential rotation calls this typed hook instead of poking at
+        provider-private attributes. Providers that need client rebuilds should
+        override. The default returns ``False`` to signal "not supported".
+        """
+        del credential, source
+        return False

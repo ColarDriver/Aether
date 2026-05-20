@@ -24,10 +24,10 @@ fresh ``EngineRequest`` whose ``user_message`` is the model-supplied
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from aether.config.auxiliary_slots import resolve_subagent_slot
 from aether.config.schema import ModelCallConfig
 from aether.runtime.core.contracts import EngineRequest, ToolCall, ToolResult, TurnContext
 from aether.subagents.contracts import SubagentResult, SubagentStatus, SubagentTask
@@ -37,10 +37,6 @@ if TYPE_CHECKING:
     from aether.agents.types import AgentTypeRegistry
 
 logger = logging.getLogger(__name__)
-
-_AETHER_PROVIDER_ENV = "AETHER_PROVIDER"
-_AETHER_PROVIDER_CHOICES = {"codex", "claude", "anthropic", "openai", "openai-compatible"}
-
 
 class AgentTool(ToolExecutor):
     """Dispatch a subagent task and return its summary."""
@@ -132,9 +128,10 @@ class AgentTool(ToolExecutor):
                             "`sonnet` uses Claude Sonnet, `gpt` uses the "
                             "OpenAI-compatible GPT subagent model. Takes "
                             "precedence over the agent type definition's "
-                            f"model and `{_AETHER_PROVIDER_ENV}`. If omitted, "
-                            f"`{_AETHER_PROVIDER_ENV}` may choose `codex`, "
-                            "`claude`, or `openai-compatible`; otherwise "
+                            "model and auxiliary slot config. If omitted, "
+                            "`AETHER_AUX_SUBAGENT_PROVIDER` / "
+                            "`AETHER_AUX_SUBAGENT_MODEL` may choose the "
+                            "slot; otherwise "
                             "the type definition or parent model is inherited."
                         ),
                     },
@@ -183,7 +180,9 @@ class AgentTool(ToolExecutor):
             or not bool(args.get("run_in_background", False))
         ):
             try:
-                default_profile = _default_subagent_profile()
+                default_profile = _default_subagent_profile(
+                    config=context.metadata.get("_engine_config") if context.metadata else None,
+                )
             except ValueError as exc:
                 return _error(call, str(exc))
             if default_profile is not None:
@@ -433,21 +432,11 @@ def _error(
     )
 
 
-def _default_subagent_profile() -> tuple[str, str] | None:
-    raw = os.getenv(_AETHER_PROVIDER_ENV)
-    if raw is None or not raw.strip():
+def _default_subagent_profile(*, config: Any | None = None) -> tuple[str, str] | None:
+    slot = resolve_subagent_slot(config=config, inherit_if_unconfigured=True)
+    if slot.inherited:
         return None
-    value = raw.strip().lower()
-    if value not in _AETHER_PROVIDER_CHOICES:
-        raise ValueError(
-            f"{_AETHER_PROVIDER_ENV} must be codex, claude, or "
-            f"openai-compatible; got {raw!r}"
-        )
-    if value == "codex":
-        return ("codex", "gpt")
-    if value in {"claude", "anthropic"}:
-        return ("claude", "sonnet")
-    return ("openai", "gpt")
+    return (slot.provider_name, slot.model)
 
 
 __all__ = ["AgentTool"]

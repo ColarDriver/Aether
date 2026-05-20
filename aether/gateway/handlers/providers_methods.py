@@ -19,6 +19,8 @@ import httpx
 
 from aether.cli.providers import build_provider, list_providers, resolve_provider_name
 from aether.cli.sessions import load_session
+from aether.config.auxiliary_slots import resolve_auxiliary_slot
+from aether.config.provider_runtime import resolve_main_provider_runtime
 from aether.gateway.dispatcher import method
 from aether.gateway.handlers.schemas import ModelInfo, ProviderInfo
 from aether.gateway.handlers.state import get_current_session
@@ -27,6 +29,7 @@ from aether.gateway.protocol import (
     ERROR_INVALID_PARAMS,
     GatewayError,
 )
+from aether.runtime.credentials import default_credential_lookup
 
 
 # ── Display + credential metadata for every supported provider ──────
@@ -126,6 +129,63 @@ def providers_models(params: dict[str, Any] | None) -> dict[str, Any]:
         "models": [m.model_dump(mode="json", exclude_none=True) for m in catalog],
         "discovery": discovery,
     }
+
+
+def provider_runtime_current(params: dict[str, Any] | None) -> dict[str, Any]:
+    runtime = _runtime_from_params(params, method_name="provider.runtime_current")
+    credential = default_credential_lookup().get_first(runtime.api_key_env_names)
+    payload = runtime.public_metadata()
+    payload["credential"] = (
+        credential.public_metadata()
+        if credential is not None
+        else {
+            "source": "env",
+            "names": runtime.api_key_env_names,
+            "configured": False,
+        }
+    )
+    return payload
+
+
+def provider_credentials_status(params: dict[str, Any] | None) -> dict[str, Any]:
+    runtime = _runtime_from_params(params, method_name="provider.credentials_status")
+    lookup = default_credential_lookup()
+    statuses: list[dict[str, Any]] = []
+    for key_name in runtime.api_key_env_names:
+        credential = lookup.get_first((key_name,))
+        statuses.append(
+            credential.public_metadata()
+            if credential is not None
+            else {
+                "source": "env",
+                "name": key_name,
+                "configured": False,
+                "redacted": "",
+            }
+        )
+    return {
+        "family": runtime.family,
+        "provider": runtime.provider_name,
+        "credentials": statuses,
+    }
+
+
+def provider_auxiliary_slots(params: dict[str, Any] | None) -> dict[str, Any]:
+    requested = None
+    if params and "slots" in params:
+        raw_slots = params.get("slots")
+        if not isinstance(raw_slots, list) or not all(isinstance(item, str) for item in raw_slots):
+            raise GatewayError(
+                "provider.auxiliary_slots optional 'slots' must be a list of strings",
+                code=ERROR_INVALID_PARAMS,
+            )
+        requested = [item for item in raw_slots if item.strip()]
+    slots = requested or ["subagent", "compression", "verifier", "title"]
+    try:
+        slot_payloads = [resolve_auxiliary_slot(slot).public_metadata() for slot in slots]
+    except ValueError as exc:
+        raise GatewayError(str(exc), code=ERROR_INVALID_PARAMS) from exc
+    return {"slots": slot_payloads}
 
 
 _DISCOVERY_TIMEOUT_SEC = 8.0
@@ -488,14 +548,45 @@ def _merge_models(live_ids: list[str], catalog: list[ModelInfo]) -> list[ModelIn
     return result
 
 
+def _runtime_from_params(params: dict[str, Any] | None, *, method_name: str):
+    provider = None
+    model = None
+    base_url = None
+    if params:
+        for key in ("provider", "model", "base_url"):
+            value = params.get(key)
+            if value is not None and not isinstance(value, str):
+                raise GatewayError(
+                    f"{method_name} optional '{key}' must be a string",
+                    code=ERROR_INVALID_PARAMS,
+                )
+        provider = params.get("provider")
+        model = params.get("model")
+        base_url = params.get("base_url")
+    try:
+        return resolve_main_provider_runtime(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+        )
+    except ValueError as exc:
+        raise GatewayError(str(exc), code=ERROR_INVALID_PARAMS) from exc
+
+
 def register() -> None:
     """Register ``providers.*`` handlers on the dispatcher.  Idempotent."""
     method("providers.list", long=False)(providers_list)
     method("providers.models", long=True)(providers_models)
+    method("provider.runtime_current", long=False)(provider_runtime_current)
+    method("provider.credentials_status", long=False)(provider_credentials_status)
+    method("provider.auxiliary_slots", long=False)(provider_auxiliary_slots)
 
 
 __all__ = [
     "providers_list",
     "providers_models",
+    "provider_auxiliary_slots",
+    "provider_credentials_status",
+    "provider_runtime_current",
     "register",
 ]

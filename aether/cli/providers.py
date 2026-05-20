@@ -5,12 +5,17 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from aether.config.provider_runtime import (
+    provider_choice,
+    resolve_main_provider_runtime,
+)
 from aether.models.provider.base import ModelProvider
+from aether.runtime.credentials import default_credential_lookup
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "claude": {"model": "claude-sonnet-4-6", "max_tokens": 16384},
-    "openai": {"model": "claude-sonnet-4-6", "base_url": "https://api.openai.com/v1"},
+    "openai": {"model": "gpt-5.4", "base_url": "https://api.openai.com/v1"},
     "codex": {"model": "gpt-5.4", "reasoning_effort": "medium"},
 }
 
@@ -38,16 +43,23 @@ def build_provider(
     Supported providers: claude, openai, codex
     Falls back to environment variables for credentials when not supplied.
     """
-    name = resolve_provider_name(provider)
+    runtime = resolve_main_provider_runtime(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+    )
+    credential_lookup = default_credential_lookup()
+    name = runtime.provider_name
 
     if name == "claude":
         from aether.models.provider.claude import ClaudeChatModel
 
         d = _DEFAULTS["claude"]
         return ClaudeChatModel(
-            model=model or d["model"],
+            model=runtime.model or d["model"],
             max_tokens=int(kwargs.pop("max_tokens", d["max_tokens"])),
-            anthropic_api_key=api_key or os.getenv("ANTHROPIC_API_KEY"),
+            anthropic_api_key=api_key
+            or _credential_value(credential_lookup.get_first(runtime.api_key_env_names)),
             **kwargs,
         )
 
@@ -55,25 +67,17 @@ def build_provider(
         from aether.models.provider.openai_compatible import OpenAICompatibleModel
 
         d = _DEFAULTS["openai"]
-        resolved_key = (
-            api_key
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("ANTHROPIC_AUTH_TOKEN")
-            or ""
-        )
+        resolved_key = api_key or _credential_value(
+            credential_lookup.get_first(runtime.api_key_env_names)
+        ) or ""
         if not resolved_key:
             raise ValueError(
                 "OpenAI provider requires an API key. "
                 "Set OPENAI_API_KEY or ANTHROPIC_AUTH_TOKEN or pass --api-key."
             )
-        resolved_url = (
-            base_url
-            or os.getenv("OPENAI_BASE_URL")
-            or os.getenv("ANTHROPIC_BASE_URL")
-            or d["base_url"]
-        )
+        resolved_url = runtime.base_url or d["base_url"]
         return OpenAICompatibleModel(
-            model=model or os.getenv("AETHER_MODEL") or os.getenv("ANTHROPIC_MODEL", d["model"]),
+            model=runtime.model or d["model"],
             api_key=resolved_key,
             base_url=resolved_url,
             **kwargs,
@@ -84,9 +88,10 @@ def build_provider(
 
         d = _DEFAULTS["codex"]
         return CodexChatModel(
-            model=model or d["model"],
+            model=runtime.model or d["model"],
             reasoning_effort=str(kwargs.pop("reasoning_effort", d["reasoning_effort"])),
-            access_token=api_key or os.getenv("CODEX_ACCESS_TOKEN") or os.getenv("CODEX_API_KEY"),
+            access_token=api_key
+            or _credential_value(credential_lookup.get_first(runtime.api_key_env_names)),
             **kwargs,
         )
 
@@ -102,4 +107,12 @@ def list_providers() -> list[str]:
 
 def get_provider_defaults(name: str) -> dict[str, Any]:
     """Return a copy of provider defaults for display and diagnostics."""
-    return dict(_DEFAULTS.get(resolve_provider_name(name), {}))
+    choice = provider_choice(name)
+    defaults = dict(_DEFAULTS.get(choice.provider_name, {}))
+    defaults["model"] = choice.default_model
+    return defaults
+
+
+def _credential_value(value: object) -> str | None:
+    raw = getattr(value, "value", None)
+    return raw if isinstance(raw, str) and raw else None

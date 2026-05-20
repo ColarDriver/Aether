@@ -122,6 +122,61 @@ class ListModels(_ProvidersCase):
             self.assertIn("display_name", entry)
 
 
+class ProviderRuntimeStatus(_ProvidersCase):
+    def test_runtime_current_returns_redacted_credential_metadata(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AETHER_PROVIDER": "openai-compatible",
+                "AETHER_MODEL": "gpt-env",
+                "OPENAI_API_KEY": "sk-runtime-secret-1234",
+            },
+            clear=False,
+        ):
+            result = self._result("provider.runtime_current")
+
+        self.assertEqual(result["family"], "openai-compatible")
+        self.assertEqual(result["provider_name"], "openai")
+        self.assertEqual(result["model"], "gpt-env")
+        self.assertTrue(result["credential"]["configured"])
+        self.assertEqual(result["credential"]["name"], "OPENAI_API_KEY")
+        self.assertNotIn("sk-runtime-secret-1234", json.dumps(result))
+
+    def test_credentials_status_lists_missing_keys_without_secret(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            result = self._result(
+                "provider.credentials_status",
+                {"provider": "claude"},
+            )
+
+        self.assertEqual(result["family"], "claude")
+        self.assertEqual(result["provider"], "claude")
+        self.assertEqual(result["credentials"][0]["name"], "ANTHROPIC_API_KEY")
+        self.assertFalse(result["credentials"][0]["configured"])
+
+    def test_auxiliary_slots_reports_slot_metadata(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AETHER_AUX_SUBAGENT_PROVIDER": "claude",
+                "AETHER_AUX_SUBAGENT_MODEL": "sonnet",
+            },
+            clear=False,
+        ):
+            result = self._result("provider.auxiliary_slots", {"slots": ["subagent"]})
+
+        self.assertEqual(len(result["slots"]), 1)
+        slot = result["slots"][0]
+        self.assertEqual(slot["slot"], "subagent")
+        self.assertEqual(slot["provider_name"], "claude")
+        self.assertEqual(slot["model"], "sonnet")
+
+    def test_runtime_invalid_provider_returns_invalid_params(self) -> None:
+        resp = self._call("provider.runtime_current", {"provider": "sonnect"})
+        assert resp.error is not None
+        self.assertEqual(resp.error.code, ERROR_INVALID_PARAMS)
+
+
 class LiveModelDiscovery(_ProvidersCase):
     """The picker must reflect what the provider's `/v1/models` returns
     when the call succeeds, and silently fall back to the static catalog

@@ -312,7 +312,7 @@ class LSPTool(ToolExecutor):
         injected = context.metadata.get("_lsp_manager") if context.metadata else None
         # Duck-type: any object exposing ``get_client_for`` works.
         # The engine guarantees the value is an :class:`LSPManager`
-        # instance (key lives in ``_METADATA_INTERNAL_KEYS``), but
+        # instance (key lives in ``turn_metadata.INTERNAL_METADATA_KEYS``), but
         # accepting structural matches keeps test stubs easy to wire.
         if injected is not None and hasattr(injected, "get_client_for"):
             return injected  # type: ignore[return-value]

@@ -80,6 +80,11 @@ from aether.runtime.recovery.response_classification import (
     is_legitimate_empty,
     strip_thinking_tags,
 )
+from aether.runtime.core.turn_metadata import (
+    init_turn_retry_counters,
+    public_turn_metadata,
+    set_runtime_ref,
+)
 from aether.runtime.observability.reasoning import extract_last_reasoning
 from aether.runtime.observability.request_dump import dump_api_request_debug
 from aether.runtime.core.services import EngineServices
@@ -170,75 +175,6 @@ if TYPE_CHECKING:
             tasks: List[SubagentTask],
             max_concurrent_children: int | None = None,
         ) -> List[SubagentResult]: ...
-
-
-# keys that live on context.metadata as runtime helpers
-# but should NOT leak into the JSON-serialisable ``EngineResult.metadata['turn']``
-# snapshot.  Their normalised, public-facing form lives at the metadata top
-# level (e.g. ``usage_accumulator`` → ``metadata['usage']``).  Add new
-# internal-only keys here whenever a future feature introduces one.
-_METADATA_INTERNAL_KEYS: frozenset[str] = frozenset({
-    "usage_accumulator",
-    # live ``IterationBudget`` instance — kept on
-    # ``context.metadata`` so ``_handle_max_iterations`` can find it
-    # without threading another argument through every recovery path.
-    # The JSON-friendly snapshot lives at ``metadata['iteration_budget']``
-    # (also on ``context.metadata``) and is mirrored into
-    # ``EngineResult.metadata['iteration_budget']`` by ``_build_result``.
-    "_iteration_budget_obj",
-    # live ``EngineConfig`` reference — tools
-    # consult it via ``maybe_spill_for_tool`` to read the per-tool
-    # spill master switch and override directory.  Storing the live
-    # object (not a snapshot) keeps tools picking up config changes
-    # mid-session if a future feature ever rebuilds config; the price
-    # is that we MUST exclude it from the JSON-serialised
-    # ``EngineResult.metadata['turn']`` snapshot.
-    "_engine_config",
-    # Live references for the subagent and interaction tool family.
-    # Stored as objects, never as JSON.
-    "_parent_agent",
-    "_subagent_manager",
-    # interactive prompter forwarded from
-    # ``EngineRequest.approval_prompter`` to ``ExitPlanModeTool`` and
-    # ``AskUserQuestionTool``.  Excluded for the same reason as the
-    # other live-object keys above.
-    "_approval_prompter",
-    # live SkillCatalog reference used by
-    # ``SkillTool`` when no catalog was injected via constructor.
-    "_skill_catalog",
-    "_agent_type_registry",
-    # live TaskStore reference for the on-disk subagent task store.
-    # Forwarded into ``TurnContext.metadata`` so ``task_output`` /
-    # ``send_message`` (PR 10.6 / 10.7) can fall back to it when no
-    # explicit store was passed via constructor.
-    "_task_store",
-    # live LSPManager reference for
-    # :class:`LSPTool`.  Same rationale as the other live-object
-    # keys above: must never leak into the JSON-serialised
-    # ``EngineResult.metadata['turn']`` snapshot.
-    "_lsp_manager",
-    # live DiagnosticTracker reference. Same rationale.
-    "_diagnostic_tracker",
-    # live BrowserManager reference for
-    # :class:`WebBrowserTool`.
-    "_browser_manager",
-    "_tool_permission_prompter",
-    "_tool_permission_preview_plans",
-    "_compaction_pipeline",
-    "_compaction_in_progress",
-    "_api_request_attempt_count",
-    "_failed_request_dump_written",
-    "turn_start_idx",
-    "_task_resource_handles",
-    "_task_resource_keys",
-    "_task_cleanup_done",
-    "_schema_sanitized_tool_descriptors",
-    "_schema_sanitizer_retry_attempted",
-    "_image_shrink_retry_attempted",
-    "_interrupt_signal",
-    "_loop_state_callback",
-    "_project_memory_store",
-})
 
 
 _CONTINUE_LOOP_SENTINEL = object()
@@ -1662,26 +1598,13 @@ class AgentEngine:
                     enabled=bool(getattr(self.config, "memory_enabled", False)),
                     mode=str(getattr(self.config, "memory_mode", "off") or "off"),
                 ),
-                # Per-turn retry counters live on TurnContext.metadata so they
-                # cannot leak across concurrent sessions sharing this engine.
-                # Initialised to 0 here; mutated by the run-loop's empty-
-                # response / provider-error / truncated-tool-call branches.
-                TURN_KEY_EMPTY_RESPONSE_RETRIES: 0,
-                TURN_KEY_PROVIDER_ERROR_RETRIES: 0,
-                TURN_KEY_TRUNCATED_TOOL_CALL_RETRIES: 0,
-                TURN_KEY_INVALID_JSON_RETRIES: 0,
-                TURN_KEY_PHANTOM_TOOL_RETRIES: 0,
-                TURN_KEY_PHANTOM_TOOL_SYNTHESIZED: 0,
-                TURN_KEY_THINKING_PREFILL_RETRIES: 0,
-                TURN_KEY_CODEX_ACK_RETRIES: 0,
-                TURN_KEY_STREAMED_ASSISTANT_TEXT: "",
-                TURN_KEY_POST_TOOL_EMPTY_RETRIED: False,
-                TURN_KEY_EMPTY_RECOVERY_LAST_STEP: "",
             }
         )
+        # Per-turn retry counters live on TurnContext.metadata so they cannot
+        # leak across concurrent sessions sharing this engine.
+        init_turn_retry_counters(metadata)
 
         interrupt_signal = self._signal_for_request(request)
-        metadata["_interrupt_signal"] = interrupt_signal
         context = TurnContext(
             session_id=request.session_id,
             iteration=0,
@@ -1695,37 +1618,54 @@ class AgentEngine:
         # ``tool_result_spill_enabled`` / ``tool_result_spill_dir``)
         # without us threading a config argument through every
         # ToolExecutor.execute signature.  The key is in
-        # ``_METADATA_INTERNAL_KEYS`` so the live dataclass never
+        # ``turn_metadata.INTERNAL_METADATA_KEYS`` so the live dataclass never
         # leaks into the JSON-serialised EngineResult.metadata['turn'].
-        context.metadata["_engine_config"] = self.config
+        set_runtime_ref(context, "_interrupt_signal", interrupt_signal)
+        set_runtime_ref(context, "_engine_config", self.config)
         # expose the parent agent, the
         # subagent manager, the optional approval prompter and the
         # optional skill catalog to tools.  Same rationale as
         # ``_engine_config`` above — every key is in
-        # ``_METADATA_INTERNAL_KEYS`` so live objects never leak into
+        # ``turn_metadata.INTERNAL_METADATA_KEYS`` so live objects never leak into
         # the JSON-serialised result snapshot.
-        context.metadata["_parent_agent"] = self
-        context.metadata["_subagent_manager"] = self._subagent_manager
-        context.metadata["_approval_prompter"] = getattr(
-            request, "approval_prompter", None
+        set_runtime_ref(context, "_parent_agent", self)
+        set_runtime_ref(context, "_subagent_manager", self._subagent_manager)
+        set_runtime_ref(
+            context,
+            "_approval_prompter",
+            getattr(request, "approval_prompter", None),
         )
-        context.metadata["_tool_permission_prompter"] = getattr(
-            request, "tool_permission_prompter", None
+        set_runtime_ref(
+            context,
+            "_tool_permission_prompter",
+            getattr(request, "tool_permission_prompter", None),
         )
         context.metadata["tool_permissions"] = default_permission_stats(
             enabled=bool(getattr(self.config, "tool_permissions_enabled", True))
         )
-        context.metadata["_skill_catalog"] = getattr(self, "_skill_catalog", None)
-        context.metadata["_agent_type_registry"] = getattr(self, "_agent_type_registry", None)
-        context.metadata["_task_store"] = getattr(self, "_task_store", None)
+        set_runtime_ref(context, "_skill_catalog", getattr(self, "_skill_catalog", None))
+        set_runtime_ref(
+            context,
+            "_agent_type_registry",
+            getattr(self, "_agent_type_registry", None),
+        )
+        set_runtime_ref(context, "_task_store", getattr(self, "_task_store", None))
         # LSP and browser manager references. Tools fetch them lazily;
         # passing the live
         # objects (not config snapshots) keeps subagents and parent
         # sharing one warm subprocess pool.
-        context.metadata["_lsp_manager"] = getattr(self, "_lsp_manager", None)
-        context.metadata["_diagnostic_tracker"] = getattr(self, "_diagnostic_tracker", None)
-        context.metadata["_browser_manager"] = getattr(self, "_browser_manager", None)
-        context.metadata["_project_memory_store"] = getattr(self, "_project_memory_store", None)
+        set_runtime_ref(context, "_lsp_manager", getattr(self, "_lsp_manager", None))
+        set_runtime_ref(
+            context,
+            "_diagnostic_tracker",
+            getattr(self, "_diagnostic_tracker", None),
+        )
+        set_runtime_ref(context, "_browser_manager", getattr(self, "_browser_manager", None))
+        set_runtime_ref(
+            context,
+            "_project_memory_store",
+            getattr(self, "_project_memory_store", None),
+        )
         context.metadata["empty_recovery"] = {}
         return state_machine, messages, context
 
@@ -6422,15 +6362,10 @@ class AgentEngine:
             and exit_reason in {ExitReason.MAX_ITERATIONS, ExitReason.EMPTY_RESPONSE}
         )
 
-        # ``turn`` is a flat snapshot of context.metadata for
-        # downstream observability.  We exclude internal accumulator objects
-        # (CanonicalUsage instances etc.) that are not JSON-serializable —
-        # their normalised dict form is exposed at the top level under ``usage``.
-        turn_snapshot = {
-            k: v
-            for k, v in context.metadata.items()
-            if k not in _METADATA_INTERNAL_KEYS
-        }
+        # ``turn`` is a flat snapshot of context.metadata for downstream
+        # observability.  The helper filters live runtime objects and
+        # accumulators while preserving existing ad-hoc public fields.
+        turn_snapshot = public_turn_metadata(context.metadata)
         empty_recovery_metadata = dict(context.metadata.get("empty_recovery") or {})
         if not empty_recovery_metadata.get("classification"):
             empty_recovery_metadata["classification"] = (

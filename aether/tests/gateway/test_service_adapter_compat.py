@@ -9,6 +9,7 @@ from aether.services.common import ServiceNotFoundError, ServiceValidationError
 
 
 MIGRATED_HANDLERS = (
+    "agent_methods.py",
     "prefs_methods.py",
     "session_methods.py",
     "tools_methods.py",
@@ -22,6 +23,7 @@ FORBIDDEN_LOW_LEVEL_IMPORTS = (
     "aether.config.auxiliary_slots",
     "aether.config.provider_runtime",
     "aether.runtime.credentials",
+    "aether.gateway.run_handle",
 )
 
 
@@ -51,3 +53,20 @@ def test_migrated_gateway_handlers_do_not_import_low_level_service_dependencies(
                     offenders.append(f"{name} -> {module}")
 
     assert offenders == []
+
+
+def test_agent_gateway_handler_uses_agent_run_service_without_engine_imports() -> None:
+    path = Path(__file__).resolve().parents[2] / "gateway" / "handlers" / "agent_methods.py"
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(path))
+    imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.append(node.module)
+
+    assert "AgentRunService" in text
+    assert "aether.agents.core.agent" not in imports
+    assert "aether.agents.middlewares.pipeline" not in imports
+    assert "aether.gateway.run_handle" not in imports

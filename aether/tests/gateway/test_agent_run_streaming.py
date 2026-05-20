@@ -375,9 +375,9 @@ class AgentRunActiveGuard(_GatewayAgentCase):
         self.assertEqual(second_frame["error"]["message"], "RUN_ALREADY_ACTIVE")
 
 
-def _test_config(max_iterations: object = None) -> EngineConfig:
+def _test_config(max_iterations: int | None = None) -> EngineConfig:
     config = EngineConfig()
-    config.max_iterations = int(max_iterations or 4)
+    config.max_iterations = max_iterations or 4
     config.use_builtin_tools = False
     config.tool_use_contract_enabled = False
     config.memory_enabled = False

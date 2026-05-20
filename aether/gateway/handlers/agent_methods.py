@@ -1,394 +1,127 @@
-"""``agent.*`` RPC methods.
-
-The gateway keeps the engine synchronous and runs ``agent.run`` through
-the dispatcher's long-handler pool.  Streaming output is bridged to the
-client as JSON-RPC ``event`` notifications on the same transport.
-"""
+"""``agent.*`` RPC methods backed by AgentRunService."""
 
 from __future__ import annotations
 
-import json
 import os
-import threading
 import uuid
-from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any
 
-from aether.agents.core.agent import AgentEngine
-from aether.agents.middlewares.base import EngineMiddleware
-from aether.agents.middlewares.pipeline import MiddlewarePipeline
-from aether.agents.types import AgentTypeRegistry
-from aether.cli.sessions import (
-    SessionRecord,
-    load_session,
-    save_session,
-    update_session_from_state,
-)
-from aether.config.schema import EngineConfig, ModelCallConfig
+from aether.config.schema import EngineConfig
 from aether.gateway.dispatcher import current_request_id, method, notify
-from aether.gateway.protocol import (
-    ERROR_APPLICATION,
-    ERROR_INVALID_PARAMS,
-    Cancelled,
-    Done,
-    Error,
-    GatewayError,
-    IterationEnd,
-    IterationStart,
-    LoopStateChanged,
-    Reasoning,
-    Status,
-    StreamProgress,
-    TextDelta,
-    TokenUsage,
-    ToolCall as ToolCallEvent,
-    ToolResult as ToolResultEvent,
-)
 from aether.gateway.handlers.prompter_bridge import (
-    GatewayPromptDisconnected,
     GatewayPrompter,
     GatewayToolPermissionPrompter,
 )
-from aether.gateway.handlers.state import set_current_session
-from aether.gateway.run_handle import RunHandle, running_runs
-from aether.models.provider.base import ModelProvider
-from aether.runtime.core.contracts import (
-    EngineRequest,
-    EngineResult,
-    EngineStatus,
-    ExitReason,
-    LoopState,
-    NormalizedResponse,
-    ToolCall,
-    ToolResult,
-    TurnContext,
+from aether.gateway.handlers.run_event_adapter import service_event_to_gateway_payload
+from aether.gateway.handlers.service_errors import service_error_to_gateway
+from aether.gateway.handlers.state import (
+    get_current_session,
+    set_current_session,
 )
-from aether.runtime.core.hooks import EngineHooks
-from aether.runtime.tasks import TaskStore
-from aether.runtime.tools.skill_catalog import build_default_skill_catalog
-from aether.subagents import SubagentManager
+from aether.gateway.protocol import (
+    ERROR_APPLICATION,
+    ERROR_INVALID_PARAMS,
+    GatewayError,
+)
+from aether.models.provider.base import ModelProvider
+from aether.services.common import (
+    ServiceConflictError,
+    ServiceError,
+    ServiceNotFoundError,
+    ServiceValidationError,
+)
+from aether.services.runs import (
+    AgentRunCancelRequest,
+    AgentRunOptions,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentRunService,
+    RunEvent,
+    RunEventSink,
+    RunRegistry,
+)
+from aether.services.runs.builder import RunDependencyBuilder
+from aether.services.sessions import SessionService
 from aether.tools.registry import ToolRegistry
 
 
-class _EventSink:
-    """Small typed wrapper around ``notify("event", ...)``."""
-
-    def __init__(self, *, session_id: str, run_id: str) -> None:
-        self.session_id = session_id
-        self.run_id = run_id
-        self._sequence = 0
-        self._lock = threading.Lock()
-
-    def _next_sequence(self) -> int:
-        with self._lock:
-            value = self._sequence
-            self._sequence += 1
-            return value
-
-    def emit(self, event: Any) -> None:
-        notify("event", event.model_dump(mode="json", exclude_none=True))
-
-    def text_delta(self, text: str) -> None:
-        self.emit(
-            TextDelta(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                text=text,
-                sequence=self._next_sequence(),
-            )
-        )
-
-    def reasoning_delta(self, text: str) -> None:
-        if not text:
-            return
-        self.emit(
-            Reasoning(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                text=text,
-                sequence=self._next_sequence(),
-            )
-        )
-
-    def silent_delta(self, text: str) -> None:
-        if not text:
-            return
-        self.emit(
-            StreamProgress(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                chars=len(text),
-                sequence=self._next_sequence(),
-            )
-        )
-
-    def status(
-        self,
-        kind: Literal["thinking", "responding", "tool_use", "idle"],
-        detail: str | None = None,
-    ) -> None:
-        self.emit(
-            Status(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                kind=kind,
-                detail=detail,
-            )
-        )
-
-    def loop_state(self, state: LoopState) -> None:
-        self.emit(
-            LoopStateChanged(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                state=state.value if hasattr(state, "value") else str(state),
-            )
-        )
-
-    def usage(self, usage: dict[str, Any]) -> None:
-        self.emit(
-            TokenUsage(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                input_tokens=_int_value(usage.get("input_tokens")),
-                output_tokens=_int_value(usage.get("output_tokens")),
-                cache_read_tokens=_int_value(usage.get("cache_read_tokens")),
-                cache_write_tokens=_int_value(usage.get("cache_write_tokens")),
-            )
-        )
-
-    def done(self, final_text: str, exit_reason: str) -> None:
-        self.emit(
-            Done(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                final_text=final_text,
-                exit_reason=exit_reason,
-            )
-        )
-
-    def cancelled(self, reason: str | None, partial_text: str) -> None:
-        self.emit(
-            Cancelled(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                reason=reason,
-                partial_text=partial_text,
-            )
-        )
-
-    def error(self, message: str) -> None:
-        self.emit(
-            Error(
-                session_id=self.session_id,
-                run_id=self.run_id,
-                message=message,
-            )
-        )
+class _GatewayRunEventSink:
+    def emit(self, event: RunEvent) -> None:
+        payload = service_event_to_gateway_payload(event)
+        if payload is not None:
+            notify("event", payload)
 
 
-class _GatewayEventMiddleware(EngineMiddleware):
-    """Translate engine middleware callbacks into agent event notifications."""
-
-    def __init__(self, sink: _EventSink) -> None:
-        self._sink = sink
-
-    def before_llm(
-        self,
-        messages: list[dict[str, Any]],
-        context: TurnContext,
-    ) -> list[dict[str, Any]]:
-        iteration = _wire_iteration(context)
-        self._sink.status("thinking")
-        self._sink.emit(
-            IterationStart(
-                session_id=self._sink.session_id,
-                run_id=self._sink.run_id,
-                iteration=iteration,
-            )
-        )
-        return messages
-
-    def after_llm(
-        self,
-        response: NormalizedResponse,
-        context: TurnContext,
-    ) -> NormalizedResponse:
-        if response.content:
-            self._sink.status("responding")
-        reasoning = response.metadata.get("reasoning_content")
-        if isinstance(reasoning, str) and reasoning:
-            self._sink.reasoning_delta(reasoning)
-        self._sink.emit(
-            IterationEnd(
-                session_id=self._sink.session_id,
-                run_id=self._sink.run_id,
-                iteration=_wire_iteration(context),
-            )
-        )
-        return response
-
-    def before_tool(
-        self,
-        call: ToolCall | ToolResult,
-        context: TurnContext,
-    ) -> ToolCall | ToolResult:
-        self._sink.status("tool_use", detail=getattr(call, "name", None))
-        if isinstance(call, ToolCall):
-            self._sink.emit(
-                ToolCallEvent(
-                    session_id=self._sink.session_id,
-                    run_id=self._sink.run_id,
-                    tool_call_id=call.id,
-                    tool_name=call.name,
-                    arguments=dict(call.arguments or {}),
-                    iteration=_wire_iteration(context),
-                )
-            )
-        return call
-
-    def after_tool(self, result: ToolResult, context: TurnContext) -> ToolResult:
-        self._sink.emit(
-            ToolResultEvent(
-                session_id=self._sink.session_id,
-                run_id=self._sink.run_id,
-                tool_call_id=result.tool_call_id,
-                tool_name=result.name,
-                content=result.content,
-                is_error=bool(result.is_error),
-                iteration=_wire_iteration(context),
-                metadata=_safe_metadata(result.metadata),
-            )
-        )
-        self._sink.status("thinking")
-        return result
-
-    def on_error(self, error: Exception, state: LoopState, context: TurnContext) -> None:
-        self._sink.error(f"{state.value}: {error}")
+_RUN_REGISTRY = RunRegistry()
 
 
-class _GatewayEventHooks(EngineHooks):
-    """Translate engine lifecycle hooks into agent event notifications."""
+def _new_run_service() -> AgentRunService:
+    return AgentRunService(
+        session_service=SessionService(
+            current_getter=get_current_session,
+            current_setter=set_current_session,
+        ),
+        builder=RunDependencyBuilder(
+            provider_factory=lambda record: _build_provider_for_record(record),
+            config_factory=lambda options: _build_config_from_options(options),
+            tool_registry_factory=lambda: _build_tool_registry(),
+        ),
+        registry=_RUN_REGISTRY,
+    )
 
-    def __init__(self, sink: _EventSink) -> None:
-        super().__init__()
-        self._sink = sink
 
-    def on_session_end(
-        self,
-        *,
-        session_id: str,
-        completed: bool,
-        interrupted: bool,
-        context_metadata: dict[str, Any],
-    ) -> None:
-        self._sink.status("idle")
+_RUN_SERVICE = _new_run_service()
 
 
 def agent_run(params: dict[str, Any] | None) -> dict[str, Any]:
     run_params = _parse_run_params(params)
     session_id = run_params["session_id"]
     run_id = _run_id_from_request()
-    sink = _EventSink(session_id=session_id, run_id=run_id)
-    handle = RunHandle(session_id=session_id, run_id=run_id)
-
-    record = load_session(session_id)
-    if record is None:
-        raise GatewayError(
-            f"session not found: {session_id}",
-            code=ERROR_APPLICATION,
-            data={"session_id": session_id},
-        )
-    _validate_record_for_run(record)
     set_current_session(session_id)
-
-    if not running_runs.register(handle):
-        raise GatewayError(
-            "RUN_ALREADY_ACTIVE",
-            code=ERROR_APPLICATION,
-            data={"code": "RUN_ALREADY_ACTIVE", "session_id": session_id},
-        )
-
+    request = AgentRunRequest(
+        session_id=session_id,
+        user_message=run_params["user_message"],
+        run_id=run_id,
+        options=AgentRunOptions(
+            max_iterations=run_params["max_iterations"],
+            temperature=run_params["temperature"],
+            max_tokens=run_params["max_tokens"],
+            disable_builtin_tools=run_params["disable_builtin_tools"],
+            system_override=run_params["system_override"],
+        ),
+        approval_prompter=GatewayPrompter(session_id=session_id, run_id=run_id),
+        tool_permission_prompter=GatewayToolPermissionPrompter(run_id=run_id),
+    )
     try:
-        provider = _build_provider_for_record(record)
-        config = _build_engine_config(run_params.get("max_iterations"))
-        # ``disable_builtin_tools`` is a per-call override (mirrors Python
-        # ``aether --no-builtin-tools``). Applied here instead of inside
-        # ``_build_engine_config`` so existing test mocks of that builder
-        # keep their single-arg signature.
-        if run_params.get("disable_builtin_tools") is True:
-            config.use_builtin_tools = False
-        tool_registry = _build_tool_registry()
-        approval_prompter = GatewayPrompter(session_id=session_id, run_id=run_id)
-        permission_prompter = GatewayToolPermissionPrompter(run_id=run_id)
-        skill_catalog = build_default_skill_catalog(config)
-        agent_type_registry = AgentTypeRegistry(
-            search_paths=config.agent_type_search_paths
-            or AgentEngine._default_agent_type_search_paths()
-        )
-        task_store: TaskStore | None = None
-        if getattr(config, "task_store_enabled", True):
-            task_store_path = getattr(config, "task_store_path", None)
-            task_store = TaskStore(task_store_path) if task_store_path else TaskStore()
-        subagent_manager: SubagentManager | None = None
-        if getattr(config, "allow_subagent_dispatch", True):
-            subagent_manager = SubagentManager(
-                max_concurrent_background=getattr(config, "max_concurrent_background", 8),
-            )
-        engine = AgentEngine(
-            provider,
-            tool_registry=tool_registry,
-            middleware_pipeline=MiddlewarePipeline([_GatewayEventMiddleware(sink)]),
-            config=config,
-            hooks=_GatewayEventHooks(sink),
-            skill_catalog=skill_catalog,
-            agent_type_registry=agent_type_registry,
-            subagent_manager=subagent_manager,
-            task_store=task_store,
-        )
-        request = EngineRequest(
-            session_id=session_id,
-            user_message=run_params["user_message"],
-            system_message=(
-                run_params["system_override"]
-                if run_params["system_override"] is not None
-                else record.system_prompt
-            ),
-            stream_callback=sink.text_delta,
-            stream_silent_callback=sink.silent_delta,
-            messages=list(record.messages),
-            model_config=ModelCallConfig(
-                temperature=run_params["temperature"],
-                max_tokens=run_params["max_tokens"],
-            ),
-            metadata={"run_id": run_id, "_loop_state_callback": sink.loop_state},
-            approval_prompter=approval_prompter,
-            tool_permission_prompter=permission_prompter,
-            interrupt_signal=handle.interrupt_signal,
-        )
-        result = engine.run_loop(request)
-        _persist_result(record, result)
-        response = _response_from_result(result)
-        usage = response.get("usage")
-        if isinstance(usage, dict):
-            sink.usage(usage)
-        _emit_terminal_event(sink, result, response)
-        return response
-    except GatewayPromptDisconnected as exc:
-        sink.error(str(exc) or "peer disconnected")
-        return _error_response(RuntimeError(str(exc) or "peer disconnected"))
-    except GatewayError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - surface as run result, not worker crash
-        sink.error(str(exc) or type(exc).__name__)
-        return _error_response(exc)
-    finally:
-        running_runs.unregister(session_id, handle)
+        result = _RUN_SERVICE.start(request, sink=_GatewayRunEventSink())
+    except ServiceConflictError as exc:
+        raise GatewayError(
+            exc.message,
+            code=ERROR_APPLICATION,
+            data=exc.details or {"code": "RUN_ALREADY_ACTIVE", "session_id": session_id},
+        ) from exc
+    except ServiceNotFoundError as exc:
+        raise GatewayError(
+            exc.message,
+            code=ERROR_APPLICATION,
+            data=exc.details or {"session_id": session_id},
+        ) from exc
+    except ServiceValidationError as exc:
+        if "session has no " in exc.message:
+            raise GatewayError(
+                exc.message,
+                code=ERROR_APPLICATION,
+                data=exc.details or {"session_id": session_id},
+            ) from exc
+        raise service_error_to_gateway(exc) from exc
+    except ServiceError as exc:
+        raise service_error_to_gateway(exc) from exc
+    return _response_from_service_result(result)
 
 
 def agent_cancel(params: dict[str, Any] | None) -> dict[str, Any]:
     session_id = _require_str(params, "session_id", where="agent.cancel")
-    running_runs.cancel(session_id)
+    _RUN_SERVICE.cancel(AgentRunCancelRequest(session_id=session_id))
     return {"ok": True}
 
 
@@ -461,22 +194,7 @@ def _run_id_from_request() -> str:
     return str(uuid.uuid4())
 
 
-def _validate_record_for_run(record: SessionRecord) -> None:
-    if not record.provider.strip():
-        raise GatewayError(
-            f"session has no provider: {record.session_id}",
-            code=ERROR_APPLICATION,
-            data={"session_id": record.session_id},
-        )
-    if not record.model.strip():
-        raise GatewayError(
-            f"session has no model: {record.session_id}",
-            code=ERROR_APPLICATION,
-            data={"session_id": record.session_id},
-        )
-
-
-def _build_provider_for_record(record: SessionRecord) -> ModelProvider:
+def _build_provider_for_record(record: Any) -> ModelProvider:
     from aether.cli.providers import build_provider
 
     return build_provider(
@@ -497,145 +215,42 @@ def _build_engine_config(max_iterations: Any) -> EngineConfig:
     return config
 
 
+def _build_config_from_options(options: AgentRunOptions) -> EngineConfig:
+    config = _build_engine_config(options.max_iterations)
+    if options.disable_builtin_tools is True:
+        config.use_builtin_tools = False
+    return config
+
+
 def _build_tool_registry() -> ToolRegistry | None:
     return None
 
 
-def _persist_result(record: SessionRecord, result: EngineResult) -> None:
-    update_session_from_state(
-        record,
-        messages=result.messages,
-        provider=record.provider,
-        model=record.model,
-        base_url=record.base_url,
-        system_prompt=result.system_prompt or record.system_prompt,
-    )
-    save_session(record)
-
-
-def _response_from_result(result: EngineResult) -> dict[str, Any]:
-    metadata = dict(result.metadata or {})
-    interrupt = metadata.get("interrupt") if isinstance(metadata, dict) else None
-    partial_text = ""
-    if isinstance(interrupt, dict):
-        partial_text = str(interrupt.get("partial_text") or "")
-    final_text = result.final_response if result.final_response is not None else partial_text
+def _response_from_service_result(result: AgentRunResult) -> dict[str, Any]:
     return {
-        "final_text": final_text,
-        "exit_reason": _wire_exit_reason(result),
-        "usage": _usage_from_metadata(metadata),
-        "metadata": metadata,
+        "final_text": result.final_text,
+        "exit_reason": result.exit_reason,
+        "usage": dict(result.usage or {}),
+        "metadata": dict(result.metadata or {}),
     }
-
-
-def _wire_exit_reason(result: EngineResult) -> str:
-    if (
-        result.status == EngineStatus.INTERRUPTED
-        or result.exit_reason == ExitReason.INTERRUPTED
-    ):
-        return "cancelled"
-    if (
-        result.status == EngineStatus.MAX_ITERATIONS
-        or result.exit_reason == ExitReason.MAX_ITERATIONS
-    ):
-        return "max_iterations"
-    if result.status == EngineStatus.FAILED:
-        return "error"
-    return "done"
-
-
-def _usage_from_metadata(metadata: dict[str, Any]) -> dict[str, int]:
-    usage = metadata.get("usage")
-    if not isinstance(usage, dict):
-        usage = {}
-    return {
-        "input_tokens": _int_value(usage.get("input_tokens")),
-        "output_tokens": _int_value(usage.get("output_tokens")),
-        "cache_read_tokens": _int_value(usage.get("cache_read_tokens")),
-        "cache_write_tokens": _int_value(usage.get("cache_write_tokens")),
-        "reasoning_tokens": _int_value(usage.get("reasoning_tokens")),
-        "prompt_tokens": _int_value(usage.get("prompt_tokens")),
-        "completion_tokens": _int_value(usage.get("completion_tokens")),
-        "total_tokens": _int_value(usage.get("total_tokens")),
-    }
-
-
-def _emit_terminal_event(
-    sink: _EventSink,
-    result: EngineResult,
-    response: dict[str, Any],
-) -> None:
-    exit_reason = response["exit_reason"]
-    final_text = str(response.get("final_text") or "")
-    if exit_reason == "cancelled":
-        interrupt = result.metadata.get("interrupt")
-        reason = None
-        if isinstance(interrupt, dict):
-            reason = str(interrupt.get("reason") or "") or None
-        sink.cancelled(reason=reason, partial_text=final_text)
-    elif exit_reason == "error":
-        sink.error(result.error or result.exit_reason.value)
-    else:
-        sink.done(final_text=final_text, exit_reason=exit_reason)
-
-
-def _error_response(exc: Exception) -> dict[str, Any]:
-    return {
-        "final_text": "",
-        "exit_reason": "error",
-        "usage": _usage_from_metadata({}),
-        "metadata": {
-            "error": {
-                "type": type(exc).__name__,
-                "message": str(exc),
-            }
-        },
-    }
-
-
-def _int_value(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _wire_iteration(context: TurnContext) -> int:
-    return max(0, int(context.iteration or 0) - 1)
-
-
-def _safe_metadata(raw: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Forward only JSON-serialisable metadata so the wire never fails on encode.
-
-    Tools attach structured data to ``ToolResult.metadata`` (file diffs,
-    exit codes, byte counts…). The keys we care about are all primitives,
-    but the dict is free-form, so we strip any value that ``json.dumps``
-    rejects rather than letting an errant Path or set crash the emit.
-    """
-
-    if not raw:
-        return {}
-    out: dict[str, Any] = {}
-    for key, value in raw.items():
-        try:
-            json.dumps(value)
-        except (TypeError, ValueError):
-            continue
-        out[str(key)] = value
-    return out
 
 
 def register() -> None:
-    """Register ``agent.*`` handlers on the dispatcher.  Idempotent."""
     method("agent.run", long=True)(agent_run)
     method("agent.cancel", long=False)(agent_cancel)
 
 
 def reset_agent_runs_for_tests() -> None:
-    running_runs.clear()
+    global _RUN_REGISTRY, _RUN_SERVICE
+    _RUN_REGISTRY = RunRegistry()
+    _RUN_SERVICE = _new_run_service()
 
 
 __all__ = [
+    "_build_engine_config",
+    "_build_provider_for_record",
+    "_build_tool_registry",
+    "_parse_run_params",
     "agent_cancel",
     "agent_run",
     "register",

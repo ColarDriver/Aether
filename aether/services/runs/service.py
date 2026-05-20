@@ -153,7 +153,9 @@ class AgentRunService:
             return result
         except (ServiceNotFoundError, ServiceValidationError, ServiceConflictError):
             raise
-        except Exception as exc:  # noqa: BLE001 - preserve gateway behavior as run result
+        except BaseException as exc:  # noqa: BLE001 - preserve prompt-disconnect behavior
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             message = str(exc) or type(exc).__name__
             emitter.error(message)
             result = _error_result(record.session_id, run_id, exc)
@@ -514,7 +516,7 @@ def _emit_terminal_event(
         emitter.done(final_text=result.final_text, exit_reason=result.exit_reason)
 
 
-def _error_result(session_id: str, run_id: str, exc: Exception) -> AgentRunResult:
+def _error_result(session_id: str, run_id: str, exc: BaseException) -> AgentRunResult:
     return AgentRunResult(
         session_id=session_id,
         run_id=run_id,

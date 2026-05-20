@@ -33,6 +33,7 @@ export interface ChatTranscriptProps {
   items?: ChatItem[]
   staticScrollback?: boolean
   liveContextRows?: number
+  staticRedrawKey?: number
 }
 
 /**
@@ -50,7 +51,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   leadingRows = 0,
   items: inputItems,
   staticScrollback = true,
-  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
+  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS,
+  staticRedrawKey = 0
 }: ChatTranscriptProps = {}): ReactElement | null {
   const storeItems = useStore(chatItems)
   const staticEpoch = useStore(chatEpoch)
@@ -272,7 +274,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   }, [scrollKeysActive, stdin, viewport])
 
   const staticNode = usesStaticScrollback ? (
-    <Static key={staticEpoch} items={buildStaticEntries(staticItems, leading)}>
+    <Static key={`${staticEpoch}:${staticRedrawKey}`} items={buildStaticEntries(staticItems, leading)}>
       {(entry, index) => {
         if (entry.kind === 'leading') {
           return (

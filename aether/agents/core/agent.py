@@ -31,7 +31,12 @@ from aether.agents.runtime.provider_invocation import (
     ProviderInvocationController,
     ProviderInvocationRequest,
 )
-from aether.agents.core.tool_hardening import ToolDispatchPlan, prepare_tool_calls
+from aether.agents.runtime.tool_dispatch import (
+    LegacyToolDispatchAdapter,
+    ToolDispatchController,
+    ToolDispatchRequest,
+)
+from aether.agents.core.tool_hardening import ToolDispatchPlan
 from aether.agents.middlewares.pipeline import MiddlewarePipeline
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.memory import (
@@ -416,6 +421,12 @@ class AgentEngine:
             services=self.services,
             hooks=self._hooks,
             adapter=LegacyContextAssemblyAdapter(self),
+        )
+        self._tool_dispatch_controller = ToolDispatchController(
+            services=self.services,
+            hooks=self._hooks,
+            config=self.config,
+            adapter=LegacyToolDispatchAdapter(self),
         )
         # External-event queue (PR 10.7).  Used by the root engine to
         # receive ``<task-notification>`` messages routed back from
@@ -809,323 +820,36 @@ class AgentEngine:
                         state_machine.transition(LoopState.TOOL_DISPATCH)
                         self._append_assistant_tool_message(messages, response)
                         tool_result_start_idx = len(messages)
-
-                        # sanitise the call batch
-                        # before dispatch:
-                        #   * fuzzy-repair tool names
-                        #   * cap delegate-class fan-out per turn
-                        #   * dedup identical calls
-                        # Returns a plan whose entries either dispatch
-                        # normally or carry a synthetic ToolResult that
-                        # the engine appends in lieu of dispatching.
-                        # When the per-turn unrepairable-name budget is
-                        # exhausted the plan also pins a terminal
-                        # exit reason (INVALID_TOOL_REPEATED).
-                        dispatch_plan = prepare_tool_calls(
-                            response.tool_calls,
-                            registry=self.services.tool_registry,
-                            config=self.config,
-                            context=context,
-                        )
-                        # Surface counters in turn metadata for
-                        # observability — the CLI footer reads these
-                        # to render a "↻ repaired 1, deduped 2" hint.
-                        if dispatch_plan.repaired_count:
-                            context.metadata["tool_names_repaired"] = (
-                                int(context.metadata.get("tool_names_repaired", 0))
-                                + dispatch_plan.repaired_count
-                            )
-                        if dispatch_plan.deduped_count:
-                            context.metadata["tool_calls_deduped"] = (
-                                int(context.metadata.get("tool_calls_deduped", 0))
-                                + dispatch_plan.deduped_count
-                            )
-                        if dispatch_plan.capped_count:
-                            context.metadata["tool_calls_capped"] = (
-                                int(context.metadata.get("tool_calls_capped", 0))
-                                + dispatch_plan.capped_count
-                            )
-
-                        if dispatch_plan.exit_reason is None:
-                            schema_injection = self._maybe_inject_schema_errors(
-                                dispatch_plan=dispatch_plan,
-                                response=response,
-                                context=context,
-                            )
-                            if schema_injection is not None:
-                                state_machine.transition(LoopState.TOOL_EXECUTE)
-                                tool_result_start_idx = len(messages)
-                                messages.extend(schema_injection)
-                                self._apply_pending_steer_to_tool_results(
-                                    messages,
-                                    session_id=request.session_id,
-                                    start_idx=tool_result_start_idx,
-                                    context=context,
-                                )
-                                state_machine.transition(LoopState.CHECK_EXIT)
-                                if budget.exhausted:
-                                    state_machine.transition(LoopState.FINALIZE)
-                                    exit_reason = ExitReason.MAX_ITERATIONS
-                                    break
-                                state_machine.transition(LoopState.PRE_LLM)
-                                continue
-
                         state_machine.transition(LoopState.TOOL_EXECUTE)
-                        tool_failed = False
-                        for prepared in dispatch_plan.prepared:
-                            call = prepared.call
-                            if self._is_interrupted(request.session_id, context):
-                                self._record_interrupt_metadata(
-                                    context,
-                                    was_in_tool_call=True,
-                                )
-                                state_machine.transition(LoopState.INTERRUPTED)
-                                exit_reason = ExitReason.INTERRUPTED
-                                break
-
-                            # Skip dispatch when the sanitiser already
-                            # produced a synthetic result (cap / dedup /
-                            # unrepairable name).  We still go through
-                            # the after_tool middleware path so the
-                            # synthetic result gets the same redaction
-                            # / observability treatment as a real one.
-                            if prepared.synthetic_result is not None:
-                                result = prepared.synthetic_result
-                                try:
-                                    result = self.services.middleware_pipeline.run_after_tool(result, context)
-                                except Exception as exc:
-                                    self._handle_pipeline_error(exc, state_machine.state, context)
-                                    error_text = str(exc)
-                                    exit_reason = ExitReason.MIDDLEWARE_ERROR
-                                    state_machine.transition(LoopState.FAILED)
-                                    tool_failed = True
-                                    break
-                                self._record_tool_result_error(context, result)
-                                self._append_tool_result_message(messages, result)
-                                continue
-
-                            tool_call: ToolCall | None = None
-                            result = ToolResult(
-                                tool_call_id=call.id,
-                                name=call.name,
-                                content="tool execution did not produce a result",
-                                is_error=True,
-                            )
-                            permission_checked = self._apply_tool_permission_gate(
-                                call,
-                                request=request,
+                        tool_dispatch = self._tool_dispatch_controller.dispatch(
+                            ToolDispatchRequest(
+                                tool_calls=list(response.tool_calls),
+                                messages=messages,
                                 context=context,
+                                request=request,
+                                iteration=iterations + 1,
+                                tool_result_start_idx=tool_result_start_idx,
                             )
-
-                            if isinstance(permission_checked, ToolResult):
-                                result = permission_checked
-                            else:
-                                try:
-                                    # before_tool can rewrite a ToolCall or short-circuit with ToolResult
-                                    # (for guardrails/policy blocks).
-                                    pre_tool = self.services.middleware_pipeline.run_before_tool(
-                                        permission_checked,
-                                        context,
-                                    )
-                                except Exception as exc:
-                                    self._handle_pipeline_error(exc, state_machine.state, context)
-                                    error_text = str(exc)
-                                    exit_reason = ExitReason.MIDDLEWARE_ERROR
-                                    state_machine.transition(LoopState.FAILED)
-                                    tool_failed = True
-                                    break
-
-                                if isinstance(pre_tool, ToolResult):
-                                    result = pre_tool
-                                    tool_call = None
-                                else:
-                                    tool_call = pre_tool
-
-                            dispatch_error: BaseException | None = None
-                            dispatch_t0: float = time.perf_counter()
-                            if not isinstance(permission_checked, ToolResult) and tool_call is not None:
-                                assert tool_call is not None
-                                # Track active call so middleware on_error handlers can build
-                                # a deterministic fallback ToolResult for this exact invocation.
-                                context.metadata.pop("tool_error_result", None)
-                                context.metadata["_active_tool_call"] = tool_call
-                                context.metadata["_tool_interrupt_behavior"] = getattr(
-                                    self.services.tool_registry.get(tool_call.name),
-                                    "interrupt_behavior",
-                                    "block",
-                                )
-                                result = ToolResult(
-                                    tool_call_id=tool_call.id,
-                                    name=tool_call.name,
-                                    content="tool execution did not produce a result",
-                                    is_error=True,
-                                )
-                                try:
-                                    result = self.services.tool_registry.dispatch(tool_call, context)
-                                except UnknownToolError as exc:
-                                    # repair already
-                                    # ran and produced no match; this
-                                    # branch is now hit only if the
-                                    # registry mutated mid-turn (rare).
-                                    # Honour ``fail_on_unknown_tool`` for
-                                    # backward compat with callers that
-                                    # explicitly want hard failure.
-                                    dispatch_error = exc
-                                    if self.config.fail_on_unknown_tool:
-                                        # Fire the failure hook *before* breaking so observers
-                                        # see the failed dispatch even when the engine bails.
-                                        self._fire_post_tool_hook(
-                                            tool_call=tool_call,
-                                            result=None,
-                                            dispatch_error=dispatch_error,
-                                            elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
-                                            session_id=request.session_id,
-                                            iteration=iterations + 1,
-                                            context=context,
-                                        )
-                                        error_text = f"Unknown tool: {tool_call.name}"
-                                        exit_reason = ExitReason.UNKNOWN_TOOL
-                                        state_machine.transition(LoopState.FAILED)
-                                        tool_failed = True
-                                        break
-                                    result = ToolResult(
-                                        tool_call_id=tool_call.id,
-                                        name=tool_call.name,
-                                        content=self._format_unknown_tool_content(
-                                            tool_call.name,
-                                            context=context,
-                                        ),
-                                        is_error=True,
-                                        metadata={
-                                            "_unknown_tool_recovery": True,
-                                            "_tool_error_category": "unknown_tool",
-                                        }
-                                        if getattr(
-                                            self.config,
-                                            "tool_error_structured_format_enabled",
-                                            True,
-                                        )
-                                        else {},
-                                    )
-                                except Exception as exc:
-                                    dispatch_error = exc
-                                    if self.config.fail_on_tool_error:
-                                        # If strict mode is enabled, middleware may still recover
-                                        # by providing a synthetic ToolResult in metadata.
-                                        self._handle_pipeline_error(exc, state_machine.state, context)
-                                        recovered_tool_result = context.metadata.pop("tool_error_result", None)
-                                        if not isinstance(recovered_tool_result, ToolResult):
-                                            self._fire_post_tool_hook(
-                                                tool_call=tool_call,
-                                                result=None,
-                                                dispatch_error=dispatch_error,
-                                                elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
-                                                session_id=request.session_id,
-                                                iteration=iterations + 1,
-                                                context=context,
-                                            )
-                                            error_text = str(exc)
-                                            exit_reason = ExitReason.TOOL_ERROR
-                                            state_machine.transition(LoopState.FAILED)
-                                            tool_failed = True
-                                            break
-                                        result = recovered_tool_result
-                                    else:
-                                        result = ToolResult(
-                                            tool_call_id=tool_call.id,
-                                            name=tool_call.name,
-                                            content=f"Tool execution error: {exc}",
-                                            is_error=True,
-                                        )
-                                finally:
-                                    context.metadata.pop("_active_tool_call", None)
-                                    context.metadata.pop("_tool_interrupt_behavior", None)
-
-                            try:
-                                # after_tool middleware stage for redaction, auditing, or shaping.
-                                result = self.services.middleware_pipeline.run_after_tool(result, context)
-                            except Exception as exc:
-                                # Middleware-induced failures do NOT route through
-                                # the post_tool_use hooks: the tool itself completed;
-                                # only post-processing broke.
-                                self._handle_pipeline_error(exc, state_machine.state, context)
-                                error_text = str(exc)
-                                exit_reason = ExitReason.MIDDLEWARE_ERROR
-                                state_machine.transition(LoopState.FAILED)
-                                tool_failed = True
-                                break
-
-                            # Hook fires once per tool call, after middleware has
-                            # processed the final ToolResult.  ``dispatch_error``
-                            # routes to post_tool_use_failure; success → post_tool_use.
-                            if tool_call is not None:
-                                # Capture ``edited_paths`` so the diagnostic
-                                # attachment producer scopes the next drain to
-                                # files the model actually touched this turn.
-                                self._accumulate_edited_paths(result, context)
-                                # Clear the verifier-gate soft reminder once the
-                                # model actually spawns a ``Verifier`` subagent.
-                                self._maybe_mark_verifier_invoked(tool_call, context)
-                                self._fire_post_tool_hook(
-                                    tool_call=tool_call,
-                                    result=result,
-                                    dispatch_error=dispatch_error,
-                                    elapsed_ms=(time.perf_counter() - dispatch_t0) * 1000.0,
-                                    session_id=request.session_id,
-                                    iteration=iterations + 1,
-                                    context=context,
-                                )
-                                self._dispatch_internal_diagnostic_update(
-                                    tool_call=tool_call,
-                                    result=result,
-                                    context=context,
-                                )
-
-                            self._record_tool_result_error(context, result)
-                            self._append_tool_result_message(messages, result)
-                            if bool(result.metadata.get("interrupted")):
-                                self._record_interrupt_metadata(
-                                    context,
-                                    was_in_tool_call=True,
-                                )
-                            if self._is_permission_abort_result(result):
-                                self._record_interrupt_metadata(
-                                    context,
-                                    was_in_tool_call=True,
-                                )
-                                exit_reason = ExitReason.INTERRUPTED
-                                state_machine.transition(LoopState.INTERRUPTED)
-                                break
-
-                        if state_machine.state in {LoopState.FAILED, LoopState.INTERRUPTED}:
-                            break
-                        if tool_failed:
-                            break
-                        self._apply_pending_steer_to_tool_results(
-                            messages,
-                            session_id=request.session_id,
-                            start_idx=tool_result_start_idx,
-                            context=context,
                         )
+                        messages = tool_dispatch.messages
 
-                        # when the per-turn
-                        # invalid-tool retry budget is exhausted the
-                        # sanitiser pinned ``dispatch_plan.exit_reason``.
-                        # Synthetic ToolResults for each unrepairable
-                        # name have already been appended to the
-                        # message stream above, so the model has the
-                        # full diagnostic context — we just need to
-                        # finalise this turn instead of looping again.
-                        # Walk through CHECK_EXIT first so the state
-                        # machine's TOOL_EXECUTE → CHECK_EXIT → FINALIZE
-                        # contract holds (TOOL_EXECUTE → FINALIZE is
-                        # explicitly disallowed in state_machine.py).
-                        if dispatch_plan.exit_reason is not None:
-                            try:
-                                exit_reason = ExitReason(dispatch_plan.exit_reason)
-                            except ValueError:
-                                exit_reason = ExitReason.UNKNOWN_TOOL
-                            context.metadata["partial"] = True
+                        if tool_dispatch.exit_reason == ExitReason.INTERRUPTED:
+                            exit_reason = ExitReason.INTERRUPTED
+                            state_machine.transition(LoopState.INTERRUPTED)
+                            break
+
+                        if tool_dispatch.exit_reason in {
+                            ExitReason.MIDDLEWARE_ERROR,
+                            ExitReason.TOOL_ERROR,
+                            ExitReason.UNKNOWN_TOOL,
+                        }:
+                            error_text = tool_dispatch.error_text
+                            exit_reason = tool_dispatch.exit_reason
+                            state_machine.transition(LoopState.FAILED)
+                            break
+
+                        if tool_dispatch.exit_reason is not None:
+                            exit_reason = tool_dispatch.exit_reason
                             state_machine.transition(LoopState.CHECK_EXIT)
                             state_machine.transition(LoopState.FINALIZE)
                             break
@@ -1145,9 +869,9 @@ class AgentEngine:
                         # iteration that would otherwise have been
                         # the budget-exhausting one keeps the loop
                         # alive for substantive follow-up work.
-                        if response.tool_calls and all(
-                            self._is_cheap_tool(call.name)
-                            for call in response.tool_calls
+                        if (
+                            tool_dispatch.all_tools_cheap
+                            and not tool_dispatch.schema_injected
                         ):
                             budget.refund()
                             context.metadata["iteration_budget"] = budget.to_dict()

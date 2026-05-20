@@ -16,6 +16,7 @@ from aether.cli.sessions import (
     list_sessions,
     load_session,
     save_session,
+    update_session_from_state,
 )
 from aether.runtime.session.plan_artifact import clear_plan
 from aether.runtime.session.session_state import clear_mode, get_mode, set_mode
@@ -173,6 +174,25 @@ class SessionService:
     def transcript(self, session_id_or_prefix: str) -> list[TranscriptMessage]:
         record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
         return [message_to_transcript(message) for message in record.messages]
+
+    def persist_run_result(
+        self,
+        session_id: str,
+        *,
+        messages: list[dict[str, Any]],
+        system_prompt: str | None = None,
+    ) -> SessionInfo:
+        record = self.resolve_record(_require_non_empty(session_id, "session_id"))
+        update_session_from_state(
+            record,
+            messages=messages,
+            provider=record.provider,
+            model=record.model,
+            base_url=record.base_url,
+            system_prompt=system_prompt or record.system_prompt,
+        )
+        save_session(record, base=self._session_dir)
+        return self.info(record)
 
     def resolve_record(self, session_id_or_prefix: str) -> SessionRecord:
         record = load_session(session_id_or_prefix, base=self._session_dir)

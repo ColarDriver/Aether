@@ -8,6 +8,7 @@ from aether.services.runs.contracts import (
     AgentRunSnapshot,
     AgentRunStatus,
     RunEvent,
+    RunEventSink,
 )
 from aether.services.runs.events import (
     AssistantDelta,
@@ -27,6 +28,8 @@ from aether.services.runs.events import (
     ToolStarted,
     event_to_public_dict,
 )
+from aether.services.runs.handles import RunHandle, RunRegistry
+from aether.services.runs.service import AgentRunService
 
 __all__ = [
     "AgentRunCancelRequest",
@@ -35,6 +38,7 @@ __all__ = [
     "AgentRunResult",
     "AgentRunSnapshot",
     "AgentRunStatus",
+    "AgentRunService",
     "AssistantDelta",
     "IterationFinished",
     "IterationStarted",
@@ -43,10 +47,13 @@ __all__ = [
     "ReasoningDelta",
     "RunCancelled",
     "RunEvent",
+    "RunEventSink",
     "RunFailed",
     "RunFinished",
+    "RunHandle",
     "RunStarted",
     "RunStatusChanged",
+    "RunRegistry",
     "SilentProgress",
     "TokenUsageUpdated",
     "ToolFinished",

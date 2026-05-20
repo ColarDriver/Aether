@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from aether.services.runs.events import RunEvent
 
@@ -32,6 +32,8 @@ class AgentRunRequest:
     user_message: str
     run_id: str | None = None
     options: AgentRunOptions = field(default_factory=AgentRunOptions)
+    approval_prompter: Any = field(default=None, repr=False, compare=False)
+    tool_permission_prompter: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +64,11 @@ class AgentRunCancelRequest:
     reason: str | None = None
 
 
+class RunEventSink(Protocol):
+    def emit(self, event: RunEvent) -> None:
+        ...
+
+
 __all__ = [
     "AgentRunCancelRequest",
     "AgentRunOptions",
@@ -70,4 +77,5 @@ __all__ = [
     "AgentRunSnapshot",
     "AgentRunStatus",
     "RunEvent",
+    "RunEventSink",
 ]

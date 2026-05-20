@@ -8,6 +8,7 @@ dependencies = [
     "agent-sandbox>=0.0.19",
     "dotenv>=0.9.9",
     "exa-py>=1.0.0",
+    "fastapi>=0.115.0",
     "httpx>=0.28.0",
     "kubernetes>=30.0.0",
     "langfuse>=3.4.1",
@@ -22,11 +23,13 @@ dependencies = [
     "ddgs>=9.10.0",
     "duckdb>=1.4.4",
     "anthropic>=0.100.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 
 [project.scripts]
 aether = "aether.cli.launcher:main"
 aether-gateway = "aether.gateway.entry:main"
+aether-web = "aether.web.entry:main"
 
 [project.optional-dependencies]
 pymupdf = ["pymupdf4llm>=0.0.17"]

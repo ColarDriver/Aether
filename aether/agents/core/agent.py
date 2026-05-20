@@ -36,6 +36,11 @@ from aether.agents.runtime.recovery_controller import (
     RecoveryAttemptInput,
     RecoveryController,
 )
+from aether.agents.runtime.session_lifecycle import (
+    LegacySessionLifecycleAdapter,
+    SessionLifecycleController,
+    TurnFinalizationInput,
+)
 from aether.agents.runtime.tool_dispatch import (
     LegacyToolDispatchAdapter,
     ToolDispatchController,
@@ -438,6 +443,10 @@ class AgentEngine:
             config=self.config,
             adapter=LegacyRecoveryControllerAdapter(self),
         )
+        self._session_lifecycle_controller = SessionLifecycleController(
+            services=self.services,
+            adapter=LegacySessionLifecycleAdapter(self),
+        )
         # External-event queue (PR 10.7).  Used by the root engine to
         # receive ``<task-notification>`` messages routed back from
         # async children that have completed.  Drained at the next
@@ -555,7 +564,6 @@ class AgentEngine:
     def run_loop(self, request: EngineRequest) -> EngineResult:
         """Execute one full agent loop turn until completion/failure/interruption."""
         self._current_session_id = request.session_id
-        self._seed_session_cwd(request)
         context: TurnContext | None = None
         active_system_prompt: str | None = None
         stream_callback_wrapped = None
@@ -567,12 +575,11 @@ class AgentEngine:
         budget: IterationBudget | None = None
 
         try:
-            state_machine, messages, context = self._prepare_turn_entry(request)
-            messages, active_system_prompt = self._prepare_session_and_system_prompt(
-                request,
-                messages,
-                context,
-            )
+            turn = self._session_lifecycle_controller.prepare_turn(request)
+            state_machine = turn.state_machine
+            messages = turn.messages
+            context = turn.context
+            active_system_prompt = turn.active_system_prompt
             self._apply_turn_nudges(context)
             stream_callback_wrapped = self._build_stream_callback(request, context)
             stream_silent_callback_wrapped = self._build_stream_silent_callback(
@@ -1024,65 +1031,22 @@ class AgentEngine:
             #     we never want to clobber a real model answer);
             #   * ``summary_on_budget_exhausted`` is False (rollback);
             #   * the grace round was already consumed (defensive).
-            if (
-                exit_reason == ExitReason.MAX_ITERATIONS
-                and not final_response
-                and budget is not None
-            ):
-                summary_text = self._handle_max_iterations(
-                    request, messages, context
-                )
-                if summary_text:
-                    final_response = summary_text
-
-            # FINALIZE -> DONE transition for successful/terminal completion paths.
-            if state_machine.state == LoopState.FINALIZE:
-                state_machine.transition(LoopState.DONE)
-
-            pending_steer = self.services.steer_inbox.drain(request.session_id)
-            if pending_steer:
-                context.metadata["pending_steer"] = pending_steer
-
-            self._observe_memory_turn(messages, context)
-
-            result = self._build_result(
-                request,
-                messages,
-                iterations,
-                final_response,
-                error_text,
-                exit_reason,
-                context=context,
-                active_system_prompt=active_system_prompt,
-            )
-            self._save_trajectory_if_enabled(
-                result=result,
-                messages=messages,
-                context=context,
-            )
-            self._cleanup_task_resources_if_needed(
-                result=result,
-                context=context,
-            )
-            self.services.interrupt_controller.clear(request.session_id)
-
-            self._safe_call_hook(
-                "on_session_end",
-                session_id=request.session_id,
-                completed=result.status in {EngineStatus.COMPLETED, EngineStatus.MAX_ITERATIONS},
-                interrupted=result.status == EngineStatus.INTERRUPTED,
-                context_metadata=context.metadata,
-            )
-            return result
-        finally:
-            if context is not None and not context.metadata.get("_task_cleanup_done"):
-                self._cleanup_task_resources(
+            return self._session_lifecycle_controller.finalize_turn(
+                TurnFinalizationInput(
+                    request=request,
+                    messages=messages,
                     context=context,
-                    completed=False,
-                    interrupted=self._is_interrupted(context.session_id, context),
+                    final_response=final_response,
+                    error_text=error_text,
+                    exit_reason=exit_reason,
+                    iterations=iterations,
+                    budget=budget,
+                    state_machine=state_machine,
+                    active_system_prompt=active_system_prompt,
                 )
-            if context is not None:
-                self.clear_interrupt(session_id=context.session_id)
+            )
+        finally:
+            self._session_lifecycle_controller.cleanup_after_turn(context)
             self._current_session_id = None
 
     def _get_compaction_pipeline(self) -> CompactionPipeline:

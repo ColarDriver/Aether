@@ -19,12 +19,13 @@ const DOUBLE_CTRL_C_MS = 2000
 export interface ComposerProps {
   disabled?: boolean
   busy?: boolean
+  availableColumns?: number | undefined
   onSubmit(text: string): void
   onCancel(): void
 }
 
 export function Composer(props: ComposerProps): ReactElement {
-  const { disabled, busy, onSubmit, onCancel } = props
+  const { disabled, busy, availableColumns, onSubmit, onCancel } = props
   const state = useStore(composerState)
   const overlays = useStore(overlayStack)
   const owner = useStore(focusOwner)
@@ -304,6 +305,7 @@ export function Composer(props: ComposerProps): ReactElement {
           matches={completer.matches}
           cursor={completerCursor}
           fullCount={completer.matches.length}
+          availableColumns={availableColumns}
         />
       ) : null}
       <Box width="100%" borderStyle="single" borderColor={borderColor} paddingX={1}>
@@ -335,17 +337,19 @@ export function Composer(props: ComposerProps): ReactElement {
  */
 function SlashPopup({
   matches,
-  cursor
+  cursor,
+  availableColumns
 }: {
   matches: ReadonlyArray<{ name: string; description: string }>
   cursor: number
   fullCount: number
+  availableColumns?: number | undefined
 }): ReactElement {
   const VISIBLE = 10
   // Keep the focused row inside the visible window.
   const start = Math.max(0, Math.min(cursor - Math.floor(VISIBLE / 2), Math.max(0, matches.length - VISIBLE)))
   const slice = matches.slice(start, start + VISIBLE)
-  const popupWidth = Math.max(24, composerPopupWidth())
+  const popupWidth = Math.max(24, composerPopupWidth(availableColumns))
   const nameWidth = Math.max(...slice.map((cmd) => stringWidth(cmd.name)), 8)
   const descWidth = Math.max(...slice.map((cmd) => stringWidth(cmd.description)), 1)
   const dimFg = theme.color('dim')
@@ -398,12 +402,15 @@ function SlashPopup({
   )
 }
 
-function composerPopupWidth(): number {
+function composerPopupWidth(availableColumns?: number): number {
+  if (Number.isFinite(availableColumns) && availableColumns) {
+    return Math.max(24, Math.floor(availableColumns))
+  }
   const cols = process.stdout?.columns
   if (!Number.isFinite(cols) || !cols) {
     return 78
   }
-  // App root uses `paddingX={1}`, so the composer spans roughly cols - 2.
+  // Fallback for standalone tests/stories where App did not pass a layout width.
   return Math.max(24, cols - 2)
 }
 

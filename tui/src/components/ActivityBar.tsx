@@ -1,8 +1,15 @@
-import { Box, Text } from 'ink'
+import { Box, Text, useStdout, type DOMElement } from 'ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState, type ReactElement } from 'react'
+import stringWidth from 'string-width'
+import { useCallback, useEffect, useRef, type ReactElement } from 'react'
 
+import { useAnimationFrame } from '../lib/useAnimationFrame.js'
 import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
+import {
+  isDirectWriteShimmerEnabled,
+  measureShimmerCell,
+  startShimmerWriter
+} from '../lib/shimmerWriter.js'
 import { theme } from '../lib/theme.js'
 import { categoryFor, verbForCategory } from '../lib/toolCategory.js'
 import { activeTodoTitle, formatTodoPreviewLines } from '../lib/todos.js'
@@ -88,44 +95,30 @@ function loopStateLabel(state: string | null): string | null {
 export function ActivityBar({ animate = true }: { animate?: boolean } = {}): ReactElement {
   const activity = useStore(activityState)
   const session = useStore(sessionState)
+  const { stdout } = useStdout()
   const ascii = !theme.isUnicodeAllowed()
+  const activityElementRef = useRef<DOMElement | null>(null)
   const tokenTurnStartedAtRef = useRef<number | null | undefined>(undefined)
   const displayedResponseLengthRef = useRef(0)
-  const [animationTick, setAnimationTick] = useState(0)
-
-  useEffect(() => {
-    if (!animate) {
-      return
-    }
-    if (!ACTIVE_STATES.has(activity.status)) {
-      return
-    }
-    const handle = setInterval(() => {
-      setAnimationTick((tick) => tick + 1)
-    }, SPINNER_INTERVAL_MS)
-    return () => {
-      clearInterval(handle)
-    }
-  }, [animate, activity.status])
+  const shouldAnimate =
+    animate && ACTIVE_STATES.has(activity.status) && !activity.interruptPending
+  const directWriteActive =
+    shouldAnimate && isDirectWriteShimmerEnabled() && theme.isColorEnabled()
+  const [animationRef, animationTime] = useAnimationFrame(
+    shouldAnimate && !directWriteActive ? SPINNER_INTERVAL_MS : null
+  )
+  const setActivityElement = useCallback(
+    (element: DOMElement | null) => {
+      activityElementRef.current = element
+      animationRef(element)
+    },
+    [animationRef]
+  )
+  const animationTick = Math.floor(animationTime / SPINNER_INTERVAL_MS)
 
   const isError = activity.status === 'error' || activity.status === 'cancelled'
   const colorName = isError ? 'error' : activity.status === 'idle' ? 'dim' : 'status'
   const colorProps = theme.colorProps(colorName)
-  // Mirror Python `_interrupt_visual_pending` — once the user requested an
-  // interrupt we drop the spinner/segments immediately and read as
-  // "cancelling" until the gateway's cancelled/error event lands. Without
-  // this latch the bar keeps spinning for the round-trip duration, which
-  // reads as "the interrupt didn't register".
-  if (activity.interruptPending) {
-    const dim = theme.colorProps('dim')
-    return (
-      <Box>
-        <Text {...dim} italic>
-          {ascii ? '...' : '…'} interrupting
-        </Text>
-      </Box>
-    )
-  }
   const isActive = ACTIVE_STATES.has(activity.status)
   const frames = ascii ? SPINNER_FRAMES_ASCII : SPINNER_FRAMES
   const icon = isActive && animate
@@ -241,11 +234,59 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
     width: Math.max(20, cols - 2)
   })
 
+  useEffect(() => {
+    if (!directWriteActive) {
+      return
+    }
+    const stream = stdout as NodeJS.WriteStream | undefined
+    const baseColor = theme.color(colorName)
+    const highlightColor = theme.color('text')
+    if (!stream || !baseColor || !highlightColor) {
+      return
+    }
+    const cell = measureShimmerCell(
+      activityElementRef.current,
+      stream,
+      stringWidth(`${icon ?? ' '} `)
+    )
+    if (!cell) {
+      return
+    }
+    const writer = startShimmerWriter({
+      stdout: stream,
+      row: cell.row,
+      col: cell.col,
+      label: verb,
+      baseColor,
+      highlightColor,
+      intervalMs: SPINNER_INTERVAL_MS
+    })
+    return () => {
+      writer?.stop()
+    }
+  }, [colorName, cols, directWriteActive, icon, stdout, verb])
+
+  // Mirror Python `_interrupt_visual_pending` — once the user requested an
+  // interrupt we drop the spinner/segments immediately and read as
+  // "cancelling" until the gateway's cancelled/error event lands. Without
+  // this latch the bar keeps spinning for the round-trip duration, which
+  // reads as "the interrupt didn't register".
+  if (activity.interruptPending) {
+    const dim = theme.colorProps('dim')
+    return (
+      <Box>
+        <Text {...dim} italic>
+          {ascii ? '...' : '…'} interrupting
+        </Text>
+      </Box>
+    )
+  }
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" ref={setActivityElement}>
       <Box>
         <Text {...colorProps}>{icon ?? ' '} </Text>
-        {shimmerSlices ? (
+        {shimmerSlices && !directWriteActive ? (
           <>
             {shimmerSlices.before ? (
               <Text bold {...colorProps}>{shimmerSlices.before}</Text>

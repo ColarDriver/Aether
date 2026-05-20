@@ -1,8 +1,9 @@
 import { Box, Text } from 'ink'
 import { useStore } from '@nanostores/react'
-import { useEffect, useState, type ReactElement } from 'react'
+import type { ReactElement } from 'react'
 
 import { theme } from '../lib/theme.js'
+import { useAnimationFrame } from '../lib/useAnimationFrame.js'
 import { activityStatus } from '../store/activityStore.js'
 import { reasoningState } from '../store/reasoningStore.js'
 
@@ -19,15 +20,7 @@ const TICK_MS = 1000
 export function ReasoningLine(): ReactElement | null {
   const reasoning = useStore(reasoningState)
   const status = useStore(activityStatus)
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (!reasoning.updatedAt) {
-      return
-    }
-    const handle = setInterval(() => setNow(Date.now()), TICK_MS)
-    return () => clearInterval(handle)
-  }, [reasoning.updatedAt])
+  const [tickRef, now] = useAnimationFrame(reasoning.updatedAt ? TICK_MS : null)
 
   if (!reasoning.text || !reasoning.updatedAt) {
     return null
@@ -42,7 +35,7 @@ export function ReasoningLine(): ReactElement | null {
   }
 
   return (
-    <Box>
+    <Box ref={tickRef}>
       <Text dimColor>
         {'  '}
         {theme.icon('thinking') || '·'} thinking: {flat}

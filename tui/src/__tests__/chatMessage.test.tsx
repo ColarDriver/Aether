@@ -34,7 +34,7 @@ describe('ChatMessage', () => {
           kind: 'assistant',
           id: 'a2',
           runId: 'r2',
-          text: '<tool_call>{\"name\":\"read_file\"}</tool_call>',
+          text: '<tool_call>{"name":"read_file"}</tool_call>',
           streaming: true,
           ts: Date.now()
         }}

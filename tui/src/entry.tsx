@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { render } from 'ink'
 
 import { applyCliArgs } from './lib/cliArgs.js'
+import { wrapStdoutWithAtomicSync } from './lib/atomicSyncStdout.js'
 import { terminateDevWatchRunner } from './lib/devExit.js'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -36,7 +37,8 @@ try {
   const instance = render(
     <App client={client} repoRoot={repoRoot} workspaceCwd={workspaceCwd} />,
     {
-      exitOnCtrlC: false
+      exitOnCtrlC: false,
+      stdout: wrapStdoutWithAtomicSync(process.stdout)
     }
   )
   await instance.waitUntilExit()

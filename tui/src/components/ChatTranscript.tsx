@@ -23,7 +23,7 @@ import { ChatMessage } from './ChatMessage.js'
 const MAX_VISIBLE = 80
 const DEFAULT_WIDTH = 80
 const WHEEL_SCROLL_ROWS = 3
-const LIVE_CONTEXT_ITEMS = 10
+const DEFAULT_LIVE_CONTEXT_ROWS = 12
 
 export interface ChatTranscriptProps {
   viewportRows?: number
@@ -32,6 +32,7 @@ export interface ChatTranscriptProps {
   leadingRows?: number
   items?: ChatItem[]
   staticScrollback?: boolean
+  liveContextRows?: number
 }
 
 /**
@@ -48,7 +49,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   leading,
   leadingRows = 0,
   items: inputItems,
-  staticScrollback = true
+  staticScrollback = true,
+  liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
 }: ChatTranscriptProps = {}): ReactElement | null {
   const storeItems = useStore(chatItems)
   const staticEpoch = useStore(chatEpoch)
@@ -72,8 +74,8 @@ export const ChatTranscript = memo(function ChatTranscript({
     [renderableItems, usesStaticScrollback]
   )
   const split = useMemo(
-    () => splitStaticPrefix(allVisible, usesStaticScrollback),
-    [allVisible, usesStaticScrollback]
+    () => splitStaticPrefix(allVisible, usesStaticScrollback, width, liveContextRows),
+    [allVisible, liveContextRows, usesStaticScrollback, width]
   )
   const staticItems = usesStaticScrollback ? split.staticItems : []
   const visible = usesStaticScrollback ? split.liveItems : allVisible
@@ -325,7 +327,7 @@ export const ChatTranscript = memo(function ChatTranscript({
           {viewport?.hiddenAbove ? (
             <Text color="gray">↑ older transcript · PageUp/Home</Text>
           ) : null}
-          {leading && (!viewport || viewport.leadingVisible) ? (
+          {leading && !usesStaticScrollback && (!viewport || viewport.leadingVisible) ? (
             <Box flexDirection="column">{leading}</Box>
           ) : null}
           {visible.length === 0 && leading && !showPlaceholderBeforeTranscript ? (
@@ -412,24 +414,26 @@ function contentWidth(width: number): number {
   return Math.max(40, width - 2)
 }
 
-function splitStaticPrefix(
+export function splitStaticPrefix(
   items: ChatItem[],
-  enabled: boolean
+  enabled: boolean,
+  width = DEFAULT_WIDTH,
+  _liveContextRows = DEFAULT_LIVE_CONTEXT_ROWS
 ): { staticItems: ChatItem[]; liveItems: ChatItem[] } {
+  void width
+  void _liveContextRows
   if (!enabled) {
     return { staticItems: [], liveItems: items }
   }
+
   let stablePrefixEnd = 0
   while (stablePrefixEnd < items.length && isStaticTranscriptItem(items[stablePrefixEnd])) {
     stablePrefixEnd += 1
   }
-  // Keep the recent stable tail live so the user can still see the previous
-  // turn and the just-submitted prompt while the next assistant response
-  // streams. Older stable rows are printed once into terminal scrollback.
-  const staticEnd = Math.max(0, stablePrefixEnd - LIVE_CONTEXT_ITEMS)
+
   return {
-    staticItems: items.slice(0, staticEnd),
-    liveItems: items.slice(staticEnd)
+    staticItems: items.slice(0, stablePrefixEnd),
+    liveItems: items.slice(stablePrefixEnd)
   }
 }
 
@@ -767,6 +771,9 @@ function shouldInsertSpacer(previous: ChatItem | null, current: ChatItem): boole
     return false
   }
   if (!SPACED_KINDS.has(prevKind) || !SPACED_KINDS.has(nextKind)) {
+    return false
+  }
+  if (previous?.kind === 'assistant' && current.kind === 'assistant') {
     return false
   }
   if (prevKind === 'status' && nextKind === 'footer') {

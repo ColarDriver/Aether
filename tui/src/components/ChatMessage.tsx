@@ -51,12 +51,17 @@ export function ChatMessage({ item, expanded, focused, width }: ChatMessageProps
       return <></>
     }
     const assistantProps = theme.colorProps('assistant')
+    const continuation = Boolean((item as { continuation?: boolean }).continuation)
     return (
       <Box>
         <Box width={2} flexShrink={0}>
-          <Text bold {...assistantProps}>
-            {theme.icon('assistant') || '*'}
-          </Text>
+          {continuation ? (
+            <Text> </Text>
+          ) : (
+            <Text bold {...assistantProps}>
+              {theme.icon('assistant') || '*'}
+            </Text>
+          )}
         </Box>
         <Box flexDirection="column" flexGrow={1}>
           <Markdown text={cleaned} streaming={item.streaming} />

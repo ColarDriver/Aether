@@ -36,6 +36,12 @@ class EngineConfig:
     # touch shell.  Most callers should set this from
     # :attr:`EngineRequest.cwd` at the gateway layer.
     default_cwd: str | None = None
+    # Safe read-only tool batches can be dispatched concurrently after
+    # hardening, plan-mode blocking, and permission checks. Kept off by
+    # default for the first scheduler integration so operators can opt in
+    # after validating their local tool set.
+    parallel_tool_execution_enabled: bool = False
+    parallel_tool_max_workers: int = 4
     fail_on_tool_error: bool = False
     raise_on_middleware_error: bool = False
     fail_on_unknown_tool: bool = True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from aether.agents.core.tool_hardening import prepare_tool_calls
@@ -18,6 +19,7 @@ from aether.runtime.core.contracts import (
 )
 from aether.runtime.core.hooks import EngineHooks
 from aether.runtime.core.services import EngineServices
+from aether.runtime.tools.parallel_scheduler import ToolExecutionScheduler
 from aether.tools.base import UnknownToolError
 
 
@@ -42,6 +44,9 @@ class ToolDispatchResult:
     all_tools_cheap: bool = False
     dispatched_count: int = 0
     schema_injected: bool = False
+    parallel_executed: bool = False
+    parallel_fallback_reason: str | None = None
+    parallel_batch_size: int = 0
 
 
 class ToolDispatchAdapter(Protocol):
@@ -308,6 +313,15 @@ class ToolDispatchController:
                     schema_injected=True,
                 )
 
+        parallel_result = self._maybe_dispatch_parallel(
+            request=request,
+            dispatch_plan=dispatch_plan,
+            tool_results=tool_results,
+            dispatched_count=dispatched_count,
+        )
+        if parallel_result is not None:
+            return parallel_result
+
         for prepared in dispatch_plan.prepared:
             call = prepared.call
             if self._adapter.is_interrupted(request.request.session_id, context):
@@ -477,6 +491,245 @@ class ToolDispatchController:
                 int(context.metadata.get("tool_calls_capped", 0))
                 + int(dispatch_plan.capped_count)
             )
+
+    def _maybe_dispatch_parallel(
+        self,
+        *,
+        request: ToolDispatchRequest,
+        dispatch_plan: Any,
+        tool_results: list[ToolResult],
+        dispatched_count: int,
+    ) -> ToolDispatchResult | None:
+        context = request.context
+        batch_size = len(getattr(dispatch_plan, "prepared", []) or [])
+        enabled = bool(getattr(self._config, "parallel_tool_execution_enabled", False))
+        if not enabled:
+            self._record_parallel_metadata(
+                context,
+                enabled=False,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason="disabled",
+                elapsed_ms=0.0,
+            )
+            return None
+        if batch_size <= 1:
+            self._record_parallel_metadata(
+                context,
+                enabled=True,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason="batch-size<=1",
+                elapsed_ms=0.0,
+            )
+            return None
+        if getattr(dispatch_plan, "exit_reason", None) is not None:
+            self._record_parallel_metadata(
+                context,
+                enabled=True,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason="dispatch-plan-exit",
+                elapsed_ms=0.0,
+            )
+            return None
+        if any(prepared.synthetic_result is not None for prepared in dispatch_plan.prepared):
+            self._record_parallel_metadata(
+                context,
+                enabled=True,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason="synthetic-result",
+                elapsed_ms=0.0,
+            )
+            return None
+
+        calls = [prepared.call for prepared in dispatch_plan.prepared]
+        scheduler = ToolExecutionScheduler(
+            max_workers=int(getattr(self._config, "parallel_tool_max_workers", 4) or 4)
+        )
+        cwd = self._parallel_cwd(request)
+        plan = scheduler.plan(calls, context=context, cwd=cwd)
+        if plan.mode != "parallel":
+            self._record_parallel_metadata(
+                context,
+                enabled=True,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason=plan.reason,
+                elapsed_ms=0.0,
+            )
+            return None
+
+        dispatchable: list[ToolCall] = []
+        for call in calls:
+            permission_checked = self._adapter.apply_tool_permission_gate(
+                call,
+                request=request.request,
+                context=context,
+            )
+            if isinstance(permission_checked, ToolResult):
+                self._record_parallel_metadata(
+                    context,
+                    enabled=True,
+                    executed=False,
+                    batch_size=batch_size,
+                    fallback_reason="permission-result",
+                    elapsed_ms=0.0,
+                )
+                return None
+            try:
+                pre_tool = self._services.middleware_pipeline.run_before_tool(
+                    permission_checked,
+                    context,
+                )
+            except Exception as exc:
+                self._adapter.handle_pipeline_error(exc, LoopState.TOOL_EXECUTE, context)
+                return self._failed_result(
+                    request=request,
+                    tool_results=tool_results,
+                    exit_reason=ExitReason.MIDDLEWARE_ERROR,
+                    error_text=str(exc),
+                    dispatched_count=dispatched_count,
+                )
+            if isinstance(pre_tool, ToolResult):
+                self._record_parallel_metadata(
+                    context,
+                    enabled=True,
+                    executed=False,
+                    batch_size=batch_size,
+                    fallback_reason="middleware-result",
+                    elapsed_ms=0.0,
+                )
+                return None
+            dispatchable.append(pre_tool)
+
+        plan = scheduler.plan(dispatchable, context=context, cwd=cwd)
+        if plan.mode != "parallel":
+            self._record_parallel_metadata(
+                context,
+                enabled=True,
+                executed=False,
+                batch_size=batch_size,
+                fallback_reason=f"post-middleware:{plan.reason}",
+                elapsed_ms=0.0,
+            )
+            return None
+
+        started = time.perf_counter()
+        parallel_results = scheduler.execute_parallel(
+            plan,
+            context=context,
+            execute=lambda call: self._services.tool_registry.dispatch(call, context),
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._record_parallel_metadata(
+            context,
+            enabled=True,
+            executed=True,
+            batch_size=batch_size,
+            fallback_reason=None,
+            elapsed_ms=elapsed_ms,
+        )
+
+        for item in parallel_results:
+            result = item.result
+            tool_call = item.call
+            try:
+                result = self._services.middleware_pipeline.run_after_tool(result, context)
+            except Exception as exc:
+                self._adapter.handle_pipeline_error(exc, LoopState.TOOL_EXECUTE, context)
+                return self._failed_result(
+                    request=request,
+                    tool_results=tool_results,
+                    exit_reason=ExitReason.MIDDLEWARE_ERROR,
+                    error_text=str(exc),
+                    dispatched_count=dispatched_count,
+                )
+
+            if result.metadata.get("tool_executed") is not False:
+                dispatched_count += 1
+            self._adapter.accumulate_edited_paths(result, context)
+            self._adapter.maybe_mark_verifier_invoked(tool_call, context)
+            self._adapter.fire_post_tool_hook(
+                tool_call=tool_call,
+                result=result,
+                dispatch_error=None,
+                elapsed_ms=item.elapsed_ms,
+                session_id=request.request.session_id,
+                iteration=request.iteration,
+                context=context,
+            )
+            self._adapter.dispatch_internal_diagnostic_update(
+                tool_call=tool_call,
+                result=result,
+                context=context,
+            )
+            self._adapter.record_tool_result_error(context, result)
+            self._adapter.append_tool_result_message(request.messages, result)
+            tool_results.append(result)
+            if bool(result.metadata.get("interrupted")):
+                self._adapter.record_interrupt_metadata(context, was_in_tool_call=True)
+            if self._adapter.is_permission_abort_result(result):
+                self._adapter.record_interrupt_metadata(context, was_in_tool_call=True)
+                return ToolDispatchResult(
+                    tool_results=tool_results,
+                    messages=request.messages,
+                    should_continue=False,
+                    exit_reason=ExitReason.INTERRUPTED,
+                    all_tools_cheap=self._all_tools_cheap(request.tool_calls),
+                    dispatched_count=dispatched_count,
+                    parallel_executed=True,
+                    parallel_batch_size=batch_size,
+                )
+
+        self._adapter.apply_pending_steer_to_tool_results(
+            request.messages,
+            session_id=request.request.session_id,
+            start_idx=request.tool_result_start_idx,
+            context=context,
+        )
+        return ToolDispatchResult(
+            tool_results=tool_results,
+            messages=request.messages,
+            should_continue=True,
+            all_tools_cheap=self._all_tools_cheap(request.tool_calls),
+            dispatched_count=dispatched_count,
+            parallel_executed=True,
+            parallel_batch_size=batch_size,
+        )
+
+    def _parallel_cwd(self, request: ToolDispatchRequest) -> Path:
+        raw = request.request.cwd or ""
+        if not raw:
+            raw = self._config.default_cwd or ""
+        if not raw:
+            raw = "."
+        return Path(raw).expanduser().resolve(strict=False)
+
+    @staticmethod
+    def _record_parallel_metadata(
+        context: TurnContext,
+        *,
+        enabled: bool,
+        executed: bool,
+        batch_size: int,
+        fallback_reason: str | None,
+        elapsed_ms: float,
+    ) -> None:
+        payload = {
+            "enabled": enabled,
+            "executed": executed,
+            "batch_size": batch_size,
+            "fallback_reason": fallback_reason,
+            "elapsed_ms": elapsed_ms,
+        }
+        context.metadata["tool_parallel"] = payload
+        context.metadata["tool_parallel_enabled"] = enabled
+        context.metadata["tool_parallel_batch_size"] = batch_size
+        context.metadata["tool_parallel_executed"] = executed
+        context.metadata["tool_parallel_fallback_reason"] = fallback_reason
+        context.metadata["tool_parallel_elapsed_ms"] = elapsed_ms
 
     def _handle_synthetic_result(
         self,

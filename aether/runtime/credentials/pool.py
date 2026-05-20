@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from aether.runtime.credentials.sources import CredentialValue, default_credential_lookup
 
@@ -66,7 +66,7 @@ class CredentialPool:
         raw_strategy = str(mapping.get("strategy") or "fill_first")
         if raw_strategy not in {"fill_first", "round_robin"}:
             raise ValueError("credential pool strategy must be fill_first or round_robin")
-        strategy = raw_strategy  # type: ignore[assignment]
+        strategy = cast(CredentialPoolStrategy, raw_strategy)
         raw_providers = mapping.get("providers")
         if not isinstance(raw_providers, Mapping):
             return cls(strategy=strategy)

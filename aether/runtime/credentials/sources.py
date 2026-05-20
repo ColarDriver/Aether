@@ -42,7 +42,8 @@ class CredentialValue:
 
 
 class CredentialSource(Protocol):
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def get(self, key_name: str) -> CredentialValue | None: ...
 

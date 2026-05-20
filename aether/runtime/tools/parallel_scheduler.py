@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
@@ -101,25 +101,45 @@ class ToolExecutionScheduler:
         max_workers = max(1, min(int(self.max_workers), len(plan.calls)))
         results: list[ToolExecutionResult] = []
         started = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aether-tool") as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aether-tool")
+        future_map: dict[Future[ToolResult], ScheduledToolCall] = {}
+        try:
             future_map = {
-                executor.submit(_execute_one, item.call, execute): item
+                executor.submit(_execute_one, item.call, context, execute): item
                 for item in plan.calls
             }
-            for future in as_completed(future_map):
-                item = future_map[future]
-                try:
-                    result = future.result()
-                except BaseException as exc:  # noqa: BLE001 - converted to ToolResult
-                    result = _exception_result(item.call, exc)
-                results.append(
-                    ToolExecutionResult(
-                        index=item.index,
-                        call=item.call,
-                        result=result,
-                        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            pending: set[Future[ToolResult]] = set(future_map)
+            while pending:
+                if _is_interrupted(context):
+                    for future in pending:
+                        future.cancel()
+                done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+                for future in done:
+                    item = future_map[future]
+                    if future.cancelled():
+                        result = _interrupted_result(
+                            item.call,
+                            reason="request interrupted before worker start",
+                        )
+                    else:
+                        try:
+                            result = future.result()
+                        except BaseException as exc:  # noqa: BLE001 - converted to ToolResult
+                            result = _exception_result(item.call, exc)
+                        if _is_interrupted(context) and not result.metadata.get("interrupted"):
+                            result.metadata.setdefault("interrupted", True)
+                    results.append(
+                        ToolExecutionResult(
+                            index=item.index,
+                            call=item.call,
+                            result=result,
+                            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                        )
                     )
-                )
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
         return sorted(results, key=lambda item: item.index)
 
 
@@ -141,7 +161,16 @@ def paths_overlap(left: Path, right: Path) -> bool:
     return left_parts[:min_len] == right_parts[:min_len]
 
 
-def _execute_one(call: ToolCall, execute: Callable[[ToolCall], ToolResult]) -> ToolResult:
+def _execute_one(
+    call: ToolCall,
+    context: TurnContext,
+    execute: Callable[[ToolCall], ToolResult],
+) -> ToolResult:
+    if _is_interrupted(context):
+        return _interrupted_result(
+            call,
+            reason="request interrupted before worker start",
+        )
     return execute(call)
 
 
@@ -158,13 +187,21 @@ def _exception_result(call: ToolCall, exc: BaseException) -> ToolResult:
     )
 
 
-def _interrupted_result(call: ToolCall) -> ToolResult:
+def _interrupted_result(
+    call: ToolCall,
+    *,
+    reason: str = "request interrupted before dispatch",
+) -> ToolResult:
     return ToolResult(
         tool_call_id=call.id,
         name=call.name,
-        content="tool execution skipped: request interrupted before dispatch",
+        content=f"tool execution skipped: {reason}",
         is_error=True,
-        metadata={"interrupted": True, "tool_executed": False},
+        metadata={
+            "interrupted": True,
+            "tool_executed": False,
+            "parallel_cancelled": True,
+        },
     )
 
 

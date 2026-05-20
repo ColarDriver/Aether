@@ -145,7 +145,7 @@ class ApprovalPrompter:
         if not self.is_interactive():
             return False
         try:
-            from prompt_toolkit import prompt as pt_prompt
+            from prompt_toolkit import prompt as pt_prompt  # pyright: ignore[reportMissingImports]
         except ImportError:
             return self._fallback_confirm(plan)
 
@@ -165,8 +165,8 @@ class ApprovalPrompter:
         if not self.is_interactive():
             raise RuntimeError("ApprovalPrompter.ask_questions called in non-interactive mode")
         try:
-            from prompt_toolkit import prompt as pt_prompt
-            from prompt_toolkit.shortcuts import (
+            from prompt_toolkit import prompt as pt_prompt  # pyright: ignore[reportMissingImports]
+            from prompt_toolkit.shortcuts import (  # pyright: ignore[reportMissingImports]
                 checkboxlist_dialog,
                 radiolist_dialog,
             )

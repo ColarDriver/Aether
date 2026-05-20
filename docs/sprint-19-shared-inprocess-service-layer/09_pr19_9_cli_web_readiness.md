@@ -99,3 +99,15 @@ Manual acceptance:
 - Future Web adapter rules are concrete and tied to service contracts.
 - Existing TUI/gateway workflows still pass.
 - No adapter owns reusable business behavior.
+
+## Implementation Evidence
+
+- `aether/tests/cli/test_cli_service_boundaries.py` guards CLI modules against
+  importing `aether.gateway.handlers`.
+- The same test proves a non-gateway consumer can create/list sessions and read
+  providers/tools through services directly.
+- Future HTTP handlers should mirror the gateway adapters: validate transport
+  params, call services, serialize dataclasses to HTTP response bodies.
+- Future WebSocket/SSE run streams should consume `AgentRunService` with a
+  `RunEventSink`, then frame service events at the transport edge. They should
+  not import `aether.gateway.handlers.agent_methods`.

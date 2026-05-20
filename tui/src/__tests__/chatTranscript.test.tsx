@@ -324,4 +324,54 @@ describe('ChatTranscript spacing', () => {
     expect(frame).toContain('✓ done · 11.4s')
     unmount()
   })
+
+  it('renders a streaming fenced code block with full markdown context', () => {
+    chatItems.set([
+      {
+        kind: 'assistant',
+        id: 'a1',
+        runId: 'r1',
+        text: ['可以，直接用 Python 计算：', '', '```python', 'import math', 'print(1)', '```'].join('\n'),
+        streaming: true,
+        ts: 1
+      }
+    ])
+
+    const { lastFrame, unmount } = render(<ChatTranscript />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('可以，直接用 Python 计算')
+    expect(frame).toContain('python')
+    expect(frame).toContain('│ import math │')
+    expect(frame).toContain('│ print(1)    │')
+    expect(frame).not.toContain('```python')
+    unmount()
+  })
+
+  it('renders a streaming markdown table with full markdown context', () => {
+    chatItems.set([
+      {
+        kind: 'assistant',
+        id: 'a1',
+        runId: 'r1',
+        text: [
+          '下面是表格:',
+          '| 维度 | 说明 |',
+          '| --- | --- |',
+          '| 项目名称 | Aether/tui |',
+          '| 技术栈 | Ink, React, TypeScript |'
+        ].join('\n'),
+        streaming: true,
+        ts: 1
+      }
+    ])
+
+    const { lastFrame, unmount } = render(<ChatTranscript />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('下面是表格')
+    expect(frame).toContain('┌')
+    expect(frame).toContain('维度')
+    expect(frame).toContain('Aether/tui')
+    expect(frame).not.toContain('| --- | --- |')
+    unmount()
+  })
 })

@@ -27,9 +27,55 @@ describe('Markdown', () => {
     expect(frame).toContain('Some code:')
     expect(frame).toContain('js')
     expect(frame).toContain('const x = 1')
+    expect(frame).toContain('│ const x = 1; │')
     unmount()
   })
 
+  it('keeps multiline fenced code inside a single bordered block', () => {
+    const sample = ['Run this:', '', '```bash', 'echo one', 'echo two', '```'].join('\n')
+    const { lastFrame, unmount } = render(<Markdown text={sample} />)
+    const lines = (lastFrame() ?? '').split('\n')
+    const topLines = lines.filter((line) => line.includes('┌'))
+    const bottomLines = lines.filter((line) => line.includes('└'))
+    const langIdx = lines.findIndex((line) => line.includes('bash'))
+    const firstCodeIdx = lines.findIndex((line) => line.includes('echo one'))
+    const secondCodeIdx = lines.findIndex((line) => line.includes('echo two'))
+    const bottomIdx = lines.findIndex((line) => line.includes('└'))
+
+    expect(topLines).toHaveLength(1)
+    expect(bottomLines).toHaveLength(1)
+    expect(langIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[langIdx]).toContain('│')
+    expect(firstCodeIdx).toBeGreaterThan(langIdx)
+    expect(lines[firstCodeIdx]).toContain('│ echo one │')
+    expect(secondCodeIdx).toBeGreaterThan(firstCodeIdx)
+    expect(lines[secondCodeIdx]).toContain('│ echo two │')
+    expect(bottomIdx).toBeGreaterThan(secondCodeIdx)
+    unmount()
+  })
+
+  it('keeps streaming multiline fenced code inside a single bordered block', () => {
+    const sample = ['Run this:', '', '```bash', 'echo one', 'echo two', '```'].join('\n')
+    const { lastFrame, unmount } = render(<Markdown text={sample} streaming />)
+    const lines = (lastFrame() ?? '').split('\n')
+    const topLines = lines.filter((line) => line.includes('┌'))
+    const bottomLines = lines.filter((line) => line.includes('└'))
+    const langIdx = lines.findIndex((line) => line.includes('bash'))
+    const firstCodeIdx = lines.findIndex((line) => line.includes('echo one'))
+    const secondCodeIdx = lines.findIndex((line) => line.includes('echo two'))
+    const bottomIdx = lines.findIndex((line) => line.includes('└'))
+
+    expect(topLines).toHaveLength(1)
+    expect(bottomLines).toHaveLength(1)
+    expect(langIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[langIdx]).toContain('│')
+    expect(firstCodeIdx).toBeGreaterThan(langIdx)
+    expect(lines[firstCodeIdx]).toContain('│ echo one │')
+    expect(secondCodeIdx).toBeGreaterThan(firstCodeIdx)
+    expect(lines[secondCodeIdx]).toContain('│ echo two │')
+    expect(bottomIdx).toBeGreaterThan(secondCodeIdx)
+    unmount()
+  })
   it('renders bold and italic inline', () => {
     const { lastFrame, unmount } = render(
       <Markdown text={'Use **bold** and *italic* together.'} />
@@ -100,6 +146,24 @@ describe('Markdown', () => {
     unmount()
   })
 
+  it('renders inline markdown inside table cells without leaking raw syntax', () => {
+    const { lastFrame, unmount } = render(
+      <Markdown
+        text={
+          '| 文件 | 内容 |\n| --- | --- |\n| `00_overview.md` | **完成** [docs](https://example.com) |'
+        }
+      />
+    )
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('┌')
+    expect(frame).toContain('00_overview.md')
+    expect(frame).toContain('完成')
+    expect(frame).toContain('docs')
+    expect(frame).not.toContain('`00_overview.md`')
+    expect(frame).not.toContain('**完成**')
+    expect(frame).not.toContain('[docs](https://example.com)')
+    unmount()
+  })
   it('renders horizontal rules as a full divider instead of raw --- text', () => {
     const { lastFrame, unmount } = render(<Markdown text={'上文\n\n---\n\n下文'} />)
     const frame = lastFrame() ?? ''

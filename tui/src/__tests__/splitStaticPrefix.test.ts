@@ -78,7 +78,7 @@ describe('splitStaticPrefix', () => {
     expect(liveItems).toEqual(items)
   })
 
-  it('keeps only the incomplete streaming assistant suffix live', () => {
+  it('keeps the current streaming assistant message whole for realtime markdown', () => {
     const items: ChatItem[] = [
       note('n1', 20),
       {
@@ -90,13 +90,63 @@ describe('splitStaticPrefix', () => {
         ts: 2
       }
     ]
-    const chunkedRunIds = new Set<string>()
 
-    const { staticItems, liveItems } = splitStaticPrefix(items, true, 80, 1, chunkedRunIds)
+    const { staticItems, liveItems } = splitStaticPrefix(items, true, 80, 1)
 
-    expect(staticItems.map((item) => item.id)).toEqual(['n1', 'a1', 'a1:chunk:1'])
+    expect(staticItems.map((item) => item.id)).toEqual(['n1'])
     expect(liveItems).toHaveLength(1)
-    expect(liveItems[0]).toMatchObject({ id: 'a1:chunk:2', text: 'partial' })
-    expect(chunkedRunIds.has('r1')).toBe(true)
+    expect(liveItems[0]).toMatchObject({
+      id: 'a1',
+      text: 'line one\nline two\npartial',
+      streaming: true
+    })
+  })
+
+  it('keeps streaming fenced code context intact', () => {
+    const text = ['Here:', '', '```python', 'import math', 'print(1)', '```', 'tail'].join('\n')
+    const items: ChatItem[] = [
+      note('n1', 20),
+      {
+        kind: 'assistant',
+        id: 'a1',
+        runId: 'r1',
+        text,
+        streaming: true,
+        ts: 2
+      }
+    ]
+
+    const { staticItems, liveItems } = splitStaticPrefix(items, true, 80, 1)
+
+    expect(staticItems.map((item) => item.id)).toEqual(['n1'])
+    expect(liveItems).toHaveLength(1)
+    expect(liveItems[0]).toMatchObject({ id: 'a1', text })
+  })
+
+  it('keeps streaming table context intact', () => {
+    const table = [
+      '| 维度 | 说明 |',
+      '| --- | --- |',
+      '| 项目名称 | Aether/tui |',
+      '| 技术栈 | Ink, React, TypeScript |'
+    ].join('\n')
+    const text = ['下面是表格:', table, '总结'].join('\n')
+    const items: ChatItem[] = [
+      note('n1', 20),
+      {
+        kind: 'assistant',
+        id: 'a1',
+        runId: 'r1',
+        text,
+        streaming: true,
+        ts: 2
+      }
+    ]
+
+    const { staticItems, liveItems } = splitStaticPrefix(items, true, 80, 1)
+
+    expect(staticItems.map((item) => item.id)).toEqual(['n1'])
+    expect(liveItems).toHaveLength(1)
+    expect(liveItems[0]).toMatchObject({ id: 'a1', text })
   })
 })

@@ -146,19 +146,12 @@ function renderLiteCodeBlock(
   key: number
 ): ReactElement {
   const highlighted = getHighlight()(block.text, block.language ?? undefined)
-  return (
-    <Box
-      key={key}
-      borderStyle="single"
-      {...(theme.color('border') ? { borderColor: theme.color('border')! } : {})}
-      paddingX={1}
-      flexDirection="column"
-      marginTop={key === 0 ? 0 : 1}
-    >
-      {block.language ? <Text dimColor>{block.language}</Text> : null}
-      <Text>{highlighted}</Text>
-    </Box>
-  )
+  return renderCodeBlockFrame({
+    key,
+    language: block.language ?? '',
+    highlighted,
+    marginTop: key === 0 ? 0 : 1
+  })
 }
 
 function renderLiteTable(
@@ -167,12 +160,14 @@ function renderLiteTable(
 ): ReactElement {
   const headers = block.headers.map((segments, idx) => ({
     key: `h_${idx}`,
-    display: flattenLiteInline(segments)
+    display: flattenLiteInline(segments),
+    runs: liteInlineRuns(segments)
   }))
   const rows = block.rows.map((row, rowIdx) =>
     row.map((segments, cellIdx) => ({
       key: `r_${rowIdx}_${cellIdx}`,
-      display: flattenLiteInline(segments)
+      display: flattenLiteInline(segments),
+      runs: liteInlineRuns(segments)
     }))
   )
   return renderTableGrid(headers, rows, key)
@@ -197,10 +192,7 @@ function renderLiteInline(segments: InlineSegment[]): ReactNode {
         )
       case 'code':
         return (
-          <Text
-            key={index}
-            {...(theme.color('dim') ? { color: theme.color('dim')! } : {})}
-          >
+          <Text key={index} {...markdownCodeProps()}>
             {segment.text}
           </Text>
         )
@@ -284,21 +276,124 @@ function renderParagraph(token: Tokens.Paragraph, key: number, opts: RenderOpts 
 function renderCodeBlock(token: Tokens.Code, key: number, opts: RenderOpts = {}): ReactElement {
   const language = token.lang || ''
   const highlighted = getHighlight()(token.text, language)
+  return renderCodeBlockFrame({
+    key,
+    language,
+    highlighted,
+    marginTop: blockMarginTop(key, opts)
+  })
+}
+
+interface CodeFrameRow {
+  text: string
+  dim?: boolean
+}
+
+function renderCodeBlockFrame({
+  key,
+  language,
+  highlighted,
+  marginTop
+}: {
+  key: number
+  language: string
+  highlighted: string
+  marginTop: 0 | 1
+}): ReactElement {
+  const codeRows = normalizeCodeLines(highlighted).map((text) => ({ text }))
+  const sourceRows: CodeFrameRow[] = language
+    ? [{ text: language, dim: true }, ...codeRows]
+    : codeRows
+  const idealContentWidth = Math.max(
+    4,
+    ...sourceRows.map((row) => stringWidth(row.text || ' '))
+  )
+  const contentWidth = Math.min(availableCodeContentWidth(), idealContentWidth)
+  const rows = sourceRows.flatMap((row) =>
+    wrapCodeLine(row.text, contentWidth).map((text, idx) => ({
+      text,
+      dim: row.dim && idx === 0
+    }))
+  )
+  const borderProps = theme.colorProps('dim')
+
   return (
-    <Box
-      key={key}
-      borderStyle="single"
-      {...(theme.color('border') ? { borderColor: theme.color('border')! } : {})}
-      paddingX={1}
-      flexDirection="column"
-      marginTop={blockMarginTop(key, opts)}
-    >
-      {language ? (
-        <Text dimColor>{language}</Text>
-      ) : null}
-      <Text>{highlighted}</Text>
+    <Box key={key} flexDirection="column" marginTop={marginTop}>
+      <Text {...borderProps}>┌{'─'.repeat(contentWidth + 2)}┐</Text>
+      {rows.map((row, idx) => {
+        const text = row.text || ' '
+        const padding = ' '.repeat(Math.max(0, contentWidth - stringWidth(text)))
+        return (
+          <Text key={idx}>
+            <Text {...borderProps}>│ </Text>
+            <Text dimColor={Boolean(row.dim)}>{text}</Text>
+            <Text>{padding}</Text>
+            <Text {...borderProps}> │</Text>
+          </Text>
+        )
+      })}
+      <Text {...borderProps}>└{'─'.repeat(contentWidth + 2)}┘</Text>
     </Box>
   )
+}
+
+function availableCodeContentWidth(): number {
+  const columns = process.stdout?.columns
+  if (!Number.isFinite(columns) || !columns || columns < 40) {
+    return 68
+  }
+  return Math.max(24, columns - 12)
+}
+
+function normalizeCodeLines(highlighted: string): string[] {
+  const withoutTrailingNewline = highlighted.endsWith('\n')
+    ? highlighted.slice(0, -1)
+    : highlighted
+  const lines = withoutTrailingNewline.split('\n')
+  return lines.length > 0 ? lines : ['']
+}
+
+const ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]/y
+
+function wrapCodeLine(line: string, width: number): string[] {
+  if (stringWidth(line || ' ') <= width) {
+    return [line]
+  }
+
+  const out: string[] = []
+  let current = ''
+  let currentWidth = 0
+  let idx = 0
+
+  while (idx < line.length) {
+    ANSI_ESCAPE_RE.lastIndex = idx
+    const ansiMatch = ANSI_ESCAPE_RE.exec(line)
+    if (ansiMatch) {
+      current += ansiMatch[0]
+      idx = ANSI_ESCAPE_RE.lastIndex
+      continue
+    }
+
+    const codePoint = line.codePointAt(idx)
+    if (codePoint === undefined) {
+      break
+    }
+    const char = String.fromCodePoint(codePoint)
+    const charWidth = stringWidth(char)
+    if (current && currentWidth + charWidth > width) {
+      out.push(current)
+      current = ''
+      currentWidth = 0
+    }
+    current += char
+    currentWidth += charWidth
+    idx += char.length
+  }
+
+  if (current || out.length === 0) {
+    out.push(current)
+  }
+  return out
 }
 
 function renderBlockquote(token: Tokens.Blockquote, key: number, opts: RenderOpts = {}): ReactElement {
@@ -342,12 +437,14 @@ function renderList(token: Tokens.List, key: number, opts: RenderOpts = {}): Rea
 function renderTable(token: Tokens.Table, key: number, opts: RenderOpts = {}): ReactElement {
   const headers = token.header.map((cell, idx) => ({
     key: `h_${idx}`,
-    display: inlineDisplay(cell.tokens)
+    display: inlineDisplay(cell.tokens),
+    runs: inlineRuns(cell.tokens)
   }))
   const rows = token.rows.map((row, rowIdx) =>
     row.map((cell, cellIdx) => ({
       key: `r_${rowIdx}_${cellIdx}`,
-      display: inlineDisplay(cell.tokens)
+      display: inlineDisplay(cell.tokens),
+      runs: inlineRuns(cell.tokens)
     }))
   )
   return renderTableGrid(headers, rows, key, token.align ?? [], opts)
@@ -388,7 +485,7 @@ function InlineToken({ token }: { token: Token }): ReactElement {
       )
     case 'codespan':
       return (
-        <Text {...(theme.color('dim') ? { color: theme.color('dim')! } : {})}>
+        <Text {...markdownCodeProps()}>
           {(token as Tokens.Codespan).text}
         </Text>
       )
@@ -423,9 +520,25 @@ function InlineToken({ token }: { token: Token }): ReactElement {
   }
 }
 
+interface StyledTextRun {
+  text: string
+  color?: string
+  bold?: boolean
+  italic?: boolean
+  strikethrough?: boolean
+  underline?: boolean
+  dim?: boolean
+}
+
+interface StyledTextLine {
+  display: string
+  runs: StyledTextRun[]
+}
+
 interface TableRenderCell {
   key: string
   display: string
+  runs: StyledTextRun[]
 }
 
 function renderTableGrid(
@@ -478,7 +591,7 @@ function TableContentRow({
 }): ReactElement {
   const borderProps = theme.colorProps('dim')
   const wrappedCells = cells.map((cell, idx) =>
-    wrapPlainText(cell.display, Math.max(1, widths[idx] ?? 1), hardWrap)
+    wrapStyledRuns(cell.runs, Math.max(1, widths[idx] ?? 1), hardWrap)
   )
   const rowHeight = Math.max(1, ...wrappedCells.map((lines) => lines.length))
 
@@ -489,12 +602,14 @@ function TableContentRow({
           <Text {...borderProps}>│ </Text>
           {cells.map((cell, idx) => {
             const width = widths[idx] ?? 1
-            const line = wrappedCells[idx]?.[lineIdx] ?? ''
+            const line = wrappedCells[idx]?.[lineIdx] ?? EMPTY_STYLED_LINE
             const align = header ? 'center' : (alignments[idx] ?? 'left')
-            const padded = padAligned(line, width, align)
+            const padding = alignmentPadding(line.display, width, align)
             return (
               <Text key={cell.key + '_' + lineIdx}>
-                <Text bold={header}>{padded}</Text>
+                <Text bold={header}>{padding.left}</Text>
+                {renderStyledRuns(line.runs, header)}
+                <Text bold={header}>{padding.right}</Text>
                 <Text {...borderProps}>
                   {idx === cells.length - 1 ? ' │' : ' │ '}
                 </Text>
@@ -505,6 +620,263 @@ function TableContentRow({
       ))}
     </Box>
   )
+}
+
+const EMPTY_STYLED_LINE: StyledTextLine = { display: '', runs: [] }
+
+function markdownCodeProps(): { color?: string; bold?: boolean } {
+  const color = theme.color('brand')
+  return color === undefined ? { bold: true } : { color, bold: true }
+}
+
+function liteInlineRuns(segments: InlineSegment[]): StyledTextRun[] {
+  const runs: StyledTextRun[] = []
+  for (const segment of segments) {
+    switch (segment.kind) {
+      case 'text':
+        pushStyledRun(runs, { text: segment.text })
+        break
+      case 'bold':
+        pushStyledRun(runs, { text: segment.text, bold: true })
+        break
+      case 'italic':
+        pushStyledRun(runs, { text: segment.text, italic: true })
+        break
+      case 'code':
+        pushStyledRun(runs, { text: segment.text, ...markdownCodeStyle() })
+        break
+    }
+  }
+  return runs
+}
+
+function inlineRuns(tokens: Token[] | undefined): StyledTextRun[] {
+  if (!tokens || tokens.length === 0) {
+    return []
+  }
+  const runs: StyledTextRun[] = []
+  for (const token of tokens) {
+    switch (token.type) {
+      case 'text': {
+        const textToken = token as Tokens.Text
+        const nested = textToken.tokens ?? []
+        appendStyledRuns(runs, nested.length > 0 ? inlineRuns(nested) : [{ text: textToken.text }])
+        break
+      }
+      case 'escape':
+        pushStyledRun(runs, { text: (token as Tokens.Escape).text })
+        break
+      case 'strong':
+        appendStyledRuns(runs, styleRuns(inlineRuns((token as Tokens.Strong).tokens), { bold: true }))
+        break
+      case 'em':
+        appendStyledRuns(runs, styleRuns(inlineRuns((token as Tokens.Em).tokens), { italic: true }))
+        break
+      case 'del':
+        appendStyledRuns(runs, styleRuns(inlineRuns((token as Tokens.Del).tokens), { strikethrough: true }))
+        break
+      case 'codespan':
+        pushStyledRun(runs, { text: (token as Tokens.Codespan).text, ...markdownCodeStyle() })
+        break
+      case 'link': {
+        const link = token as Tokens.Link
+        const text = inlineRuns(link.tokens)
+        appendStyledRuns(runs, styleRuns(text.length > 0 ? text : [{ text: link.text || link.href }], linkStyle()))
+        break
+      }
+      case 'image': {
+        const image = token as Tokens.Image
+        pushStyledRun(runs, { text: `[image: ${image.text || image.href}]`, ...dimStyle() })
+        break
+      }
+      case 'html':
+        pushStyledRun(runs, { text: (token as Tokens.HTML).text, ...dimStyle() })
+        break
+      case 'br':
+        pushStyledRun(runs, { text: ' ' })
+        break
+      default:
+        pushStyledRun(runs, { text: (token as { raw?: string }).raw ?? '' })
+        break
+    }
+  }
+  return runs
+}
+
+function markdownCodeStyle(): Partial<StyledTextRun> {
+  const color = theme.color('brand')
+  return color === undefined ? { bold: true } : { color, bold: true }
+}
+
+function linkStyle(): Partial<StyledTextRun> {
+  const color = theme.color('info')
+  return color === undefined ? { underline: true } : { color, underline: true }
+}
+
+function dimStyle(): Partial<StyledTextRun> {
+  const color = theme.color('dim')
+  return color === undefined ? { dim: true } : { color }
+}
+
+function styleRuns(runs: StyledTextRun[], style: Partial<StyledTextRun>): StyledTextRun[] {
+  return runs.map((run) => ({ ...run, ...style }))
+}
+
+function appendStyledRuns(target: StyledTextRun[], runs: StyledTextRun[]): void {
+  for (const run of runs) {
+    pushStyledRun(target, run)
+  }
+}
+
+function pushStyledRun(target: StyledTextRun[], run: StyledTextRun): void {
+  if (!run.text) {
+    return
+  }
+  const last = target[target.length - 1]
+  if (last && sameRunStyle(last, run)) {
+    last.text += run.text
+    return
+  }
+  target.push({ ...run })
+}
+
+function sameRunStyle(left: StyledTextRun, right: StyledTextRun): boolean {
+  return left.color === right.color &&
+    left.bold === right.bold &&
+    left.italic === right.italic &&
+    left.strikethrough === right.strikethrough &&
+    left.underline === right.underline &&
+    left.dim === right.dim
+}
+
+function renderStyledRuns(runs: StyledTextRun[], forceBold = false): ReactNode[] {
+  return runs.map((run, idx) => (
+    <Text
+      key={idx}
+      {...(run.color ? { color: run.color } : {})}
+      bold={forceBold || Boolean(run.bold)}
+      italic={Boolean(run.italic)}
+      strikethrough={Boolean(run.strikethrough)}
+      underline={Boolean(run.underline)}
+      dimColor={Boolean(run.dim)}
+    >
+      {run.text}
+    </Text>
+  ))
+}
+
+function wrapStyledRuns(runs: StyledTextRun[], width: number, hardWrap: boolean): StyledTextLine[] {
+  const display = runs.map((run) => run.text).join('').trimEnd()
+  if (!display) {
+    return [EMPTY_STYLED_LINE]
+  }
+  return wrapDisplayRanges(display, width, hardWrap).map(([start, end]) => ({
+    display: display.slice(start, end),
+    runs: sliceStyledRuns(runs, start, end)
+  }))
+}
+
+function wrapDisplayRanges(text: string, width: number, hardWrap: boolean): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let start = 0
+  while (start < text.length) {
+    let idx = start
+    let used = 0
+    let lastWhitespaceStart = -1
+    let lastWhitespaceEnd = -1
+
+    while (idx < text.length) {
+      const codePoint = text.codePointAt(idx)
+      if (codePoint === undefined) {
+        break
+      }
+      const char = String.fromCodePoint(codePoint)
+      const charWidth = stringWidth(char)
+      if (used + charWidth > width && idx > start) {
+        break
+      }
+      if (/\s/.test(char)) {
+        lastWhitespaceStart = idx
+        lastWhitespaceEnd = idx + char.length
+      }
+      used += charWidth
+      idx += char.length
+      if (used >= width) {
+        break
+      }
+    }
+
+    if (idx >= text.length) {
+      ranges.push([start, trimRangeEnd(text, start, text.length)])
+      break
+    }
+
+    let end = idx
+    let nextStart = idx
+    if (!hardWrap && lastWhitespaceStart > start) {
+      end = lastWhitespaceStart
+      nextStart = lastWhitespaceEnd
+    }
+    if (end <= start) {
+      end = idx
+      nextStart = idx
+    }
+    ranges.push([start, trimRangeEnd(text, start, end)])
+    start = skipLeadingWhitespace(text, nextStart)
+  }
+  return ranges.length > 0 ? ranges : [[0, 0]]
+}
+
+function trimRangeEnd(text: string, start: number, end: number): number {
+  let nextEnd = end
+  while (nextEnd > start && /\s/.test(text[nextEnd - 1] ?? '')) {
+    nextEnd -= 1
+  }
+  return nextEnd
+}
+
+function skipLeadingWhitespace(text: string, start: number): number {
+  let nextStart = start
+  while (nextStart < text.length && /\s/.test(text[nextStart] ?? '')) {
+    nextStart += 1
+  }
+  return nextStart
+}
+
+function sliceStyledRuns(runs: StyledTextRun[], start: number, end: number): StyledTextRun[] {
+  const out: StyledTextRun[] = []
+  let cursor = 0
+  for (const run of runs) {
+    const runStart = cursor
+    const runEnd = cursor + run.text.length
+    cursor = runEnd
+    if (runEnd <= start) {
+      continue
+    }
+    if (runStart >= end) {
+      break
+    }
+    const from = Math.max(0, start - runStart)
+    const to = Math.min(run.text.length, end - runStart)
+    pushStyledRun(out, { ...run, text: run.text.slice(from, to) })
+  }
+  return out
+}
+
+function alignmentPadding(
+  text: string,
+  width: number,
+  align: 'left' | 'center' | 'right' | null
+): { left: string; right: string } {
+  const gap = Math.max(0, width - stringWidth(text))
+  if (align === 'right') {
+    return { left: ' '.repeat(gap), right: '' }
+  }
+  if (align === 'center') {
+    const left = Math.floor(gap / 2)
+    return { left: ' '.repeat(left), right: ' '.repeat(gap - left) }
+  }
+  return { left: '', right: ' '.repeat(gap) }
 }
 
 function tableBorder(left: string, join: string, right: string, widths: number[]): string {
@@ -537,9 +909,13 @@ function inlineDisplay(tokens: Token[] | undefined): string {
       continue
     }
     switch (token.type) {
-      case 'text':
+      case 'text': {
+        const textToken = token as Tokens.Text
+        out += textToken.tokens?.length ? inlineDisplay(textToken.tokens) : textToken.text
+        break
+      }
       case 'escape':
-        out += (token as Tokens.Text | Tokens.Escape).text
+        out += (token as Tokens.Escape).text
         break
       case 'strong':
       case 'em':

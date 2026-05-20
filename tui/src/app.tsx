@@ -54,6 +54,7 @@ import {
 
 const DEFAULT_HORIZONTAL_PADDING_COLS = 0
 const FULLSCREEN_HORIZONTAL_PADDING_COLS = 1
+const CLEAR_VIEWPORT = '\x1b[2J\x1b[H'
 
 export function App({
   client,
@@ -82,6 +83,8 @@ export function App({
   const [terminalRows, setTerminalRows] = useState<number>(() =>
     readTerminalRows(stdout as NodeJS.WriteStream | undefined)
   )
+  const terminalSizeRef = useRef({ width: terminalWidth, rows: terminalRows })
+  const [staticRedrawKey, setStaticRedrawKey] = useState(0)
   const initialSessionId = useRef(process.env.AETHER_SESSION_ID?.trim() || null)
   const hasVisibleStreamingAssistant = transcript.some(
     (item) => item.kind === 'assistant' && item.streaming && stripToolBlocks(item.text).trim().length > 0
@@ -155,15 +158,29 @@ export function App({
       return
     }
     const syncSize = () => {
-      setTerminalWidth(readTerminalWidth(stream))
-      setTerminalRows(readTerminalRows(stream))
+      const nextWidth = readTerminalWidth(stream)
+      const nextRows = readTerminalRows(stream)
+      const previous = terminalSizeRef.current
+      terminalSizeRef.current = { width: nextWidth, rows: nextRows }
+
+      if (!fullscreen && nextWidth < previous.width) {
+        // Ink erases by the previous logical line count, but terminal resize
+        // can reflow old full-width borders into extra physical rows first.
+        // Clear the viewport and remount Static transcript once so stale
+        // composer/activity frames do not remain on screen.
+        stream.write(CLEAR_VIEWPORT)
+        setStaticRedrawKey((current) => current + 1)
+      }
+
+      setTerminalWidth(nextWidth)
+      setTerminalRows(nextRows)
     }
     syncSize()
     stream.on('resize', syncSize)
     return () => {
       stream.off('resize', syncSize)
     }
-  }, [stdout])
+  }, [fullscreen, stdout])
 
   useEffect(() => {
     return () => {
@@ -474,6 +491,7 @@ export function App({
           staticScrollback={bannerReady}
           width={terminalWidth}
           liveContextRows={defaultLiveContextRows}
+          staticRedrawKey={staticRedrawKey}
           leading={
             <>
               <Banner />

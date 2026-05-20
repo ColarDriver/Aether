@@ -19,9 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aether.cli.prefs import load_prefs, save_prefs
 from aether.gateway.dispatcher import method
+from aether.gateway.handlers.service_errors import service_error_to_gateway
 from aether.gateway.protocol import ERROR_INVALID_PARAMS, GatewayError
+from aether.services.common import ServiceError
+from aether.services.config import PrefsService
 
 
 _LAST_MODEL_PREFIX = "last_model_by_provider"
@@ -39,70 +41,24 @@ def _require_key(params: dict[str, Any] | None, *, where: str) -> str:
 
 def prefs_get(params: dict[str, Any] | None) -> dict[str, Any]:
     key = _require_key(params, where="prefs.get")
-    prefs = load_prefs()
-
-    if key == _LAST_MODEL_PREFIX:
-        return {"value": dict(prefs.last_model_by_provider)}
-    if key.startswith(_LAST_MODEL_DOT):
-        provider = key[len(_LAST_MODEL_DOT):]
-        return {"value": prefs.last_model_by_provider.get(provider)}
-    if key == "version":
-        return {"value": prefs.version}
-
-    # Forward-compat: any other key is read out of the ``unknown``
-    # bucket if it exists, else returns null.
-    return {"value": prefs.unknown.get(key)}
+    try:
+        return {"value": PrefsService().get(key)}
+    except ServiceError as exc:
+        raise service_error_to_gateway(exc) from exc
 
 
 def prefs_set(params: dict[str, Any] | None) -> dict[str, Any]:
     key = _require_key(params, where="prefs.set")
     value = (params or {}).get("value")
-    prefs = load_prefs()
-
-    if key == _LAST_MODEL_PREFIX:
-        if not isinstance(value, dict):
-            raise GatewayError(
-                f"prefs.set('{_LAST_MODEL_PREFIX}') requires dict value",
-                code=ERROR_INVALID_PARAMS,
-            )
-        prefs.last_model_by_provider = {
-            str(k): str(v) for k, v in value.items() if v
-        }
-    elif key.startswith(_LAST_MODEL_DOT):
-        provider = key[len(_LAST_MODEL_DOT):]
-        if not provider:
-            raise GatewayError(
-                f"prefs.set requires provider in '{_LAST_MODEL_DOT}<provider>'",
-                code=ERROR_INVALID_PARAMS,
-            )
-        if value is None or value == "":
-            prefs.last_model_by_provider.pop(provider, None)
-        else:
-            prefs.last_model_by_provider[provider] = str(value)
-    elif key == "version":
-        # Version is managed by the store; reject mutation.
-        raise GatewayError(
-            "prefs.set cannot mutate 'version'",
-            code=ERROR_INVALID_PARAMS,
-        )
-    else:
-        if value is None:
-            prefs.unknown.pop(key, None)
-        else:
-            prefs.unknown[key] = value
-
-    save_prefs(prefs)
+    try:
+        PrefsService().set(key, value)
+    except ServiceError as exc:
+        raise service_error_to_gateway(exc) from exc
     return {"ok": True}
 
 
 def prefs_all(_params: dict[str, Any] | None) -> dict[str, Any]:
-    prefs = load_prefs()
-    body: dict[str, Any] = {
-        "last_model_by_provider": dict(prefs.last_model_by_provider),
-        "version": prefs.version,
-    }
-    body.update(prefs.unknown)
-    return {"prefs": body}
+    return {"prefs": PrefsService().all()}
 
 
 def register() -> None:

@@ -189,23 +189,24 @@ class LiveModelDiscovery(_ProvidersCase):
         super().setUp()
         self._provider_ids: list[str] = []
         self._provider_error: Exception | None = None
+        outer = self
 
         class _FakeProvider:
-            def list_models(inner_self) -> list[str]:
-                if self._provider_error is not None:
-                    raise self._provider_error
-                return list(self._provider_ids)
+            def list_models(self) -> list[str]:
+                if outer._provider_error is not None:
+                    raise outer._provider_error
+                return list(outer._provider_ids)
 
         self._fake_provider = _FakeProvider()
         self._build_provider = mock.Mock(return_value=self._fake_provider)
         self._build_provider_patch = mock.patch(
-            "aether.gateway.handlers.providers_methods.build_provider",
+            "aether.services.providers.service.build_provider",
             self._build_provider,
         )
         self._build_provider_patch.start()
         self.addCleanup(self._build_provider_patch.stop)
         self._openai_patch = mock.patch(
-            "aether.gateway.handlers.providers_methods._live_list_models_openai",
+            "aether.services.providers.service.ProviderService._live_list_models_openai",
             self._fake_openai_discovery,
         )
         self._openai_patch.start()

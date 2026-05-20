@@ -13,33 +13,23 @@ prompt_toolkit / rich at import time).
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from aether.gateway.dispatcher import method
+from aether.services.tools import ToolService, ToolSummary
 
 
 def tools_list(_params: dict[str, Any] | None) -> dict[str, Any]:
-    # Lazy import: aether.tools.builtins eagerly instantiates LSP/browser
-    # managers and other heavyweight state at import time. Pulling that into
-    # the gateway module load path slows boot enough to race SIGINT handler
-    # installation in tests; keeping the import inside the handler body
-    # restores fast startup.
-    from aether.tools.builtins import build_default_tool_registry
-
-    registry = build_default_tool_registry()
-    descriptors = registry.list_descriptors()
-    catalog = [_descriptor_to_wire(asdict(descriptor)) for descriptor in descriptors]
-    catalog.sort(key=lambda entry: entry["name"])
+    catalog = [_tool_to_wire(tool) for tool in ToolService().list_tools().tools]
     return {"tools": catalog}
 
 
-def _descriptor_to_wire(payload: dict[str, Any]) -> dict[str, Any]:
+def _tool_to_wire(tool: ToolSummary) -> dict[str, Any]:
     return {
-        "name": str(payload.get("name") or ""),
-        "description": str(payload.get("description") or ""),
-        "parameters": payload.get("parameters") or {},
-        "required": list(payload.get("required") or []),
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": dict(tool.parameters or {}),
+        "required": list(tool.required or []),
     }
 
 

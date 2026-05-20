@@ -41,6 +41,8 @@ class CodexChatModel(ModelProvider):
     # Chat Completions), and reasoning lives in output_tokens_details.
     provider_name: str = "codex"
     api_mode: str = "responses"
+    transport_name: str | None = "codex_responses"
+    transport_api_mode: str | None = "codex_responses"
 
     def __init__(
         self,

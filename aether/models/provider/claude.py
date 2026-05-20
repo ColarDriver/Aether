@@ -58,6 +58,8 @@ class ClaudeChatModel(ModelProvider):
     # are split correctly for billing math.
     provider_name: str = "anthropic"
     api_mode: str = "messages"
+    transport_name: str | None = "anthropic_messages"
+    transport_api_mode: str | None = "anthropic_messages"
 
     def __init__(
         self,

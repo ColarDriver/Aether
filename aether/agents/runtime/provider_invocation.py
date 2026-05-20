@@ -49,6 +49,8 @@ class ProviderInvocationResult:
     provider_name: str = ""
     api_mode: str = ""
     model: str | None = None
+    transport: str | None = None
+    transport_api_mode: str | None = None
 
 
 class ProviderInvocationController:
@@ -63,6 +65,8 @@ class ProviderInvocationController:
         provider_name = str(getattr(provider, "provider_name", type(provider).__name__))
         api_mode = str(getattr(provider, "api_mode", "chat"))
         model = self._resolve_model(invocation.call_config, provider)
+        transport = self._resolve_optional_string(provider, "transport_name")
+        transport_api_mode = self._resolve_optional_string(provider, "transport_api_mode")
         api_call_count = self._next_api_request_attempt_count(invocation.context)
         api_hook_payload = self._build_api_hook_payload(
             request=invocation.request,
@@ -73,6 +77,13 @@ class ProviderInvocationController:
             provider=provider,
             api_call_count=api_call_count,
         )
+        invocation.context.metadata["provider_invocation"] = {
+            "provider": provider_name,
+            "api_mode": api_mode,
+            "transport": transport,
+            "transport_api_mode": transport_api_mode,
+            "model": model,
+        }
         self._safe_call_hook("pre_api_request", **api_hook_payload)
 
         api_start = time.perf_counter()
@@ -112,6 +123,8 @@ class ProviderInvocationController:
                 provider_name=provider_name,
                 api_mode=api_mode,
                 model=model,
+                transport=transport,
+                transport_api_mode=transport_api_mode,
             )
 
         elapsed_ms = (time.perf_counter() - api_start) * 1000
@@ -130,6 +143,8 @@ class ProviderInvocationController:
             provider_name=provider_name,
             api_mode=api_mode,
             model=model,
+            transport=transport,
+            transport_api_mode=transport_api_mode,
         )
 
     def accumulate_usage(self, response: NormalizedResponse, context: TurnContext) -> None:
@@ -167,6 +182,14 @@ class ProviderInvocationController:
             model = "unknown"
         return str(model)
 
+    @staticmethod
+    def _resolve_optional_string(provider: ModelProvider, attr: str) -> str | None:
+        value = getattr(provider, attr, None)
+        if value is None:
+            return None
+        value = str(value)
+        return value or None
+
     def _build_api_hook_payload(
         self,
         *,
@@ -188,7 +211,7 @@ class ProviderInvocationController:
         except Exception:
             request_char_count = sum(len(str(message)) for message in messages)
 
-        return {
+        payload: dict[str, Any] = {
             "session_id": request.session_id,
             "iteration": context.iteration,
             "model": self._resolve_model(call_config, provider),
@@ -202,6 +225,13 @@ class ProviderInvocationController:
             "max_tokens": call_config.max_tokens,
             "context_metadata": context.metadata,
         }
+        transport = self._resolve_optional_string(provider, "transport_name")
+        transport_api_mode = self._resolve_optional_string(provider, "transport_api_mode")
+        if transport is not None:
+            payload["transport"] = transport
+        if transport_api_mode is not None:
+            payload["transport_api_mode"] = transport_api_mode
+        return payload
 
     @staticmethod
     def _build_post_api_hook_payload(
@@ -211,7 +241,7 @@ class ProviderInvocationController:
         response: NormalizedResponse | None,
         error: Exception | None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "session_id": pre_payload["session_id"],
             "iteration": pre_payload["iteration"],
             "model": pre_payload["model"],
@@ -223,6 +253,11 @@ class ProviderInvocationController:
             "error": error,
             "context_metadata": pre_payload["context_metadata"],
         }
+        if "transport" in pre_payload:
+            payload["transport"] = pre_payload["transport"]
+        if "transport_api_mode" in pre_payload:
+            payload["transport_api_mode"] = pre_payload["transport_api_mode"]
+        return payload
 
     def _safe_call_hook(self, name: str, **kwargs: Any) -> Any:
         hook = getattr(self._hooks, name, None)
@@ -233,4 +268,3 @@ class ProviderInvocationController:
         except Exception:
             self._services.logger.exception("Engine hook failed: %s", name)
             return None
-

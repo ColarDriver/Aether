@@ -67,6 +67,8 @@ class OpenAICompatibleModel(ModelProvider):
     # serving non-chat endpoints should override.
     provider_name: str = "openai"
     api_mode: str = "chat"
+    transport_name: str | None = "openai_chat_completions"
+    transport_api_mode: str | None = "chat"
 
     def __init__(
         self,

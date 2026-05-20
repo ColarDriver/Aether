@@ -34,12 +34,16 @@ class _ScriptedProvider(ModelProvider):
         valid: bool = True,
         model: str = "unit-model",
         silent_delta: str | None = None,
+        transport_name: str | None = None,
+        transport_api_mode: str | None = None,
     ) -> None:
         self.response = response or NormalizedResponse(content="ok")
         self.error = error
         self.valid = valid
         self.model = model
         self.silent_delta = silent_delta
+        self.transport_name = transport_name
+        self.transport_api_mode = transport_api_mode
         self.calls: list[dict[str, Any]] = []
 
     def generate(
@@ -146,6 +150,21 @@ class ProviderInvocationControllerTests(unittest.TestCase):
         self.assertIsNone(hooks.post_calls[0]["error"])
         self.assertEqual(hooks.pre_calls[0]["message_count"], 1)
         self.assertEqual(hooks.pre_calls[0]["max_tokens"], 123)
+        for key in (
+            "session_id",
+            "iteration",
+            "model",
+            "provider",
+            "api_mode",
+            "api_call_count",
+            "message_count",
+            "tool_count",
+            "approx_input_tokens",
+            "request_char_count",
+            "max_tokens",
+            "context_metadata",
+        ):
+            self.assertIn(key, hooks.pre_calls[0])
 
     def test_tool_calls_are_preserved(self) -> None:
         call = ToolCall(id="call-1", name="read_file", arguments={"path": "README.md"})
@@ -243,6 +262,37 @@ class ProviderInvocationControllerTests(unittest.TestCase):
 
         self.assertEqual(context.metadata["api_calls"], 1)
         self.assertEqual(context.metadata["usage_accumulator"].total_tokens, 10)
+
+    def test_transport_metadata_is_added_without_renaming_hook_fields(self) -> None:
+        hooks = _HookRecorder()
+        provider = _ScriptedProvider(
+            NormalizedResponse(content="hello"),
+            transport_name="unit_transport",
+            transport_api_mode="unit_api",
+        )
+        controller, invocation, context = _invocation(response_provider=provider, hooks=hooks)
+
+        result = controller.invoke(invocation)
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.transport, "unit_transport")
+        self.assertEqual(result.transport_api_mode, "unit_api")
+        self.assertEqual(hooks.pre_calls[0]["provider"], "openai")
+        self.assertEqual(hooks.pre_calls[0]["api_mode"], "chat")
+        self.assertEqual(hooks.pre_calls[0]["transport"], "unit_transport")
+        self.assertEqual(hooks.pre_calls[0]["transport_api_mode"], "unit_api")
+        self.assertEqual(hooks.post_calls[0]["transport"], "unit_transport")
+        self.assertEqual(hooks.post_calls[0]["transport_api_mode"], "unit_api")
+        self.assertEqual(
+            context.metadata["provider_invocation"],
+            {
+                "provider": "openai",
+                "api_mode": "chat",
+                "transport": "unit_transport",
+                "transport_api_mode": "unit_api",
+                "model": "override-model",
+            },
+        )
 
 
 if __name__ == "__main__":

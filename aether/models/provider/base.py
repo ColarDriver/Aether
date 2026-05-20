@@ -28,6 +28,11 @@ class ModelProvider(ABC):
     # text-completion endpoints.  Default ``"chat"`` matches the OpenAI
     # Chat Completions schema the openai-compatible parser expects.
     api_mode: str = "chat"
+    # Optional transport-level observability. Providers that delegate payload
+    # conversion/normalization to a transport can expose these without making
+    # the transport a public engine dependency.
+    transport_name: str | None = None
+    transport_api_mode: str | None = None
 
     @abstractmethod
     def generate(

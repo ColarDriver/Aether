@@ -22,6 +22,11 @@ from aether.agents.core.phantom_tool import (
     detect_phantom_tool_intent,
     synthesize_tool_calls_from_phantom,
 )
+from aether.agents.runtime.context_assembly import (
+    ContextAssemblyInput,
+    ContextAssemblyPipeline,
+    LegacyContextAssemblyAdapter,
+)
 from aether.agents.runtime.provider_invocation import (
     ProviderInvocationController,
     ProviderInvocationRequest,
@@ -407,6 +412,11 @@ class AgentEngine:
             services=self.services,
             hooks=self._hooks,
         )
+        self._context_assembly_pipeline = ContextAssemblyPipeline(
+            services=self.services,
+            hooks=self._hooks,
+            adapter=LegacyContextAssemblyAdapter(self),
+        )
         # External-event queue (PR 10.7).  Used by the root engine to
         # receive ``<task-notification>`` messages routed back from
         # async children that have completed.  Drained at the next
@@ -586,96 +596,24 @@ class AgentEngine:
                         exit_reason = ExitReason.INTERRUPTED
                         break
 
-                    if not context.metadata.get("_preflight_compaction_done"):
-                        context.metadata["_preflight_compaction_done"] = True
-                        preflight = self._maybe_compact_messages(
-                            messages,
-                            context=context,
-                            trigger_reason="preflight",
-                        )
-                        if preflight is not None:
-                            messages = preflight.compressed_messages
-
-                    self._register_skill_nudge(context)
-                    messages = self._maybe_inject_skill_nudge(messages, context)
-                    # PR 10.7: drain peer ``send_message`` deliveries
-                    # (when this engine is itself an async subagent)
-                    # and root-engine ``<task-notification>`` events
-                    # (when async children just finished).
-                    messages = self._drain_pending_messages(messages, context)
-                    # Drain the diagnostic tracker and inject a
-                    # ``<diagnostics>`` block so the model sees errors
-                    # introduced by its most recent edits.
-                    messages = self._maybe_inject_diagnostic_attachment(
-                        messages, context
-                    )
-                    # Nudge the model to spawn a Verifier once it has
-                    # edited a threshold number of files this session
-                    # without one.
-                    messages = self._maybe_inject_verifier_reminder(
-                        messages, context
-                    )
-                    # When the session is in plan mode, inject the
-                    # 5-phase plan workflow as a user-role
-                    # ``<system-reminder>`` adjacent to the latest user
-                    # turn.  High-salience placement is the key lever
-                    # against the model regressing to ``shell``-based
-                    # exploration.
-                    messages = self._maybe_inject_plan_mode_attachment(
-                        messages, context, session_id=request.session_id
-                    )
-
-                    hook_outcome = self._collect_pre_llm_hook_outcome(
-                        "pre_llm_call",
-                        session_id=request.session_id,
-                        iteration=context.iteration,
-                        messages=copy.deepcopy(messages),
-                        context_metadata=context.metadata,
-                    )
-
-                    # PRE_LLM middleware stage: rewrite/enrich outbound message list.
-                    #  continuation path can override the message list
-                    # for exactly one next iteration (partial assistant +
-                    # continuation user instruction).  Pop it here so retries
-                    # do not accidentally keep reusing a stale override.
-                    loop_messages = context.metadata.pop("_messages_override", None)
-                    if isinstance(loop_messages, list):
-                        messages = loop_messages
-
-                    hook_outcome = self._merge_memory_context_into_hook_outcome(
-                        messages,
-                        hook_outcome,
-                        context=context,
-                    )
-
-                    outbound_messages = self._apply_hook_outcome_to_messages(
-                        messages,
-                        hook_outcome,
-                        context=context,
-                    )
-
                     try:
-                        prepared_messages = self.services.middleware_pipeline.run_before_llm(outbound_messages, context)
+                        assembly_result = self._context_assembly_pipeline.assemble(
+                            ContextAssemblyInput(
+                                request=request,
+                                messages=messages,
+                                context=context,
+                                iteration=context.iteration,
+                            )
+                        )
                     except Exception as exc:
                         self._handle_pipeline_error(exc, state_machine.state, context)
                         error_text = str(exc)
                         exit_reason = ExitReason.MIDDLEWARE_ERROR
                         state_machine.transition(LoopState.FAILED)
                         break
-
-                    # projection-view application.
-                    # Tier 4 (``ContextCollapseTier``) writes a
-                    # ``CollapseStore`` onto ``context.metadata`` but
-                    # never mutates the local ``messages`` list (so
-                    # session_record / replay sees the un-collapsed
-                    # past).  The view is applied here, on the
-                    # post-middleware payload, so every provider call
-                    # within this turn sees the same projection — and
-                    # only the wire payload changes, not the stored
-                    # transcript.
-                    prepared_messages = self._apply_collapse_view(
-                        prepared_messages, context
-                    )
+                    messages = assembly_result.canonical_messages
+                    prepared_messages = assembly_result.prepared_messages
+                    hook_outcome = assembly_result.hook_outcome
 
                     state_machine.transition(LoopState.LLM_CALL)
                     # Allow middleware to short-circuit the provider call (e.g. circuit breaker).

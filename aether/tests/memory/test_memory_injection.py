@@ -72,6 +72,29 @@ class StaticMemoryProvider:
         return None
 
 
+class RecordingBeforeCompactionMemoryProvider(StaticMemoryProvider):
+    def __init__(self, blocks: list[MemoryBlock]) -> None:
+        super().__init__(blocks)
+        self.before_compaction_calls: list[dict[str, Any]] = []
+
+    def before_compaction(
+        self,
+        *,
+        session_id: str,
+        task_id: str | None,
+        messages: list[dict],
+        metadata: dict,
+    ) -> None:
+        self.before_compaction_calls.append(
+            {
+                "session_id": session_id,
+                "task_id": task_id,
+                "messages": copy.deepcopy(messages),
+                "metadata": dict(metadata),
+            }
+        )
+
+
 class FailingMemoryProvider(StaticMemoryProvider):
     def __init__(self) -> None:
         super().__init__([])
@@ -407,6 +430,55 @@ def test_preflight_compaction_input_excludes_retrieved_memory() -> None:
     assert "<memory_context>" not in fork_payload, (
         "preflight compaction saw injected memory; canonical → outbound boundary leaked"
     )
+
+
+def test_preflight_compression_records_context_lineage_and_memory_boundary() -> None:
+    provider = _MemoryCompactionProvider(
+        main_script=[NormalizedResponse(content="ok after preflight")],
+        fork_script=[NormalizedResponse(content="## summary\n\n* preflight")],
+    )
+    memory = RecordingBeforeCompactionMemoryProvider([_project_block()])
+    engine = AgentEngine(
+        provider,
+        memory_provider=memory,
+        config=EngineConfig(
+            use_builtin_tools=False,
+            tool_use_contract_enabled=False,
+            compression_enabled=True,
+            autocompact_enabled=True,
+            compression_pre_llm_pct=0.0,
+            compression_autocompact_pct=0.0,
+            compression_protect_first_n=1,
+            compression_protect_last_n=1,
+            compression_target_summary_tokens=100,
+        ),
+    )
+
+    result = engine.run_turn(
+        EngineRequest(
+            session_id="memory-preflight-lineage",
+            messages=[
+                {"role": "user", "content": f"seed-{i} " + ("x" * 800)}
+                for i in range(6)
+            ],
+            user_message="answer",
+        )
+    )
+
+    assert result.status is EngineStatus.COMPLETED
+    assert len(memory.before_compaction_calls) == 1
+    before_payload = "\n".join(
+        m.get("content", "")
+        for m in memory.before_compaction_calls[0]["messages"]
+        if isinstance(m.get("content"), str)
+    )
+    assert "<memory_context>" not in before_payload
+    assert result.metadata["context_engine"]["name"] == "default"
+    assert result.metadata["context_engine"]["compression_count"] == 1
+    assert result.metadata["context_engine"]["last_trigger_reason"] == "preflight"
+    assert result.metadata["compression_lineage"]["generation"] == 1
+    assert result.metadata["compression_lineage"]["trigger_reason"] == "preflight"
+    assert result.metadata["turn"]["diagnostics"]["compression_generation"] == 1
 
 
 def test_recovery_compaction_strips_memory_before_summariser() -> None:

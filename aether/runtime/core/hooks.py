@@ -84,6 +84,38 @@ class EngineHooks:
     ) -> None:
         return None
 
+    def before_context_compression(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        return None
+
+    def after_context_compression(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        result_message_count: int,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        return None
+
+    def context_compression_failed(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        error: str,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        return None
+
     def post_tool_use(
         self,
         *,

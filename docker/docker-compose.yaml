@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      target: runtime
     image: aether-harness:latest
     container_name: aether-harness
     working_dir: /workspace
@@ -10,9 +11,8 @@ services:
       - ../.env
     environment:
       PYTHONUNBUFFERED: "1"
-      PYTHONPATH: /workspace
-    volumes:
-      - ../:/workspace
+      AETHER_PYTHON: /opt/aether/.venv/bin/python
+      AETHER_PYTHON_SRC_ROOT: /workspace
     command: ["tail", "-f", "/dev/null"]
     healthcheck:
       test: ["CMD", "python", "-c", "import aether; print('ok')"]
@@ -22,24 +22,22 @@ services:
       start_period: 20s
 
   aether-tests:
-    image: aether-harness:latest
+    image: aether-harness:dev
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      target: dev
     profiles: ["tests"]
     working_dir: /workspace
     env_file:
       - ../.env
     environment:
       PYTHONUNBUFFERED: "1"
-      PYTHONPATH: /workspace
-    volumes:
-      - ../:/workspace
+      AETHER_PYTHON: /opt/aether/.venv/bin/python
+      AETHER_PYTHON_SRC_ROOT: /workspace
     command: >
       sh -lc "
-      python -m unittest
-      aether.tests.models.test_provider_streaming
-      aether.tests.engine.test_engine
-      aether.tests.subagents.test_subagents
-      aether.tests.runtime.test_state_machine
+      python -m pytest &&
+      npm --prefix tui run type-check &&
+      npm --prefix tui test
       "

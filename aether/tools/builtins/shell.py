@@ -24,6 +24,7 @@ import os
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -197,14 +198,15 @@ class ShellTool(ToolExecutor):
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 return
-            deadline = time.monotonic() + _INTERRUPT_GRACE_SEC
-            while process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+
+            def _escalate() -> None:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+            threading.Timer(_INTERRUPT_GRACE_SEC, _escalate).start()
 
         listener = None
         if context.interrupt_signal is not None:

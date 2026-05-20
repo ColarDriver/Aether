@@ -6,12 +6,13 @@ import json
 import logging
 from email.utils import parsedate_to_datetime
 from time import time as _wallclock
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
+from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
@@ -138,6 +139,8 @@ class OpenAICompatibleModel(ModelProvider):
         if dead_connections_cleaned:
             context.metadata["dead_connections_cleaned"] = True
 
+        interrupt_signal = context.interrupt_signal if context else None
+
         if stream_callback is not None and not self._disable_streaming:
             try:
                 return self._with_stale_connection_retry(
@@ -147,6 +150,7 @@ class OpenAICompatibleModel(ModelProvider):
                         payload=payload,
                         stream_callback=stream_callback,
                         stream_silent_callback=stream_silent_callback,
+                        interrupt_signal=interrupt_signal,
                     ),
                     context=context,
                 )
@@ -302,6 +306,7 @@ class OpenAICompatibleModel(ModelProvider):
         payload: dict[str, Any],
         stream_callback: StreamDeltaCallback,
         stream_silent_callback: StreamSilentCallback | None = None,
+        interrupt_signal: InterruptSignal | None = None,
     ) -> NormalizedResponse:
         """SSE-based streaming path.
 
@@ -350,29 +355,36 @@ class OpenAICompatibleModel(ModelProvider):
 
         try:
             with httpx.Client(timeout=timeout) as client:
-                with client.stream(
-                    "POST", url, headers=headers, json=streaming_payload
-                ) as resp:
-                    # Materialise the error body **inside** the stream
-                    # context so ``response.text`` is available later.
-                    # Without this, ``raise_for_status`` raises *after*
-                    # the ``with client.stream(...)`` block has already
-                    # closed the response, and any subsequent
-                    # ``response.read()`` / ``.text`` access fails with
-                    # ``httpx.ResponseNotRead`` — masking the real 4xx
-                    # body that the recovery layer would otherwise log.
-                    if resp.status_code >= 400:
-                        try:
-                            resp.read()
-                        except Exception:        # noqa: BLE001 - best effort
-                            pass
-                    resp.raise_for_status()
-                    return _parse_sse_stream(
-                        resp.iter_lines(),
-                        stream_callback=stream_callback,
-                        stream_silent_callback=stream_silent_callback,
-                        fallback_model=self.model,
-                    )
+                _unregister = None
+                if interrupt_signal is not None:
+                    _unregister = _register_interrupt_listener(interrupt_signal, client)
+                try:
+                    with client.stream(
+                        "POST", url, headers=headers, json=streaming_payload
+                    ) as resp:
+                        # Materialise the error body **inside** the stream
+                        # context so ``response.text`` is available later.
+                        # Without this, ``raise_for_status`` raises *after*
+                        # the ``with client.stream(...)`` block has already
+                        # closed the response, and any subsequent
+                        # ``response.read()`` / ``.text`` access fails with
+                        # ``httpx.ResponseNotRead`` — masking the real 4xx
+                        # body that the recovery layer would otherwise log.
+                        if resp.status_code >= 400:
+                            try:
+                                resp.read()
+                            except Exception:        # noqa: BLE001 - best effort
+                                pass
+                        resp.raise_for_status()
+                        return _parse_sse_stream(
+                            resp.iter_lines(),
+                            stream_callback=stream_callback,
+                            stream_silent_callback=stream_silent_callback,
+                            fallback_model=self.model,
+                        )
+                finally:
+                    if _unregister is not None:
+                        _unregister()
         except httpx.ReadTimeout as exc:
             raise StreamStallError(
                 raw=exc,
@@ -728,6 +740,29 @@ class OpenAICompatibleModel(ModelProvider):
             return json.dumps(content, ensure_ascii=False)
         except TypeError:
             return str(content)
+
+
+def _register_interrupt_listener(
+    signal: InterruptSignal,
+    client: httpx.Client,
+) -> Callable[[], None]:
+    """Hook an InterruptSignal to close an httpx client on abort.
+
+    Returns an unregister function the caller MUST invoke in a finally
+    block so the listener doesn't leak past the client's lifetime.
+    """
+    def _on_abort(_reason: str | None) -> None:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    signal.add_listener(_on_abort)
+
+    def _unregister() -> None:
+        signal.remove_listener(_on_abort)
+
+    return _unregister
 
 
 # ---------------------------------------------------------------------------

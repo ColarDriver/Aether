@@ -272,14 +272,7 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
   // this latch the bar keeps spinning for the round-trip duration, which
   // reads as "the interrupt didn't register".
   if (activity.interruptPending) {
-    const dim = theme.colorProps('dim')
-    return (
-      <Box>
-        <Text {...dim} italic>
-          {ascii ? '...' : '…'} interrupting
-        </Text>
-      </Box>
-    )
+    return <></>
   }
 
   return (

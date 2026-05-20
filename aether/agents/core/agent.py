@@ -3872,6 +3872,19 @@ class AgentEngine:
                 )
                 return AgentEngine._ProviderInvocationOutcome(interrupted=True)
             except ProviderInvocationError as exc:
+                if self._is_interrupted(request.session_id, context):
+                    _reason = (
+                        context.interrupt_signal.reason()
+                        if context.interrupt_signal
+                        else None
+                    )
+                    self._record_interrupt_metadata(
+                        context,
+                        reason=_reason or "user-interrupt",
+                        partial_text=str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "")),
+                        was_in_tool_call=False,
+                    )
+                    return AgentEngine._ProviderInvocationOutcome(interrupted=True)
                 # Bump the observability counter once per failed attempt.
                 context.metadata[TURN_KEY_PROVIDER_ERROR_RETRIES] = (
                     int(context.metadata.get(TURN_KEY_PROVIDER_ERROR_RETRIES, 0)) + 1
@@ -4048,6 +4061,19 @@ class AgentEngine:
                 # Loop and retry the provider call.
                 continue
             except Exception as exc:
+                if self._is_interrupted(request.session_id, context):
+                    _reason = (
+                        context.interrupt_signal.reason()
+                        if context.interrupt_signal
+                        else None
+                    )
+                    self._record_interrupt_metadata(
+                        context,
+                        reason=_reason or "user-interrupt",
+                        partial_text=str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "")),
+                        was_in_tool_call=False,
+                    )
+                    return AgentEngine._ProviderInvocationOutcome(interrupted=True)
                 # Non-structured errors (programming errors, ScriptedProvider
                 # exhaustion, etc.) bypass the recovery strategy entirely —
                 # one bump + immediate hand-off to middleware.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
 
@@ -17,6 +17,7 @@ from aether.models.provider.hosted_web_search import (
     dedupe_sources,
     is_web_search_tool,
 )
+from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.runtime.core.contracts import (
     NormalizedResponse,
     StreamDeltaCallback,
@@ -76,16 +77,18 @@ class CodexChatModel(ModelProvider):
         messages: list[dict],
         tools: list[ToolDescriptor],
         config: ModelCallConfig,
-        context: TurnContext,  # noqa: ARG002
-        stream_callback: StreamDeltaCallback | None = None,  # noqa: ARG002
+        context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
         stream_silent_callback: StreamSilentCallback | None = None,
     ) -> NormalizedResponse:
+        interrupt_signal = context.interrupt_signal if context else None
         response = self._call_codex_api(
             messages,
             tools=tools,
             config=config,
             stream_callback=stream_callback,
             stream_silent_callback=stream_silent_callback,
+            interrupt_signal=interrupt_signal,
         )
         parsed = self._parse_response(response)
         if stream_callback and parsed.content and not parsed.tool_calls:
@@ -106,6 +109,7 @@ class CodexChatModel(ModelProvider):
         config: ModelCallConfig,
         stream_callback: StreamDeltaCallback | None = None,
         stream_silent_callback: StreamSilentCallback | None = None,
+        interrupt_signal: InterruptSignal | None = None,
     ) -> dict[str, Any]:
         payload = self._build_payload(messages, tools=tools, config=config)
         headers = {
@@ -125,6 +129,7 @@ class CodexChatModel(ModelProvider):
                     payload,
                     stream_callback=stream_callback,
                     stream_silent_callback=stream_silent_callback,
+                    interrupt_signal=interrupt_signal,
                 )
             except httpx.HTTPStatusError as exc:
                 last_error = exc
@@ -344,34 +349,42 @@ class CodexChatModel(ModelProvider):
         *,
         stream_callback: StreamDeltaCallback | None = None,
         stream_silent_callback: StreamSilentCallback | None = None,
+        interrupt_signal: InterruptSignal | None = None,
     ) -> dict[str, Any]:
         completed_response: dict[str, Any] | None = None
         streamed_output_items: dict[int, dict[str, Any]] = {}
 
         with httpx.Client(timeout=self.request_timeout_sec) as client:
-            with client.stream("POST", f"{self.base_url}/responses", headers=headers, json=payload) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    data = self._parse_sse_data_line(line)
-                    if not data:
-                        continue
+            _unregister: Callable[[], None] | None = None
+            if interrupt_signal is not None:
+                _unregister = _register_interrupt_listener(interrupt_signal, client)
+            try:
+                with client.stream("POST", f"{self.base_url}/responses", headers=headers, json=payload) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        data = self._parse_sse_data_line(line)
+                        if not data:
+                            continue
 
-                    if stream_silent_callback:
-                        self._emit_stream_silent_delta(stream_silent_callback, data)
+                        if stream_silent_callback:
+                            self._emit_stream_silent_delta(stream_silent_callback, data)
 
-                    if stream_callback:
-                        self._emit_stream_delta(stream_callback, data)
+                        if stream_callback:
+                            self._emit_stream_delta(stream_callback, data)
 
-                    event_type = data.get("type")
-                    if event_type == "response.output_item.done":
-                        output_index = data.get("output_index")
-                        output_item = data.get("item")
-                        if isinstance(output_index, int) and isinstance(output_item, dict):
-                            streamed_output_items[output_index] = output_item
-                    elif event_type == "response.completed":
-                        maybe_response = data.get("response")
-                        if isinstance(maybe_response, dict):
-                            completed_response = maybe_response
+                        event_type = data.get("type")
+                        if event_type == "response.output_item.done":
+                            output_index = data.get("output_index")
+                            output_item = data.get("item")
+                            if isinstance(output_index, int) and isinstance(output_item, dict):
+                                streamed_output_items[output_index] = output_item
+                        elif event_type == "response.completed":
+                            maybe_response = data.get("response")
+                            if isinstance(maybe_response, dict):
+                                completed_response = maybe_response
+            finally:
+                if _unregister is not None:
+                    _unregister()
 
         if not completed_response:
             raise RuntimeError("Codex API stream ended without response.completed event")
@@ -586,6 +599,24 @@ class CodexChatModel(ModelProvider):
     @staticmethod
     def _calc_backoff_ms(attempt: int) -> int:
         return 2000 * (1 << (attempt - 1))
+
+
+def _register_interrupt_listener(
+    signal: InterruptSignal,
+    client: httpx.Client,
+) -> Callable[[], None]:
+    def _on_abort(_reason: str | None) -> None:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    signal.add_listener(_on_abort)
+
+    def _unregister() -> None:
+        signal.remove_listener(_on_abort)
+
+    return _unregister
 
 
 def _web_search_sources_from_annotations(raw: Any) -> list[dict[str, str]]:

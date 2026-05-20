@@ -28,9 +28,9 @@ class InterruptController:
 
     def clear(self, session_id: str) -> None:
         with self._lock:
-            signal = self._signals.pop(session_id, None)
+            signal = self._signals.get(session_id)
         if signal is not None:
-            signal.close()
+            signal.reset()
 
     def is_interrupted(self, session_id: str) -> bool:
         with self._lock:

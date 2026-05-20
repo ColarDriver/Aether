@@ -9,9 +9,11 @@ import os
 import socket
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 import anthropic
+
+from aether.runtime.control.interrupt_signal import InterruptSignal
 
 from aether.config.schema import ModelCallConfig
 from aether.models.credential_loader import (
@@ -114,7 +116,8 @@ class ClaudeChatModel(ModelProvider):
                 # thinking chunk as it arrives, so the activity bar
                 # ticks live, mirroring claude-code's behaviour.
                 if stream_callback is not None:
-                    response, streamed = self._create_streaming(payload, stream_callback)
+                    interrupt_signal = context.interrupt_signal if context else None
+                    response, streamed = self._create_streaming(payload, stream_callback, interrupt_signal=interrupt_signal)
                 else:
                     response = self._create(payload)
                     streamed = False
@@ -567,6 +570,8 @@ class ClaudeChatModel(ModelProvider):
         self,
         payload: dict[str, Any],
         stream_callback: StreamDeltaCallback,
+        *,
+        interrupt_signal: InterruptSignal | None = None,
     ) -> tuple[Any, bool]:
         """Stream the Anthropic Messages call and forward text deltas.
 
@@ -594,19 +599,29 @@ class ClaudeChatModel(ModelProvider):
 
         streamed = False
         with self._client.messages.stream(**request_payload) as stream:
-            for chunk in stream.text_stream:
-                if not chunk:
-                    continue
-                streamed = True
-                try:
-                    stream_callback(chunk)
-                except Exception:
-                    # Match the engine wrapper's contract: a UI/render
-                    # failure must not poison the model call.  Log
-                    # once and keep draining the stream so usage and
-                    # the final message still land correctly.
-                    logger.exception("Claude stream_callback raised; suppressing")
-            final_message = stream.get_final_message()
+            _unregister: Callable[[], None] | None = None
+            if interrupt_signal is not None:
+                def _on_abort(_reason: str | None) -> None:
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                interrupt_signal.add_listener(_on_abort)
+                _unregister = lambda: interrupt_signal.remove_listener(_on_abort)  # noqa: E731
+            try:
+                for chunk in stream.text_stream:
+                    if not chunk:
+                        continue
+                    streamed = True
+                    try:
+                        stream_callback(chunk)
+                    except Exception:
+                        logger.exception("Claude stream_callback raised; suppressing")
+                final_message = stream.get_final_message()
+            finally:
+                if _unregister is not None:
+                    _unregister()
 
         return final_message, streamed
 

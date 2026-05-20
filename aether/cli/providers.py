@@ -10,6 +10,7 @@ from aether.config.provider_runtime import (
     resolve_main_provider_runtime,
 )
 from aether.models.provider.base import ModelProvider
+from aether.runtime.credentials import default_credential_lookup
 
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -27,14 +28,6 @@ PROVIDER_ALIASES: dict[str, str] = {
 
 def resolve_provider_name(name: str) -> str:
     return PROVIDER_ALIASES.get(name.lower(), name.lower())
-
-
-def _first_env(names: tuple[str, ...]) -> str | None:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return None
 
 
 def build_provider(
@@ -55,6 +48,7 @@ def build_provider(
         model=model,
         base_url=base_url,
     )
+    credential_lookup = default_credential_lookup()
     name = runtime.provider_name
 
     if name == "claude":
@@ -64,7 +58,8 @@ def build_provider(
         return ClaudeChatModel(
             model=runtime.model or d["model"],
             max_tokens=int(kwargs.pop("max_tokens", d["max_tokens"])),
-            anthropic_api_key=api_key or os.getenv("ANTHROPIC_API_KEY"),
+            anthropic_api_key=api_key
+            or _credential_value(credential_lookup.get_first(runtime.api_key_env_names)),
             **kwargs,
         )
 
@@ -72,7 +67,9 @@ def build_provider(
         from aether.models.provider.openai_compatible import OpenAICompatibleModel
 
         d = _DEFAULTS["openai"]
-        resolved_key = api_key or _first_env(runtime.api_key_env_names) or ""
+        resolved_key = api_key or _credential_value(
+            credential_lookup.get_first(runtime.api_key_env_names)
+        ) or ""
         if not resolved_key:
             raise ValueError(
                 "OpenAI provider requires an API key. "
@@ -93,7 +90,8 @@ def build_provider(
         return CodexChatModel(
             model=runtime.model or d["model"],
             reasoning_effort=str(kwargs.pop("reasoning_effort", d["reasoning_effort"])),
-            access_token=api_key or _first_env(runtime.api_key_env_names),
+            access_token=api_key
+            or _credential_value(credential_lookup.get_first(runtime.api_key_env_names)),
             **kwargs,
         )
 
@@ -113,3 +111,8 @@ def get_provider_defaults(name: str) -> dict[str, Any]:
     defaults = dict(_DEFAULTS.get(choice.provider_name, {}))
     defaults["model"] = choice.default_model
     return defaults
+
+
+def _credential_value(value: object) -> str | None:
+    raw = getattr(value, "value", None)
+    return raw if isinstance(raw, str) and raw else None

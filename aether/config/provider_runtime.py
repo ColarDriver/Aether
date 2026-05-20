@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from aether.runtime.credentials.redaction import redact_mapping
+
 
 ProviderFamily = Literal["codex", "claude", "openai-compatible"]
 
@@ -42,6 +44,23 @@ class ProviderRuntimeConfig:
     base_url_env_names: tuple[str, ...] = ()
     source: str = "default"
     extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def public_metadata(self) -> dict[str, Any]:
+        """Return a status-safe snapshot without raw credential values."""
+
+        return redact_mapping(
+            {
+                "family": self.family,
+                "provider_name": self.provider_name,
+                "model": self.model,
+                "base_url": self.base_url,
+                "api_key_env_names": self.api_key_env_names,
+                "model_env_names": self.model_env_names,
+                "base_url_env_names": self.base_url_env_names,
+                "source": self.source,
+                "extra": dict(self.extra),
+            }
+        )
 
 
 _CHOICES: dict[ProviderFamily, ProviderRuntimeChoice] = {

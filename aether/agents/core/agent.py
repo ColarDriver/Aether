@@ -31,6 +31,11 @@ from aether.agents.runtime.provider_invocation import (
     ProviderInvocationController,
     ProviderInvocationRequest,
 )
+from aether.agents.runtime.recovery_controller import (
+    LegacyRecoveryControllerAdapter,
+    RecoveryAttemptInput,
+    RecoveryController,
+)
 from aether.agents.runtime.tool_dispatch import (
     LegacyToolDispatchAdapter,
     ToolDispatchController,
@@ -427,6 +432,11 @@ class AgentEngine:
             hooks=self._hooks,
             config=self.config,
             adapter=LegacyToolDispatchAdapter(self),
+        )
+        self._recovery_controller = RecoveryController(
+            services=self.services,
+            config=self.config,
+            adapter=LegacyRecoveryControllerAdapter(self),
         )
         # External-event queue (PR 10.7).  Used by the root engine to
         # receive ``<task-notification>`` messages routed back from
@@ -3342,6 +3352,23 @@ class AgentEngine:
         ``activate_fallback`` / ``compress_context`` keys to that schema —
         see ``RecoveryDecision`` for the full shape.
         """
+        recovery_result = self._recovery_controller.invoke_with_recovery(
+            RecoveryAttemptInput(
+                request=request,
+                canonical_messages=canonical_messages,
+                prepared_messages=prepared_messages,
+                context=context,
+                stream_callback=stream_callback,
+                stream_silent_callback=stream_silent_callback,
+                invoke_provider=self._provider_invocation_controller.invoke,
+            )
+        )
+        return AgentEngine._ProviderInvocationOutcome(
+            response=recovery_result.response,
+            error=recovery_result.error,
+            interrupted=recovery_result.interrupted,
+        )
+
         attempt_state = AttemptState()
         last_error: Exception | None = None
         decisions_log = context.metadata.setdefault("recovery_decisions", [])

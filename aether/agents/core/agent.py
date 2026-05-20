@@ -47,6 +47,10 @@ from aether.agents.runtime.session_lifecycle import (
     LegacySessionLifecycleAdapter,
     SessionLifecycleController,
 )
+from aether.agents.runtime.stream_controller import (
+    LegacyStreamEventAdapter,
+    StreamController,
+)
 from aether.agents.runtime.tool_dispatch import (
     LegacyToolDispatchAdapter,
     ToolDispatchController,
@@ -464,6 +468,11 @@ class AgentEngine:
             config=self.config,
             adapter=LegacyResponseRepairAdapter(self),
         )
+        self._stream_controller = StreamController(
+            config=self.config,
+            services=self.services,
+            adapter=LegacyStreamEventAdapter(self),
+        )
         self._turn_runner = TurnRunner(
             services=self.services,
             config=self.config,
@@ -471,6 +480,7 @@ class AgentEngine:
             context_assembly_pipeline=self._context_assembly_pipeline,
             response_repair_controller=self._response_repair_controller,
             response_finalization_controller=self._response_finalization_controller,
+            stream_controller=self._stream_controller,
             tool_dispatch_controller=self._tool_dispatch_controller,
             adapter=LegacyTurnRunnerAdapter(self),
         )
@@ -1615,98 +1625,16 @@ class AgentEngine:
         return "continue", None, None
 
     def _build_stream_callback(self, request: EngineRequest, context: TurnContext):
-        callback = request.stream_callback
-
-        # Emergency rollback: if the operator has flipped
-        # ``EngineConfig.streaming_enabled`` off (e.g. because a gateway is
-        # serving broken SSE), pretend the request had no callback at all.
-        # The provider then takes the non-streaming path and the user
-        # gets a single final-response chunk instead of a stream.  No
-        # exception is raised — graceful degradation is the whole point.
-        if not getattr(self.config, "streaming_enabled", True):
-            self.services.logger.debug(
-                "streaming_enabled=False; suppressing stream_callback for session %s",
-                request.session_id,
-            )
-            return None
-
-        if callback is None and not getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
-            return None
-
-        def _wrapped(delta: str) -> None:
-            if not isinstance(delta, str) or not delta:
-                return
-
-            # fast-path interrupt check.  Polled at
-            # the *top* of every delta so the latency between the user
-            # pressing ESC and the stream actually stopping is bounded
-            # by one chunk arrival (typically <50 ms for any modern
-            # provider).  Cost is one dict lookup + one RLock acquire
-            # — ~100 ns per call, ~0.01 % CPU even at 1000 chunks/s.
-            #
-            # The exception is a ``BaseException`` subclass so the
-            # ``except Exception:`` clauses in providers / middleware
-            # do not accidentally swallow it.  See
-            # ``runtime/exceptions.py`` for the full rationale.
-            if self._is_interrupted(request.session_id, context):
-                partial = str(
-                    context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or ""
-                )
-                raise EngineInterrupted(
-                    reason="user-interrupt",
-                    partial_text=partial,
-                    was_in_tool_call=False,
-                )
-
-            if getattr(self.config, "empty_response_partial_stream_recovery_enabled", True):
-                current = str(context.metadata.get(TURN_KEY_STREAMED_ASSISTANT_TEXT, "") or "")
-                context.metadata[TURN_KEY_STREAMED_ASSISTANT_TEXT] = current + delta
-            if callback is None:
-                return
-            try:
-                callback(delta)
-                context.metadata["streamed_output"] = True
-                context.metadata["stream_callback_calls"] = int(context.metadata.get("stream_callback_calls", 0)) + 1
-            except Exception:
-                self.services.logger.exception("stream callback failed")
-
-        return _wrapped
+        return self._stream_controller.build_visible_callback(
+            request=request,
+            context=context,
+        )
 
     def _build_stream_silent_callback(self, request: EngineRequest, context: TurnContext):
-        """Wrap :attr:`EngineRequest.stream_silent_callback` for provider use.
-
-        the silent counterpart of
-        :meth:`_build_stream_callback`.  Providers forward count-only
-        chunks (tool-arg JSON, signatures) here; the wrapped callback
-        bumps a separate ``stream_silent_callback_calls`` metadata
-        counter so observability can tell how often the live token
-        estimator was advanced via this path.
-
-        Same rollback semantics: when ``streaming_enabled`` is off we
-        return ``None`` so providers don't try to emit silent deltas
-        either.  Same isolation guarantee: any exception from the
-        downstream callback is logged and swallowed — a UI render
-        failure must never poison the model call.
-        """
-        callback = request.stream_silent_callback
-        if callback is None:
-            return None
-
-        if not getattr(self.config, "streaming_enabled", True):
-            return None
-
-        def _wrapped_silent(delta: str) -> None:
-            if not isinstance(delta, str) or not delta:
-                return
-            try:
-                callback(delta)
-                context.metadata["stream_silent_callback_calls"] = (
-                    int(context.metadata.get("stream_silent_callback_calls", 0)) + 1
-                )
-            except Exception:
-                self.services.logger.exception("stream silent callback failed")
-
-        return _wrapped_silent
+        return self._stream_controller.build_silent_callback(
+            request=request,
+            context=context,
+        )
 
     def _safe_call_hook(self, name: str, **kwargs: Any) -> Any:
         hook = getattr(self._hooks, name, None)

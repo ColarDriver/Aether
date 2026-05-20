@@ -17,6 +17,7 @@ from aether.agents.runtime.response_repair import (
     ResponseRepairController,
     ResponseRepairInput,
 )
+from aether.agents.runtime.stream_controller import StreamController
 from aether.agents.runtime.session_lifecycle import (
     SessionLifecycleController,
     TurnFinalizationInput,
@@ -52,10 +53,6 @@ class TurnRunnerAdapter(Protocol):
     """Narrow bridge to AgentEngine helpers not yet extracted."""
 
     def apply_turn_nudges(self, context: TurnContext) -> None: ...
-
-    def build_stream_callback(self, request: EngineRequest, context: TurnContext) -> Any: ...
-
-    def build_stream_silent_callback(self, request: EngineRequest, context: TurnContext) -> Any: ...
 
     def is_interrupted(self, session_id: str, context: TurnContext | None = None) -> bool: ...
 
@@ -106,12 +103,6 @@ class LegacyTurnRunnerAdapter:
     def apply_turn_nudges(self, context: TurnContext) -> None:
         self._engine._apply_turn_nudges(context)  # noqa: SLF001
 
-    def build_stream_callback(self, request: EngineRequest, context: TurnContext) -> Any:
-        return self._engine._build_stream_callback(request, context)  # noqa: SLF001
-
-    def build_stream_silent_callback(self, request: EngineRequest, context: TurnContext) -> Any:
-        return self._engine._build_stream_silent_callback(request, context)  # noqa: SLF001
-
     def is_interrupted(self, session_id: str, context: TurnContext | None = None) -> bool:
         return self._engine._is_interrupted(session_id, context)  # noqa: SLF001
 
@@ -156,6 +147,7 @@ class TurnRunner:
         context_assembly_pipeline: ContextAssemblyPipeline,
         response_repair_controller: ResponseRepairController,
         response_finalization_controller: ResponseFinalizationController,
+        stream_controller: StreamController,
         tool_dispatch_controller: ToolDispatchController,
         adapter: TurnRunnerAdapter,
     ) -> None:
@@ -165,6 +157,7 @@ class TurnRunner:
         self._context_assembly_pipeline = context_assembly_pipeline
         self._response_repair_controller = response_repair_controller
         self._response_finalization_controller = response_finalization_controller
+        self._stream_controller = stream_controller
         self._tool_dispatch_controller = tool_dispatch_controller
         self._adapter = adapter
 
@@ -185,10 +178,9 @@ class TurnRunner:
             context = turn.context
             active_system_prompt = turn.active_system_prompt
             self._adapter.apply_turn_nudges(context)
-            stream_callback_wrapped = self._adapter.build_stream_callback(request, context)
-            stream_silent_callback_wrapped = self._adapter.build_stream_silent_callback(
-                request,
-                context,
+            stream_callbacks = self._stream_controller.build_callbacks(
+                request=request,
+                context=context,
             )
 
             state_machine.transition(LoopState.PREPARE)
@@ -238,8 +230,8 @@ class TurnRunner:
                             request=request,
                             canonical_messages=messages,
                             prepared_messages=prepared_messages,
-                            stream_callback=stream_callback_wrapped,
-                            stream_silent_callback=stream_silent_callback_wrapped,
+                            stream_callback=stream_callbacks.visible,
+                            stream_silent_callback=stream_callbacks.silent,
                             context=context,
                         )
                         if invoke_outcome.interrupted:

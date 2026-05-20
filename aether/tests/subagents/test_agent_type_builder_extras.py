@@ -445,7 +445,7 @@ class AgentToolModelParameterTests(unittest.TestCase):
         )
         self.assertNotIn("model_override", captured["task"].metadata)
 
-    def test_env_provider_default_writes_metadata(self) -> None:
+    def test_aux_subagent_env_default_writes_metadata(self) -> None:
         from aether.tools.builtins.agent_tool import AgentTool
 
         registry = AgentTypeRegistry(search_paths=[])
@@ -469,7 +469,13 @@ class AgentToolModelParameterTests(unittest.TestCase):
             agent_type_registry=registry,
         )
         ctx = TurnContext(session_id="s", iteration=0, metadata={})
-        with mock.patch.dict(os.environ, {"AETHER_PROVIDER": "openai-compatible"}):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AETHER_AUX_SUBAGENT_PROVIDER": "openai-compatible",
+                "AETHER_AUX_SUBAGENT_MODEL": "gpt",
+            },
+        ):
             result = tool.execute(
                 ToolCall(
                     id="c1",
@@ -484,6 +490,46 @@ class AgentToolModelParameterTests(unittest.TestCase):
         self.assertFalse(result.is_error, msg=result.content)
         self.assertEqual(captured["task"].metadata.get("model_override"), "gpt")
         self.assertEqual(captured["task"].metadata.get("provider_override"), "openai")
+
+    def test_legacy_main_provider_env_still_seeds_subagent_slot(self) -> None:
+        from aether.tools.builtins.agent_tool import AgentTool
+
+        registry = AgentTypeRegistry(search_paths=[])
+        captured: dict[str, SubagentTask] = {}
+
+        class _CapturingManager:
+            def run_task(self, *, parent, task: SubagentTask):
+                captured["task"] = task
+                from aether.subagents.contracts import SubagentResult, SubagentStatus
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status=SubagentStatus.COMPLETED,
+                    summary="ok",
+                    engine_result=None,
+                )
+
+        parent = _build_parent(_registry("read_file"))
+        tool = AgentTool(
+            parent_agent=parent,
+            subagent_manager=_CapturingManager(),
+            agent_type_registry=registry,
+        )
+        ctx = TurnContext(session_id="s", iteration=0, metadata={})
+        with mock.patch.dict(os.environ, {"AETHER_PROVIDER": "claude"}):
+            result = tool.execute(
+                ToolCall(
+                    id="c1",
+                    name="task",
+                    arguments={
+                        "subagent_type": "Explore",
+                        "prompt": "find usages",
+                    },
+                ),
+                ctx,
+            )
+        self.assertFalse(result.is_error, msg=result.content)
+        self.assertEqual(captured["task"].metadata.get("model_override"), "sonnet")
+        self.assertEqual(captured["task"].metadata.get("provider_override"), "claude")
 
     def test_non_string_model_returns_error(self) -> None:
         from aether.tools.builtins.agent_tool import AgentTool

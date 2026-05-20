@@ -13,6 +13,10 @@ from aether.agents.runtime.response_finalization import (
     ResponseFinalizationController,
     ResponseFinalizationInput,
 )
+from aether.agents.runtime.response_repair import (
+    ResponseRepairController,
+    ResponseRepairInput,
+)
 from aether.agents.runtime.session_lifecycle import (
     SessionLifecycleController,
     TurnFinalizationInput,
@@ -76,44 +80,6 @@ class TurnRunnerAdapter(Protocol):
 
     def safe_call_hook(self, name: str, **kwargs: Any) -> Any: ...
 
-    def handle_length_with_tool_calls(
-        self,
-        *,
-        response: NormalizedResponse,
-        messages: list[dict[str, Any]],
-        context: TurnContext,
-    ) -> Any: ...
-
-    def handle_length_finish_reason(
-        self,
-        *,
-        response: NormalizedResponse,
-        messages: list[dict[str, Any]],
-        request: EngineRequest,
-        context: TurnContext,
-    ) -> Any: ...
-
-    def validate_tool_call_arguments(
-        self,
-        *,
-        response: NormalizedResponse,
-        messages: list[dict[str, Any]],
-        context: TurnContext,
-    ) -> Any: ...
-
-    def get_messages_up_to_last_assistant(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
-
-    def extract_visible_text(self, content: str) -> str: ...
-
-    def apply_pending_steer_to_tool_results(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        session_id: str,
-        start_idx: int,
-        context: TurnContext,
-    ) -> None: ...
-
     def append_assistant_tool_message(
         self,
         messages: list[dict[str, Any]],
@@ -167,24 +133,6 @@ class LegacyTurnRunnerAdapter:
     def safe_call_hook(self, name: str, **kwargs: Any) -> Any:
         return self._engine._safe_call_hook(name, **kwargs)  # noqa: SLF001
 
-    def handle_length_with_tool_calls(self, **kwargs: Any) -> Any:
-        return self._engine._handle_length_with_tool_calls(**kwargs)  # noqa: SLF001
-
-    def handle_length_finish_reason(self, **kwargs: Any) -> Any:
-        return self._engine._handle_length_finish_reason(**kwargs)  # noqa: SLF001
-
-    def validate_tool_call_arguments(self, **kwargs: Any) -> Any:
-        return self._engine._validate_tool_call_arguments(**kwargs)  # noqa: SLF001
-
-    def get_messages_up_to_last_assistant(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return self._engine._get_messages_up_to_last_assistant(messages)  # noqa: SLF001
-
-    def extract_visible_text(self, content: str) -> str:
-        return self._engine._extract_visible_text(content)  # noqa: SLF001
-
-    def apply_pending_steer_to_tool_results(self, messages: list[dict[str, Any]], **kwargs: Any) -> None:
-        self._engine._apply_pending_steer_to_tool_results(messages, **kwargs)  # noqa: SLF001
-
     def append_assistant_tool_message(
         self,
         messages: list[dict[str, Any]],
@@ -206,6 +154,7 @@ class TurnRunner:
         config: EngineConfig,
         session_lifecycle_controller: SessionLifecycleController,
         context_assembly_pipeline: ContextAssemblyPipeline,
+        response_repair_controller: ResponseRepairController,
         response_finalization_controller: ResponseFinalizationController,
         tool_dispatch_controller: ToolDispatchController,
         adapter: TurnRunnerAdapter,
@@ -214,6 +163,7 @@ class TurnRunner:
         self._config = config
         self._session_lifecycle_controller = session_lifecycle_controller
         self._context_assembly_pipeline = context_assembly_pipeline
+        self._response_repair_controller = response_repair_controller
         self._response_finalization_controller = response_finalization_controller
         self._tool_dispatch_controller = tool_dispatch_controller
         self._adapter = adapter
@@ -338,94 +288,31 @@ class TurnRunner:
                         context_metadata=context.metadata,
                     )
 
-                    length_text = (response.content or "").strip()
-                    if response.finish_reason == "length" and (
-                        response.tool_calls or length_text
-                    ):
-                        if (
-                            response.tool_calls
-                            and getattr(self._config, "truncated_tool_call_detection_enabled", True)
-                        ):
-                            handled = self._adapter.handle_length_with_tool_calls(
-                                response=response,
-                                messages=messages,
-                                context=context,
-                            )
-                        else:
-                            handled = self._adapter.handle_length_finish_reason(
-                                response=response,
-                                messages=messages,
-                                request=request,
-                                context=context,
-                            )
-                        if handled.action == "continue":
-                            messages = handled.messages
-                            state_machine.transition(LoopState.CHECK_EXIT)
-                            if budget.exhausted:
-                                state_machine.transition(LoopState.FINALIZE)
-                                exit_reason = ExitReason.MAX_ITERATIONS
-                                break
-                            state_machine.transition(LoopState.PRE_LLM)
-                            continue
-                        if handled.action == "finalize":
-                            messages = handled.messages
-                            final_response = handled.final_response
-                            exit_reason = handled.exit_reason
+                    repair = self._response_repair_controller.repair(
+                        ResponseRepairInput(
+                            response=response,
+                            messages=messages,
+                            request=request,
+                            context=context,
+                        )
+                    )
+                    messages = repair.messages
+                    if repair.action == "continue":
+                        state_machine.transition(LoopState.CHECK_EXIT)
+                        if budget.exhausted:
                             state_machine.transition(LoopState.FINALIZE)
+                            exit_reason = ExitReason.MAX_ITERATIONS
                             break
+                        state_machine.transition(LoopState.PRE_LLM)
+                        continue
+                    if repair.action == "finalize":
+                        final_response = repair.final_response
+                        exit_reason = repair.exit_reason or ExitReason.EMPTY_RESPONSE
+                        error_text = repair.error_text
+                        state_machine.transition(LoopState.FINALIZE)
+                        break
 
                     if response.tool_calls:
-                        if getattr(self._config, "truncated_tool_call_detection_enabled", True):
-                            validation = self._adapter.validate_tool_call_arguments(
-                                response=response,
-                                messages=messages,
-                                context=context,
-                            )
-                            if validation.action == "retry":
-                                state_machine.transition(LoopState.CHECK_EXIT)
-                                if budget.exhausted:
-                                    state_machine.transition(LoopState.FINALIZE)
-                                    exit_reason = ExitReason.MAX_ITERATIONS
-                                    break
-                                state_machine.transition(LoopState.PRE_LLM)
-                                continue
-                            if validation.action == "truncated":
-                                rollback = self._adapter.get_messages_up_to_last_assistant(messages)
-                                visible_text = self._adapter.extract_visible_text(response.content or "")
-                                if visible_text:
-                                    prefix_parts = context.metadata.setdefault(
-                                        "truncated_response_prefix_parts",
-                                        [],
-                                    )
-                                    if isinstance(prefix_parts, list):
-                                        prefix_parts.append(visible_text)
-                                context.metadata["partial"] = True
-                                context.metadata.setdefault(
-                                    "length_exit_reason",
-                                    "tool_call_truncated",
-                                )
-                                messages = rollback
-                                final_response = visible_text or None
-                                exit_reason = ExitReason.TOOL_CALL_TRUNCATED
-                                state_machine.transition(LoopState.FINALIZE)
-                                break
-                            if validation.action == "inject_error":
-                                tool_result_start_idx = len(messages)
-                                messages.extend(validation.injection_messages)
-                                self._adapter.apply_pending_steer_to_tool_results(
-                                    messages,
-                                    session_id=request.session_id,
-                                    start_idx=tool_result_start_idx,
-                                    context=context,
-                                )
-                                state_machine.transition(LoopState.CHECK_EXIT)
-                                if budget.exhausted:
-                                    state_machine.transition(LoopState.FINALIZE)
-                                    exit_reason = ExitReason.MAX_ITERATIONS
-                                    break
-                                state_machine.transition(LoopState.PRE_LLM)
-                                continue
-
                         state_machine.transition(LoopState.TOOL_DISPATCH)
                         self._adapter.append_assistant_tool_message(messages, response)
                         tool_result_start_idx = len(messages)

@@ -226,6 +226,7 @@ class ContextAssemblyPipeline:
         self._context_engine = context_engine or DefaultContextEngine(adapter=adapter)
         self._compression_lifecycle = compression_lifecycle or CompressionLifecycleService(
             context_engine=self._context_engine,
+            hooks=hooks,
         )
 
     def assemble(self, assembly: ContextAssemblyInput) -> ContextAssemblyResult:

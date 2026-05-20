@@ -5659,6 +5659,8 @@ class AgentEngine:
                     context.metadata.get("tier5_summaries_generated", 0)
                 ),
             },
+            "context_engine": dict(context.metadata.get("context_engine") or {}),
+            "compression_lineage": context.metadata.get("compression_lineage"),
         }
 
         return EngineResult(

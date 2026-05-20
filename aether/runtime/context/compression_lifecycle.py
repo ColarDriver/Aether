@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Literal
 
 from aether.runtime.context.engine import ContextEngine
 from aether.runtime.core.contracts import TurnContext
+from aether.runtime.core.hooks import EngineHooks
 
 CompressionStatus = Literal["skipped", "compressed", "failed"]
 
@@ -31,8 +33,14 @@ class CompressionResult:
 class CompressionLifecycleService:
     """Run compression through a context engine with stable metadata."""
 
-    def __init__(self, *, context_engine: ContextEngine) -> None:
+    def __init__(
+        self,
+        *,
+        context_engine: ContextEngine,
+        hooks: EngineHooks | None = None,
+    ) -> None:
         self._context_engine = context_engine
+        self._hooks = hooks or EngineHooks()
 
     @property
     def context_engine(self) -> ContextEngine:
@@ -74,6 +82,14 @@ class CompressionLifecycleService:
             force=request.force,
             focus=request.focus,
         )
+        self._call_hook(
+            context,
+            "before_context_compression",
+            session_id=context.session_id,
+            trigger_reason=request.trigger_reason,
+            source_message_count=source_count,
+            context_metadata=context.metadata,
+        )
 
         try:
             engine_result = self._context_engine.compact_preflight(
@@ -91,6 +107,12 @@ class CompressionLifecycleService:
                 result_message_count=source_count,
                 source_tokens=source_tokens,
                 result_tokens=source_tokens,
+                error=error,
+            )
+            self._call_failed_hook(
+                context,
+                trigger_reason=request.trigger_reason,
+                source_message_count=source_count,
                 error=error,
             )
             return CompressionResult(
@@ -111,6 +133,12 @@ class CompressionLifecycleService:
                 result_message_count=source_count,
                 source_tokens=source_tokens,
                 result_tokens=source_tokens,
+                error=validation_error,
+            )
+            self._call_failed_hook(
+                context,
+                trigger_reason=request.trigger_reason,
+                source_message_count=source_count,
                 error=validation_error,
             )
             return CompressionResult(
@@ -141,6 +169,22 @@ class CompressionLifecycleService:
             reason=engine_result.reason,
             engine_metadata=engine_metadata,
         )
+        if status == "compressed":
+            self._record_lineage(
+                context,
+                trigger_reason=request.trigger_reason,
+                source_message_count=source_count,
+                result_message_count=result_count,
+            )
+            self._call_hook(
+                context,
+                "after_context_compression",
+                session_id=context.session_id,
+                trigger_reason=request.trigger_reason,
+                source_message_count=source_count,
+                result_message_count=result_count,
+                context_metadata=context.metadata,
+            )
         return CompressionResult(
             messages=result_messages,
             status=status,
@@ -217,6 +261,58 @@ class CompressionLifecycleService:
                 int(context_engine_meta.get("compression_count", 0) or 0),
             )
         return dict(metadata)
+
+    def _record_lineage(
+        self,
+        context: TurnContext,
+        *,
+        trigger_reason: str,
+        source_message_count: int,
+        result_message_count: int,
+    ) -> None:
+        context_engine_meta = _context_engine_metadata(context)
+        generation = int(context_engine_meta.get("compression_count", 0) or 0)
+        lineage = {
+            "generation": generation,
+            "compressed_at": time.time(),
+            "trigger_reason": trigger_reason,
+            "source_message_count": source_message_count,
+            "result_message_count": result_message_count,
+        }
+        context.metadata["compression_lineage"] = lineage
+        diagnostics = dict(context.metadata.get("diagnostics") or {})
+        diagnostics["compression_generation"] = generation
+        context.metadata["diagnostics"] = diagnostics
+
+    def _call_failed_hook(
+        self,
+        context: TurnContext,
+        *,
+        trigger_reason: str,
+        source_message_count: int,
+        error: str,
+    ) -> None:
+        self._call_hook(
+            context,
+            "context_compression_failed",
+            session_id=context.session_id,
+            trigger_reason=trigger_reason,
+            source_message_count=source_message_count,
+            error=error,
+            context_metadata=context.metadata,
+        )
+
+    def _call_hook(self, context: TurnContext, name: str, **kwargs: Any) -> None:
+        hook = getattr(self._hooks, name, None)
+        if hook is None:
+            return
+        try:
+            hook(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - hooks must not break compression
+            context_engine_meta = _context_engine_metadata(context)
+            hook_errors = context_engine_meta.setdefault("hook_errors", [])
+            if isinstance(hook_errors, list):
+                hook_errors.append({"hook": name, "error": type(exc).__name__})
 
 
 def _context_engine_metadata(context: TurnContext) -> dict[str, Any]:

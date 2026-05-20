@@ -8,6 +8,7 @@ from aether.runtime.context import (
     ContextEngineResult,
 )
 from aether.runtime.core.contracts import TurnContext
+from aether.runtime.core.hooks import EngineHooks
 
 
 class _Engine:
@@ -59,6 +60,78 @@ class _Engine:
     ) -> list[dict[str, Any]]:
         del context
         return messages
+
+
+class _Hooks(EngineHooks):
+    def __init__(self, *, fail_before: bool = False) -> None:
+        self.fail_before = fail_before
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def before_context_compression(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        self.events.append(
+            (
+                "before",
+                {
+                    "session_id": session_id,
+                    "trigger_reason": trigger_reason,
+                    "source_message_count": source_message_count,
+                    "has_messages": "messages" in context_metadata,
+                },
+            )
+        )
+        if self.fail_before:
+            raise RuntimeError("hook failed")
+
+    def after_context_compression(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        result_message_count: int,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        self.events.append(
+            (
+                "after",
+                {
+                    "session_id": session_id,
+                    "trigger_reason": trigger_reason,
+                    "source_message_count": source_message_count,
+                    "result_message_count": result_message_count,
+                    "generation": context_metadata.get("compression_lineage", {}).get("generation"),
+                },
+            )
+        )
+
+    def context_compression_failed(
+        self,
+        *,
+        session_id: str,
+        trigger_reason: str,
+        source_message_count: int,
+        error: str,
+        context_metadata: dict[str, Any],
+    ) -> None:
+        self.events.append(
+            (
+                "failed",
+                {
+                    "session_id": session_id,
+                    "trigger_reason": trigger_reason,
+                    "source_message_count": source_message_count,
+                    "error": error,
+                    "has_messages": "messages" in context_metadata,
+                },
+            )
+        )
 
 
 def _context() -> TurnContext:
@@ -185,3 +258,99 @@ def test_metadata_is_json_safe_and_counts_successful_compressions() -> None:
     assert metadata["last_trigger_reason"] == "preflight"
     assert metadata["compression"]["engine"]["live_object"] == "object"
     assert metadata["compression"]["engine"]["tiers_run"] == ["tier5"]
+
+
+def test_successful_compression_records_lineage_and_hooks() -> None:
+    engine = _Engine(
+        result=ContextEngineResult(
+            messages=[{"role": "user", "content": "summary"}],
+            changed=True,
+        )
+    )
+    hooks = _Hooks()
+    service = CompressionLifecycleService(context_engine=engine, hooks=hooks)
+    context = _context()
+
+    result = service.compress(
+        CompressionRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            context=context,
+            trigger_reason="preflight",
+        )
+    )
+
+    assert result.status == "compressed"
+    lineage = context.metadata["compression_lineage"]
+    assert lineage["generation"] == 1
+    assert lineage["trigger_reason"] == "preflight"
+    assert lineage["source_message_count"] == 1
+    assert lineage["result_message_count"] == 1
+    assert context.metadata["diagnostics"]["compression_generation"] == 1
+    assert [event for event, _payload in hooks.events] == ["before", "after"]
+    assert hooks.events[1][1]["generation"] == 1
+
+
+def test_failed_compression_fires_failed_hook_without_raw_messages() -> None:
+    hooks = _Hooks()
+    service = CompressionLifecycleService(
+        context_engine=_Engine(error=RuntimeError("boom")),
+        hooks=hooks,
+    )
+
+    result = service.compress(
+        CompressionRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            context=_context(),
+            trigger_reason="preflight",
+        )
+    )
+
+    assert result.status == "failed"
+    assert hooks.events == [
+        (
+            "before",
+            {
+                "session_id": "s",
+                "trigger_reason": "preflight",
+                "source_message_count": 1,
+                "has_messages": False,
+            },
+        ),
+        (
+            "failed",
+            {
+                "session_id": "s",
+                "trigger_reason": "preflight",
+                "source_message_count": 1,
+                "error": "RuntimeError",
+                "has_messages": False,
+            },
+        ),
+    ]
+
+
+def test_hook_failure_does_not_abort_compression() -> None:
+    hooks = _Hooks(fail_before=True)
+    service = CompressionLifecycleService(
+        context_engine=_Engine(
+            result=ContextEngineResult(
+                messages=[{"role": "user", "content": "summary"}],
+                changed=True,
+            )
+        ),
+        hooks=hooks,
+    )
+    context = _context()
+
+    result = service.compress(
+        CompressionRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            context=context,
+            trigger_reason="preflight",
+        )
+    )
+
+    assert result.status == "compressed"
+    assert context.metadata["context_engine"]["hook_errors"] == [
+        {"hook": "before_context_compression", "error": "RuntimeError"}
+    ]

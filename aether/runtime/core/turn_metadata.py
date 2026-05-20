@@ -73,6 +73,8 @@ PUBLIC_STABLE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "api_calls",
         "compaction",
+        "compression_lineage",
+        "context_engine",
         "empty_recovery",
         "exit",
         "interrupt",

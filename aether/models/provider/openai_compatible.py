@@ -12,6 +12,7 @@ import httpx
 
 from aether.config.schema import ModelCallConfig
 from aether.models.provider.base import ModelProvider
+from aether.models.transport.openai_chat import OpenAIChatCompletionsTransport
 from aether.runtime.control.interrupt_signal import InterruptSignal
 from aether.runtime.core.contracts import (
     NormalizedResponse,
@@ -28,6 +29,7 @@ from aether.runtime.recovery.provider_errors import (
 from aether.tools.base import ToolDescriptor
 
 logger = logging.getLogger(__name__)
+_OPENAI_CHAT_TRANSPORT = OpenAIChatCompletionsTransport()
 
 # Maximum bytes we copy out of an error response body for classification /
 # logging.  Keep this small — it ends up in logs and exception messages, and
@@ -85,6 +87,7 @@ class OpenAICompatibleModel(ModelProvider):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.request_timeout_sec = max(5, int(request_timeout_sec))
+        self._transport = OpenAIChatCompletionsTransport()
 
         # Per-instance flag flipped to True the first time a streaming
         # attempt fails with ``StreamStallError``. Once
@@ -420,50 +423,7 @@ class OpenAICompatibleModel(ModelProvider):
         self,
         response: NormalizedResponse,
     ) -> tuple[bool, list[str]]:
-        """Detect malformed chat-completions responses post-parse.
-
-        We deliberately keep this conservative. A
-        response is considered invalid only when it has neither content
-        nor any tool calls *and* the upstream server signalled a non-stop
-        finish reason that suggests an actual error rather than an empty
-        completion.  False positives here are expensive: every invalid
-        verdict goes back through the recovery layer and costs another
-        round-trip.
-
-        Examples that trigger invalid:
-        - HTTP 200 with ``{"error": "..."}`` body that ``_parse_response``
-          coerced into an empty NormalizedResponse + finish_reason="stop".
-          We catch this via metadata sniffing.
-        - Empty ``choices`` array in raw, again surfacing as
-          ``finish_reason="stop"`` with no content/tools.
-
-        Examples that DO NOT trigger invalid:
-        - Legitimate empty assistant response (rare but allowed by the
-          API spec) — engines downstream handle that as ExitReason
-          EMPTY_RESPONSE, no need to retry.
-        """
-        reasons: list[str] = []
-
-        raw = response.metadata.get("raw") if isinstance(response.metadata, dict) else None
-        if isinstance(raw, dict):
-            # OpenRouter-style 200 with embedded error object.
-            err = raw.get("error")
-            if isinstance(err, dict):
-                msg = err.get("message") or err.get("type") or "unknown"
-                reasons.append(f"raw.error.{msg}")
-            elif isinstance(err, str) and err:
-                reasons.append(f"raw.error: {err[:100]}")
-
-            # No choices at all — the server returned a structurally
-            # impossible chat-completions response.
-            choices = raw.get("choices")
-            if not isinstance(choices, list) or len(choices) == 0:
-                # Only flag this when the response is also empty —
-                # otherwise downstream parsing already coped.
-                if not response.content and not response.tool_calls:
-                    reasons.append("raw.choices is empty or missing")
-
-        return (len(reasons) == 0), reasons
+        return self._transport.validate_response(response)
 
     def list_models(self) -> list[str]:
         """Fetch available model ids from ``GET {base_url}/models``.
@@ -499,138 +459,26 @@ class OpenAICompatibleModel(ModelProvider):
         tools: Iterable[ToolDescriptor],
         config: ModelCallConfig,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": str(config.extra.get("model", self.model)),
-            "messages": self._convert_messages(messages),
-            "stream": False,
-        }
-        if config.temperature is not None:
-            payload["temperature"] = float(config.temperature)
-        if config.max_tokens is not None:
-            payload["max_tokens"] = int(config.max_tokens)
-
-        converted_tools = self._convert_tools(tools)
-        if converted_tools:
-            payload["tools"] = converted_tools
-            # Spell ``tool_choice`` out explicitly.  The OpenAI spec says
-            # "auto" is the default when ``tools`` is present, but in
-            # practice some compatible gateways and Anthropic-mode
-            # adapters fall back to "none" if the field is missing — the
-            # symptom is a model that "narrates" its tool calls in prose
-            # (e.g. a markdown ```bash``` block) without ever populating
-            # the structured ``tool_calls`` field.  Setting "auto"
-            # guarantees the model sees tool use as a live option.
-            payload.setdefault("tool_choice", "auto")
-
-        for key, value in config.extra.items():
-            if key in {"model", "messages", "tools", "stream"}:
-                continue
-            payload.setdefault(key, value)
-
-        return payload
+        return self._transport.build_payload(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            config=config,
+        )
 
     @classmethod
     def _convert_messages(cls, messages: list[dict]) -> list[dict[str, Any]]:
-        converted: list[dict[str, Any]] = []
-        for message in messages:
-            role = str(message.get("role") or "user").strip().lower()
-            if role not in {"system", "user", "assistant", "tool"}:
-                role = "user"
-
-            if role in {"system", "user"}:
-                converted.append(
-                    {
-                        "role": role,
-                        "content": cls._normalize_content(message.get("content")),
-                    }
-                )
-                continue
-
-            if role == "tool":
-                tool_message: dict[str, Any] = {
-                    "role": "tool",
-                    "content": cls._normalize_content(message.get("content")),
-                    "tool_call_id": str(message.get("tool_call_id") or message.get("id") or ""),
-                }
-                if message.get("name"):
-                    tool_message["name"] = str(message.get("name"))
-                converted.append(tool_message)
-                continue
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": cls._normalize_content(message.get("content")),
-            }
-            raw_tool_calls = message.get("tool_calls")
-            if isinstance(raw_tool_calls, list):
-                normalized_tool_calls: list[dict[str, Any]] = []
-                for tool_call in raw_tool_calls:
-                    normalized = cls._normalize_tool_call(tool_call)
-                    if normalized is not None:
-                        normalized_tool_calls.append(normalized)
-                if normalized_tool_calls:
-                    assistant_message["tool_calls"] = normalized_tool_calls
-            converted.append(assistant_message)
-
-        return converted
+        del cls
+        return _OPENAI_CHAT_TRANSPORT.convert_messages(messages)
 
     @classmethod
     def _normalize_tool_call(cls, tool_call: Any) -> dict[str, Any] | None:
-        if not isinstance(tool_call, dict):
-            return None
-
-        function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
-        name = str(function.get("name") or tool_call.get("name") or "")
-        if not name:
-            return None
-
-        raw_arguments = function.get("arguments", tool_call.get("arguments", "{}"))
-        if isinstance(raw_arguments, dict):
-            arguments = json.dumps(raw_arguments, ensure_ascii=False)
-        else:
-            arguments = str(raw_arguments or "{}")
-
-        normalized_function: dict[str, Any] = {
-            "name": name,
-            "arguments": arguments,
-        }
-
-        # Compatibility point: preserve thought_signature for compatible gateways.
-        if "thought_signature" in function:
-            normalized_function["thought_signature"] = function.get("thought_signature")
-        elif "thought_signature" in tool_call:
-            normalized_function["thought_signature"] = tool_call.get("thought_signature")
-
-        return {
-            "id": str(tool_call.get("id") or tool_call.get("call_id") or ""),
-            "type": "function",
-            "function": normalized_function,
-        }
+        del cls
+        return _OPENAI_CHAT_TRANSPORT.normalize_tool_call(tool_call)
 
     @staticmethod
     def _convert_tools(tools: Iterable[ToolDescriptor]) -> list[dict[str, Any]]:
-        converted: list[dict[str, Any]] = []
-        for tool in tools:
-            parameters = dict(tool.parameters)
-            if "type" not in parameters and "properties" not in parameters:
-                parameters = {
-                    "type": "object",
-                    "properties": parameters,
-                }
-            if tool.required and "required" not in parameters:
-                parameters["required"] = list(tool.required)
-
-            converted.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": parameters,
-                    },
-                }
-            )
-        return converted
+        return _OPENAI_CHAT_TRANSPORT.convert_tools(tools)
 
     def _parse_response(
         self,
@@ -638,108 +486,19 @@ class OpenAICompatibleModel(ModelProvider):
         *,
         stream_callback: StreamDeltaCallback | None,
     ) -> NormalizedResponse:
-        choices = data.get("choices") or []
-        if not choices or not isinstance(choices[0], dict):
-            # Always carry the raw dict so
-            # ``validate_response`` can introspect provider-specific error
-            # shapes (e.g. OpenRouter's HTTP-200-with-error-body).
-            return NormalizedResponse(
-                content="",
-                tool_calls=[],
-                finish_reason="stop",
-                metadata={"raw": data, "model": data.get("model", self.model)},
-            )
-
-        choice = choices[0]
-        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        content = self._normalize_content(message.get("content"))
-
-        tool_calls: list[ToolCall] = []
-        raw_tool_calls = message.get("tool_calls")
-        if isinstance(raw_tool_calls, list):
-            for raw in raw_tool_calls:
-                parsed = self._parse_tool_call(raw)
-                if parsed is not None:
-                    tool_calls.append(parsed)
-
-        if stream_callback and content and not tool_calls:
-            try:
-                stream_callback(content)
-            except Exception:
-                logger.exception("openai-compatible stream callback failed for final content fallback")
-
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        metadata = {
-            "model": data.get("model", self.model),
-            "usage": usage,
-            "token_usage": {
-                "prompt_tokens": usage.get("prompt_tokens", 0),
-                "completion_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
-            # Always retain the raw payload so the engine's post-LLM
-            # validation step can inspect server-side error envelopes.
-            "raw": data,
-        }
-
-        finish_reason = str(choice.get("finish_reason") or "stop")
-        if tool_calls:
-            finish_reason = "tool_calls"
-
-        return NormalizedResponse(
-            content=content,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            metadata=metadata,
+        return self._transport.normalize_response(
+            data,
+            fallback_model=self.model,
+            stream_callback=stream_callback,
         )
 
     @staticmethod
     def _parse_tool_call(raw: Any) -> ToolCall | None:
-        if not isinstance(raw, dict):
-            return None
-
-        call_id = str(raw.get("id") or raw.get("call_id") or "")
-        function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
-        name = str(function.get("name") or raw.get("name") or "")
-        if not call_id or not name:
-            return None
-
-        arguments_raw = function.get("arguments", raw.get("arguments", "{}"))
-        if isinstance(arguments_raw, dict):
-            arguments = arguments_raw
-        else:
-            try:
-                loaded = json.loads(arguments_raw)
-                arguments = loaded if isinstance(loaded, dict) else {}
-            except Exception:
-                arguments = {}
-
-        return ToolCall(id=call_id, name=name, arguments=arguments)
+        return _OPENAI_CHAT_TRANSPORT.parse_tool_call(raw)
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "\n".join(part for part in parts if part)
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-        try:
-            return json.dumps(content, ensure_ascii=False)
-        except TypeError:
-            return str(content)
+        return _OPENAI_CHAT_TRANSPORT.normalize_content(content)
 
 
 def _register_interrupt_listener(
@@ -978,7 +737,8 @@ def _parse_sse_stream(
         if choice is None:
             continue
 
-        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        raw_delta = choice.get("delta")
+        delta: dict[str, Any] = raw_delta if isinstance(raw_delta, dict) else {}
 
         # Visible content delta — push to consumer immediately.
         delta_content = delta.get("content")

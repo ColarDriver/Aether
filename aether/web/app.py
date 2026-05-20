@@ -7,9 +7,23 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from aether.services.config import ConfigService, PrefsService
+from aether.services.diagnostics import DiagnosticsService
 from aether.services.health import HealthService
+from aether.services.providers import ModelSelectionService, ProviderService
+from aether.services.runs import AgentRunService
+from aether.services.sessions import SessionService
+from aether.services.skills import SkillService
+from aether.services.tools import ToolService
 from aether.web.errors import install_error_handlers
+from aether.web.routes.config import router as config_router
+from aether.web.routes.diagnostics import router as diagnostics_router
 from aether.web.routes.health import router as health_router
+from aether.web.routes.providers import router as providers_router
+from aether.web.routes.runs import router as runs_router
+from aether.web.routes.sessions import router as sessions_router
+from aether.web.routes.skills import router as skills_router
+from aether.web.routes.tools import router as tools_router
 from aether.web.security import create_session_token, install_security
 from aether.web.static import mount_spa
 
@@ -17,6 +31,15 @@ from aether.web.static import mount_spa
 @dataclass(slots=True)
 class WebServices:
     health: HealthService
+    sessions: SessionService
+    config: ConfigService
+    prefs: PrefsService
+    providers: ProviderService
+    model_selection: ModelSelectionService
+    tools: ToolService
+    skills: SkillService
+    diagnostics: DiagnosticsService
+    runs: AgentRunService
 
 
 def create_app(
@@ -26,6 +49,15 @@ def create_app(
     bound_host: str | None = None,
     web_dist: str | Path | None = None,
     health_service: HealthService | None = None,
+    session_service: SessionService | None = None,
+    config_service: ConfigService | None = None,
+    prefs_service: PrefsService | None = None,
+    provider_service: ProviderService | None = None,
+    model_selection_service: ModelSelectionService | None = None,
+    tool_service: ToolService | None = None,
+    skill_service: SkillService | None = None,
+    diagnostics_service: DiagnosticsService | None = None,
+    run_service: AgentRunService | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI app.
 
@@ -36,10 +68,22 @@ def create_app(
 
     token = session_token or create_session_token()
     app = FastAPI(title="Aether Web Console", version=_package_version())
+    sessions = session_service or SessionService()
     app.state.aether_session_token = token
     app.state.aether_auth_enabled = bool(auth_enabled)
     app.state.aether_bound_host = bound_host
-    app.state.aether_services = WebServices(health=health_service or HealthService())
+    app.state.aether_services = WebServices(
+        health=health_service or HealthService(),
+        sessions=sessions,
+        config=config_service or ConfigService(),
+        prefs=prefs_service or PrefsService(),
+        providers=provider_service or ProviderService(),
+        model_selection=model_selection_service or ModelSelectionService(),
+        tools=tool_service or ToolService(),
+        skills=skill_service or SkillService(),
+        diagnostics=diagnostics_service or DiagnosticsService(),
+        runs=run_service or AgentRunService(session_service=sessions),
+    )
 
     install_security(
         app,
@@ -50,6 +94,13 @@ def create_app(
     install_error_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(sessions_router)
+    app.include_router(config_router)
+    app.include_router(providers_router)
+    app.include_router(tools_router)
+    app.include_router(skills_router)
+    app.include_router(diagnostics_router)
+    app.include_router(runs_router)
 
     if web_dist is not None:
         mount_spa(app, Path(web_dist), session_token=token)

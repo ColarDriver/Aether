@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import secrets
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -66,6 +66,18 @@ def has_valid_session_token(request: Request, session_token: str) -> bool:
     return hmac.compare_digest(auth.encode(), expected.encode())
 
 
+def websocket_has_valid_session_token(websocket: WebSocket, session_token: str) -> bool:
+    query_token = websocket.query_params.get("token", "")
+    if query_token and hmac.compare_digest(query_token.encode(), session_token.encode()):
+        return True
+    session_header = websocket.headers.get(SESSION_HEADER_NAME, "")
+    if session_header and hmac.compare_digest(session_header.encode(), session_token.encode()):
+        return True
+    auth = websocket.headers.get("authorization", "")
+    expected = f"Bearer {session_token}"
+    return hmac.compare_digest(auth.encode(), expected.encode())
+
+
 def is_accepted_host(host_header: str, bound_host: str) -> bool:
     if not host_header:
         return False
@@ -97,4 +109,5 @@ __all__ = [
     "has_valid_session_token",
     "install_security",
     "is_accepted_host",
+    "websocket_has_valid_session_token",
 ]

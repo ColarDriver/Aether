@@ -26,6 +26,7 @@ from aether.web.routes.skills import router as skills_router
 from aether.web.routes.tools import router as tools_router
 from aether.web.security import create_session_token, install_security
 from aether.web.static import mount_spa
+from aether.web.ws.runs import router as run_ws_router
 
 
 @dataclass(slots=True)
@@ -101,6 +102,7 @@ def create_app(
     app.include_router(skills_router)
     app.include_router(diagnostics_router)
     app.include_router(runs_router)
+    app.include_router(run_ws_router)
 
     if web_dist is not None:
         mount_spa(app, Path(web_dist), session_token=token)

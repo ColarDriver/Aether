@@ -17,6 +17,7 @@ from __future__ import annotations
 from aether.gateway.handlers import (
     agent_methods,
     commands_methods,
+    context_methods,
     plan_methods,
     prefs_methods,
     providers_methods,
@@ -37,6 +38,7 @@ def register_handler_methods() -> None:
     prefs_methods.register()
     providers_methods.register()
     commands_methods.register()
+    context_methods.register()
     plan_methods.register()
     agent_methods.register()
     response_methods.register()
@@ -46,6 +48,7 @@ def register_handler_methods() -> None:
 __all__ = [
     "agent_methods",
     "commands_methods",
+    "context_methods",
     "plan_methods",
     "prefs_methods",
     "providers_methods",

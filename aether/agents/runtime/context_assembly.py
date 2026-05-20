@@ -6,6 +6,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from aether.runtime.context.default_engine import DefaultContextEngine
+from aether.runtime.context.engine import ContextEngine, ContextEngineResult
 from aether.runtime.core.contracts import EngineRequest, TurnContext
 from aether.runtime.core.hooks import EngineHooks, HookOutcome
 from aether.runtime.core.services import EngineServices
@@ -24,7 +26,7 @@ class ContextAssemblyResult:
     canonical_messages: list[dict[str, Any]]
     prepared_messages: list[dict[str, Any]]
     hook_outcome: HookOutcome
-    preflight_compaction: Any | None = None
+    preflight_compaction: ContextEngineResult | None = None
 
 
 class ContextAssemblyAdapter(Protocol):
@@ -210,25 +212,30 @@ class ContextAssemblyPipeline:
         services: EngineServices,
         hooks: EngineHooks,
         adapter: ContextAssemblyAdapter,
+        context_engine: ContextEngine | None = None,
     ) -> None:
         self._services = services
         self._hooks = hooks
         self._adapter = adapter
+        self._context_engine = context_engine or DefaultContextEngine(adapter=adapter)
 
     def assemble(self, assembly: ContextAssemblyInput) -> ContextAssemblyResult:
         messages = assembly.messages
         context = assembly.context
         preflight_compaction = None
+        context_engine_meta = dict(context.metadata.get("context_engine") or {})
+        context_engine_meta["name"] = self._context_engine.name
+        context.metadata["context_engine"] = context_engine_meta
 
         if not context.metadata.get("_preflight_compaction_done"):
             context.metadata["_preflight_compaction_done"] = True
-            preflight_compaction = self._adapter.maybe_compact_messages(
-                messages,
-                context=context,
-                trigger_reason="preflight",
-            )
-            if preflight_compaction is not None:
-                messages = preflight_compaction.compressed_messages
+            if self._context_engine.should_compress_preflight(messages, context=context):
+                preflight_compaction = self._context_engine.compact_preflight(
+                    messages,
+                    context=context,
+                    trigger_reason="preflight",
+                )
+                messages = preflight_compaction.messages
 
         self._adapter.register_skill_nudge(context)
         messages = self._adapter.maybe_inject_skill_nudge(messages, context)
@@ -267,9 +274,9 @@ class ContextAssemblyPipeline:
             outbound_messages,
             context,
         )
-        prepared_messages = self._adapter.apply_collapse_view(
+        prepared_messages = self._context_engine.apply_provider_projection(
             prepared_messages,
-            context,
+            context=context,
         )
         return ContextAssemblyResult(
             canonical_messages=messages,

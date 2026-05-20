@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import unittest
 from typing import Any
 
@@ -25,6 +27,7 @@ from aether.runtime.core.contracts import (
 from aether.runtime.core.hooks import EngineHooks
 from aether.runtime.core.services import EngineServices
 from aether.runtime.recovery.strategies import GenericBackoffStrategy
+from aether.runtime.session.session_state import SessionMode, clear_mode, set_mode
 from aether.tools.base import ToolDescriptor, ToolExecutor
 from aether.tools.registry import ToolRegistry
 
@@ -56,6 +59,52 @@ class _FailTool(ToolExecutor):
     def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
         del call, context
         raise RuntimeError("tool exploded")
+
+
+class _ReadFileTool(ToolExecutor):
+    def __init__(self, *, delay: float = 0.0, fail_path: str | None = None) -> None:
+        self.delay = delay
+        self.fail_path = fail_path
+        self.calls: list[str] = []
+        self._lock = threading.Lock()
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        return ToolDescriptor(name="read_file")
+
+    def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
+        del context
+        path = str(call.arguments.get("path", ""))
+        with self._lock:
+            self.calls.append(path)
+        if self.delay:
+            time.sleep(self.delay)
+        if path == self.fail_path:
+            raise RuntimeError("read failed")
+        return ToolResult(
+            tool_call_id=call.id,
+            name=call.name,
+            content=f"read:{path}",
+        )
+
+
+class _WriteFileTool(ToolExecutor):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @property
+    def descriptor(self) -> ToolDescriptor:
+        return ToolDescriptor(name="write_file")
+
+    def execute(self, call: ToolCall, context: TurnContext) -> ToolResult:
+        del context
+        path = str(call.arguments.get("path", ""))
+        self.calls.append(path)
+        return ToolResult(
+            tool_call_id=call.id,
+            name=call.name,
+            content=f"wrote:{path}",
+        )
 
 
 class _AfterToolMiddleware(EngineMiddleware):
@@ -209,13 +258,20 @@ def _dispatch(
     controller: ToolDispatchController,
     call: ToolCall,
 ) -> tuple[ToolDispatchResult, TurnContext, list[dict[str, Any]]]:
+    return _dispatch_many(controller, [call])
+
+
+def _dispatch_many(
+    controller: ToolDispatchController,
+    calls: list[ToolCall],
+) -> tuple[ToolDispatchResult, TurnContext, list[dict[str, Any]]]:
     messages: list[dict[str, Any]] = [
         {"role": "assistant", "content": "", "tool_calls": []}
     ]
     context = TurnContext(session_id="tools", iteration=1, metadata={})
     result = controller.dispatch(
         ToolDispatchRequest(
-            tool_calls=[call],
+            tool_calls=calls,
             messages=messages,
             context=context,
             request=EngineRequest(session_id="tools"),
@@ -351,6 +407,198 @@ class ToolDispatchControllerTests(unittest.TestCase):
             ToolCall(id="call-1", name="echo", arguments={"value": "x"}),
         )
 
+        self.assertTrue(result.all_tools_cheap)
+
+    def test_safe_read_only_batch_parallelizes(self) -> None:
+        registry = ToolRegistry()
+        tool = _ReadFileTool(delay=0.08)
+        registry.register(tool)
+        adapter = _Adapter()
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+                parallel_tool_max_workers=2,
+            ),
+        )
+
+        started = time.perf_counter()
+        result, context, messages = _dispatch_many(
+            controller,
+            [
+                ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"}),
+                ToolCall(id="call-2", name="read_file", arguments={"path": "b.py"}),
+            ],
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertIsNone(result.exit_reason)
+        self.assertTrue(result.parallel_executed)
+        self.assertEqual(result.dispatched_count, 2)
+        self.assertLess(elapsed, 0.15)
+        self.assertEqual([m["content"] for m in messages if m.get("role") == "tool"], ["read:a.py", "read:b.py"])
+        self.assertEqual(context.metadata["tool_parallel"]["executed"], True)
+        self.assertIsNone(context.metadata["tool_parallel"]["fallback_reason"])
+
+    def test_mixed_safe_unsafe_batch_falls_back_to_sequential(self) -> None:
+        registry = ToolRegistry()
+        read_tool = _ReadFileTool()
+        write_tool = _WriteFileTool()
+        registry.register(read_tool)
+        registry.register(write_tool)
+        adapter = _Adapter()
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+            ),
+        )
+
+        result, context, messages = _dispatch_many(
+            controller,
+            [
+                ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"}),
+                ToolCall(id="call-2", name="write_file", arguments={"path": "b.py"}),
+            ],
+        )
+
+        self.assertFalse(result.parallel_executed)
+        self.assertEqual(result.dispatched_count, 2)
+        self.assertEqual(read_tool.calls, ["a.py"])
+        self.assertEqual(write_tool.calls, ["b.py"])
+        self.assertEqual([m["content"] for m in messages if m.get("role") == "tool"], ["read:a.py", "wrote:b.py"])
+        self.assertEqual(
+            context.metadata["tool_parallel_fallback_reason"],
+            "tool-not-parallel-safe:write_file",
+        )
+
+    def test_plan_mode_blocked_write_does_not_enter_parallel_pool(self) -> None:
+        registry = ToolRegistry()
+        write_tool = _WriteFileTool()
+        registry.register(_ReadFileTool())
+        registry.register(write_tool)
+        adapter = _Adapter()
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+            ),
+        )
+        set_mode("tools", SessionMode.PLAN)
+        try:
+            result, context, messages = _dispatch_many(
+                controller,
+                [
+                    ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"}),
+                    ToolCall(id="call-2", name="write_file", arguments={"path": "b.py"}),
+                ],
+            )
+        finally:
+            clear_mode("tools")
+
+        tool_messages = [m for m in messages if m.get("role") == "tool"]
+        self.assertFalse(result.parallel_executed)
+        self.assertEqual(write_tool.calls, [])
+        self.assertEqual(context.metadata["tool_parallel_executed"], False)
+        self.assertEqual(
+            context.metadata["tool_parallel_fallback_reason"],
+            "tool-not-parallel-safe:write_file",
+        )
+        self.assertTrue(tool_messages[-1]["metadata"]["plan_mode_blocked"])
+
+    def test_parallel_result_order_and_post_hooks_are_original_order(self) -> None:
+        registry = ToolRegistry()
+        registry.register(_ReadFileTool())
+        adapter = _Adapter()
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+                parallel_tool_max_workers=2,
+            ),
+        )
+
+        result, _context, messages = _dispatch_many(
+            controller,
+            [
+                ToolCall(id="call-1", name="read_file", arguments={"path": "slow.py"}),
+                ToolCall(id="call-2", name="read_file", arguments={"path": "fast.py"}),
+            ],
+        )
+
+        self.assertTrue(result.parallel_executed)
+        self.assertEqual(
+            [m["tool_call_id"] for m in messages if m.get("role") == "tool"],
+            ["call-1", "call-2"],
+        )
+        self.assertEqual(
+            [hook["result"].tool_call_id for hook in adapter.post_hooks],
+            ["call-1", "call-2"],
+        )
+        self.assertEqual(adapter.diagnostic_updates, 2)
+
+    def test_parallel_worker_error_still_appends_ordered_tool_results(self) -> None:
+        registry = ToolRegistry()
+        registry.register(_ReadFileTool(fail_path="b.py"))
+        adapter = _Adapter()
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+                parallel_tool_max_workers=2,
+            ),
+        )
+
+        result, context, messages = _dispatch_many(
+            controller,
+            [
+                ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"}),
+                ToolCall(id="call-2", name="read_file", arguments={"path": "b.py"}),
+            ],
+        )
+
+        tool_messages = [m for m in messages if m.get("role") == "tool"]
+        self.assertTrue(result.parallel_executed)
+        self.assertEqual([m["tool_call_id"] for m in tool_messages], ["call-1", "call-2"])
+        self.assertFalse(tool_messages[0]["is_error"])
+        self.assertTrue(tool_messages[1]["is_error"])
+        self.assertEqual(context.metadata["tool_result_errors"], 1)
+        self.assertTrue(tool_messages[1]["metadata"]["parallel_worker_error"])
+
+    def test_parallel_cheap_tool_batch_surfaces_refund_signal(self) -> None:
+        registry = ToolRegistry()
+        registry.register(_ReadFileTool())
+        adapter = _Adapter()
+        adapter.cheap_names.add("read_file")
+        controller = _controller(
+            registry,
+            adapter,
+            config=EngineConfig(
+                use_builtin_tools=False,
+                parallel_tool_execution_enabled=True,
+                parallel_tool_max_workers=2,
+            ),
+        )
+
+        result, _context, _messages = _dispatch_many(
+            controller,
+            [
+                ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"}),
+                ToolCall(id="call-2", name="read_file", arguments={"path": "b.py"}),
+            ],
+        )
+
+        self.assertTrue(result.parallel_executed)
         self.assertTrue(result.all_tools_cheap)
 
 

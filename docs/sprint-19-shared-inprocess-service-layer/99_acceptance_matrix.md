@@ -95,3 +95,45 @@
 Sprint 19 should not end with a new public Web server or a second service layer.
 It should end with a clean in-process service boundary, gateway adapters over
 that boundary, and compatibility evidence proving the TUI did not regress.
+
+## Implementation Evidence
+
+Automated checks run on `shared-inprocess-service-layer`:
+
+- `python -m pytest aether/tests/services` - 39 passed.
+- `python -m pytest aether/tests/gateway` - 241 passed.
+- `python -m pytest aether/tests/cli` - 33 passed.
+- `python -m pytest aether/tests/agents` - 138 passed.
+- `python -m pytest aether/tests/tools` - 341 passed.
+- `uv run pyright aether/services aether/gateway/handlers aether/cli` -
+  0 errors, 0 warnings.
+
+Implemented service packages:
+
+- `aether/services/common`
+- `aether/services/sessions`
+- `aether/services/config`
+- `aether/services/providers`
+- `aether/services/tools`
+- `aether/services/skills`
+- `aether/services/diagnostics`
+- `aether/services/health`
+- `aether/services/runs`
+
+Gateway adapter status:
+
+- `prefs_methods.py` uses `PrefsService`.
+- `session_methods.py` uses `SessionService`.
+- `providers_methods.py` uses `ProviderService` and `AuthService`.
+- `tools_methods.py` uses `ToolService`.
+- `agent_methods.py` uses `AgentRunService`.
+- Gateway protocol serialization and prompter bridges remain in gateway.
+- `commands_methods.py` remains catalog-only.
+
+Intentional follow-ups:
+
+- Production HTTP/WebSocket/SSE adapters are still future work.
+- Pure session persistence still lives under `aether.cli.sessions`; services
+  wrap it as the current source of truth.
+- Gateway compatibility builder hooks remain in `agent_methods.py` for existing
+  tests, but run lifecycle ownership is in `AgentRunService`.

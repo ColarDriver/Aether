@@ -66,6 +66,12 @@ class InterruptSignal:
         with self._lock:
             self._listeners = [existing for existing in self._listeners if existing is not listener]
 
+    def reset(self) -> None:
+        """Clear the aborted state so the signal can be reused for the next run."""
+        with self._lock:
+            self._event.clear()
+            self._reason = None
+
     def close(self) -> None:
         if self._parent is not None and self._parent_listener is not None:
             self._parent.remove_listener(self._parent_listener)

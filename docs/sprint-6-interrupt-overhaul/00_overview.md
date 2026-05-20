@@ -105,6 +105,7 @@ graph TD
     PR65[PR 6.5 Polish 双击 / refresh / interrupt_behavior 声明]
     PR66[PR 6.6 Subagent 共享父 InterruptSignal]
     PR67[PR 6.7 HTTP / WebFetch 事件驱动取消]
+    PR68[PR 6.8 Provider HTTP 中断 + 引擎短路 + UI 去重<br/>已完成]
 
     PR61 -.compat layer.-> PR63
     PR62 -.compat layer.-> PR63
@@ -112,6 +113,8 @@ graph TD
     PR63 --> PR65
     PR63 --> PR66
     PR63 --> PR67
+    PR63 --> PR68
+    PR67 -.extends.-> PR68
     PR66 -.test depends on.-> PR64
 ```
 
@@ -123,8 +126,9 @@ graph TD
 - **PR 6.5 polish**：双击 toast / `/refresh` / `interrupt_behavior` 声明。可以跟 6.4 并行。
 - **PR 6.6 subagent**：sync subagent 复用父 signal，零代码传播。依赖 6.3 的 signal 基建。
 - **PR 6.7 HTTP**：WebFetch / HTTP-based MCP / WS 用 signal listener 关 client。依赖 6.3。
+- **PR 6.8 Provider + Engine**：LLM provider 级 HTTP 中断 listener + 引擎异常处理中断短路 + shell listener 非阻塞修复 + InterruptSignal.reset() + UI 去重。依赖 6.3，扩展 6.7 的思路到 provider 层。**已完成**。
 
-合并顺序建议：**6.3 先 → 然后 6.4 / 6.5 / 6.6 / 6.7 任意并行**。
+合并顺序建议：**6.3 先 → 然后 6.4 / 6.5 / 6.6 / 6.7 / 6.8 任意并行**。
 
 ## 公共接口变更总览
 

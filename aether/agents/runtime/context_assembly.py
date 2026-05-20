@@ -6,8 +6,13 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from aether.runtime.context.compression_lifecycle import (
+    CompressionLifecycleService,
+    CompressionRequest,
+    CompressionResult,
+)
 from aether.runtime.context.default_engine import DefaultContextEngine
-from aether.runtime.context.engine import ContextEngine, ContextEngineResult
+from aether.runtime.context.engine import ContextEngine
 from aether.runtime.core.contracts import EngineRequest, TurnContext
 from aether.runtime.core.hooks import EngineHooks, HookOutcome
 from aether.runtime.core.services import EngineServices
@@ -26,7 +31,7 @@ class ContextAssemblyResult:
     canonical_messages: list[dict[str, Any]]
     prepared_messages: list[dict[str, Any]]
     hook_outcome: HookOutcome
-    preflight_compaction: ContextEngineResult | None = None
+    preflight_compaction: CompressionResult | None = None
 
 
 class ContextAssemblyAdapter(Protocol):
@@ -213,11 +218,15 @@ class ContextAssemblyPipeline:
         hooks: EngineHooks,
         adapter: ContextAssemblyAdapter,
         context_engine: ContextEngine | None = None,
+        compression_lifecycle: CompressionLifecycleService | None = None,
     ) -> None:
         self._services = services
         self._hooks = hooks
         self._adapter = adapter
         self._context_engine = context_engine or DefaultContextEngine(adapter=adapter)
+        self._compression_lifecycle = compression_lifecycle or CompressionLifecycleService(
+            context_engine=self._context_engine,
+        )
 
     def assemble(self, assembly: ContextAssemblyInput) -> ContextAssemblyResult:
         messages = assembly.messages
@@ -229,13 +238,14 @@ class ContextAssemblyPipeline:
 
         if not context.metadata.get("_preflight_compaction_done"):
             context.metadata["_preflight_compaction_done"] = True
-            if self._context_engine.should_compress_preflight(messages, context=context):
-                preflight_compaction = self._context_engine.compact_preflight(
+            preflight_compaction = self._compression_lifecycle.compress(
+                CompressionRequest(
                     messages,
                     context=context,
                     trigger_reason="preflight",
                 )
-                messages = preflight_compaction.messages
+            )
+            messages = preflight_compaction.messages
 
         self._adapter.register_skill_nudge(context)
         messages = self._adapter.maybe_inject_skill_nudge(messages, context)

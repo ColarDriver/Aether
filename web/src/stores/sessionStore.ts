@@ -13,7 +13,9 @@ type SessionState = {
   isLoading: boolean
   error: string | null
   loadSessions: () => Promise<void>
-  createSession: (input: CreateSessionInput) => Promise<void>
+  createSession: (input: CreateSessionInput) => Promise<SessionInfo>
+  resumeSession: (sessionId: string) => Promise<SessionInfo>
+  updateSession: (sessionId: string, updates: Partial<Pick<SessionInfo, 'provider' | 'model' | 'base_url' | 'system_prompt'>>) => Promise<SessionInfo>
   setActiveSession: (sessionId: string | null) => void
   setSessionMode: (sessionId: string, mode: 'agent' | 'plan') => void
 }
@@ -43,6 +45,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: created.session_id,
     }))
     void get().loadSessions()
+    return created
+  },
+  resumeSession: async (sessionId) => {
+    const resumed = await api.resumeSession(sessionId)
+    const info = resumed.info
+    set((state) => ({
+      sessions: [info, ...state.sessions.filter((session) => session.session_id !== info.session_id)],
+      activeSessionId: info.session_id,
+    }))
+    void get().loadSessions()
+    return info
+  },
+  updateSession: async (sessionId, updates) => {
+    const updated = await api.updateSession(sessionId, {
+      provider: updates.provider,
+      model: updates.model,
+      base_url: updates.base_url,
+      system_prompt: updates.system_prompt,
+      update_base_url: Object.prototype.hasOwnProperty.call(updates, 'base_url'),
+      update_system_prompt: Object.prototype.hasOwnProperty.call(updates, 'system_prompt'),
+    })
+    set((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.session_id === updated.session_id ? updated : session
+      )),
+      activeSessionId: state.activeSessionId === sessionId ? updated.session_id : state.activeSessionId,
+    }))
+    return updated
   },
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
   setSessionMode: (sessionId, mode) => set((state) => ({

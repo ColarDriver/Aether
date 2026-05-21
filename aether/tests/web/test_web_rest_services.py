@@ -73,6 +73,14 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
     assert detail.json()["session_id"] == "web_ses"
     assert detail.json()["info"]["session_id"] == "web_ses"
 
+    updated = client.patch(
+        "/api/sessions/web_ses",
+        json={"model": "gpt-5.4-mini", "system_prompt": "Be concise", "update_system_prompt": True},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["model"] == "gpt-5.4-mini"
+    assert updated.json()["system_prompt"] == "Be concise"
+
     search = client.get("/api/sessions/search?q=web")
     assert search.status_code == 200
     assert search.json()["sessions"][0]["session_id"] == "web_ses"

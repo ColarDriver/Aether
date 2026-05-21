@@ -10,6 +10,7 @@ from aether.services.sessions import (
     SessionCreateRequest,
     SessionDeleteRequest,
     SessionResumeRequest,
+    SessionUpdateRequest,
 )
 from aether.web.serializers import to_jsonable
 
@@ -22,6 +23,15 @@ class SessionCreateBody(BaseModel):
     base_url: str | None = None
     system_prompt: str | None = None
     session_id: str | None = None
+
+
+class SessionUpdateBody(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    system_prompt: str | None = None
+    update_base_url: bool = False
+    update_system_prompt: bool = False
 
 
 @router.get("/api/sessions")
@@ -63,6 +73,24 @@ async def search_sessions(request: Request, q: str = "", limit: int | None = 50)
 async def session_detail(request: Request, session_id: str) -> dict[str, object]:
     services = request.app.state.aether_services
     return to_jsonable(services.sessions.detail(session_id))
+
+
+@router.patch("/api/sessions/{session_id}")
+async def update_session(request: Request, session_id: str, body: SessionUpdateBody) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.sessions.update(
+            SessionUpdateRequest(
+                session_id=session_id,
+                provider=body.provider,
+                model=body.model,
+                base_url=body.base_url,
+                system_prompt=body.system_prompt,
+                update_base_url=body.update_base_url,
+                update_system_prompt=body.update_system_prompt,
+            )
+        )
+    )
 
 
 @router.post("/api/sessions/{session_id}/resume")

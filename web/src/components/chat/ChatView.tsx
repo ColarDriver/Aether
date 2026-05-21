@@ -1,6 +1,7 @@
 import { ArrowDown, Bot } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionInfo } from '../../api/types'
+import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { EmptyState } from '../shared/EmptyState'
@@ -29,6 +30,10 @@ export function ChatView({ session }: Props) {
   const pendingApproval = useChatStore((state) => state.pendingApproval)
   const respondPermission = useChatStore((state) => state.respondPermission)
   const respondApproval = useChatStore((state) => state.respondApproval)
+  const setActiveView = useAppStore((state) => state.setActiveView)
+  const createSession = useSessionStore((state) => state.createSession)
+  const resumeSession = useSessionStore((state) => state.resumeSession)
+  const updateSession = useSessionStore((state) => state.updateSession)
   const setSessionMode = useSessionStore((state) => state.setSessionMode)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -92,7 +97,14 @@ export function ChatView({ session }: Props) {
   const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
 
   const handleSlashCommand = (command: string) => {
-    void executeWebSlashCommand(command, { session, onSessionMode: setSessionMode })
+    void executeWebSlashCommand(command, {
+      session,
+      createSession,
+      resumeSession,
+      updateSession,
+      openView: setActiveView,
+      onSessionMode: setSessionMode,
+    })
       .then((result) => {
         if (result.type === 'notice') {
           appendLocalNotice(session.session_id, result.message)

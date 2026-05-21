@@ -1,5 +1,5 @@
 import { api } from '../../api/client'
-import type { CommandCatalog, PlanCurrent, SessionInfo, SlashCommandInfo, ToolGroup } from '../../api/types'
+import type { CommandCatalog, ConsoleView, PlanCurrent, SessionInfo, SlashCommandInfo, ToolGroup } from '../../api/types'
 
 export type ParsedSlashCommand = {
   name: string
@@ -20,6 +20,13 @@ type SlashExecutionContext = {
   loadPlanCurrent?: (sessionId: string) => Promise<PlanCurrent>
   setPlanMode?: (sessionId: string, mode: 'agent' | 'plan') => Promise<PlanCurrent>
   onSessionMode?: (sessionId: string, mode: 'agent' | 'plan') => void
+  openView?: (view: ConsoleView) => void
+  createSession?: (input: { provider: string; model: string }) => Promise<SessionInfo>
+  resumeSession?: (sessionId: string) => Promise<SessionInfo>
+  updateSession?: (
+    sessionId: string,
+    updates: Partial<Pick<SessionInfo, 'provider' | 'model' | 'base_url' | 'system_prompt'>>
+  ) => Promise<SessionInfo>
 }
 
 export function isSlashCommandInput(value: string): boolean {
@@ -47,14 +54,22 @@ export async function executeWebSlashCommand(
   switch (parsed.name) {
     case 'help':
       return { type: 'notice', message: formatHelp(await loadCommandCatalog(context)) }
+    case 'new':
+      return executeNewCommand(context)
     case 'session':
       return { type: 'notice', message: formatSession(context.session) }
     case 'sessions':
+      context.openView?.('sessions')
       return { type: 'notice', message: formatSessions((await loadSessions(context)).sessions) }
+    case 'resume':
+      return executeResumeCommand(parsed.arg, context)
+    case 'system':
+      return executeSystemCommand(parsed.arg, context)
     case 'tools':
+      context.openView?.('tools')
       return { type: 'notice', message: formatTools((await loadToolGroups(context)).groups) }
     case 'model':
-      return { type: 'notice', message: formatModel(context.session) }
+      return executeModelCommand(parsed.arg, context)
     case 'plan':
       return executePlanCommand(parsed.arg, context)
     default: {
@@ -91,6 +106,77 @@ async function setPlanMode(context: SlashExecutionContext, mode: 'agent' | 'plan
   const result = await (context.setPlanMode ?? api.setPlanMode)(context.session.session_id, mode)
   context.onSessionMode?.(context.session.session_id, result.mode)
   return result
+}
+
+async function executeNewCommand(context: SlashExecutionContext): Promise<WebSlashResult> {
+  if (!context.createSession) {
+    return { type: 'error', message: '/new is not available in this web context.' }
+  }
+  const created = await context.createSession({
+    provider: context.session.provider,
+    model: context.session.model,
+  })
+  context.openView?.('chat')
+  return {
+    type: 'notice',
+    message: 'Created session `' + created.session_id + '` with `' + created.provider + '/' + created.model + '`.',
+  }
+}
+
+async function executeResumeCommand(arg: string, context: SlashExecutionContext): Promise<WebSlashResult> {
+  const target = arg.trim()
+  if (!target) {
+    context.openView?.('sessions')
+    return {
+      type: 'notice',
+      message: 'Opened Sessions. Use `/resume <id-or-prefix>` to resume directly from chat.',
+    }
+  }
+  if (!context.resumeSession) {
+    return { type: 'error', message: '/resume is not available in this web context.' }
+  }
+  const resumed = await context.resumeSession(target)
+  context.openView?.('chat')
+  return {
+    type: 'notice',
+    message: 'Resumed session `' + resumed.session_id + '`.',
+  }
+}
+
+async function executeSystemCommand(arg: string, context: SlashExecutionContext): Promise<WebSlashResult> {
+  const nextPrompt = arg.trim()
+  if (!nextPrompt) {
+    return {
+      type: 'notice',
+      message: context.session.system_prompt?.trim()
+        ? '# System prompt\n\n' + context.session.system_prompt
+        : 'No system prompt is configured for this session.',
+    }
+  }
+  if (!context.updateSession) {
+    return { type: 'error', message: '/system is not available in this web context.' }
+  }
+  const updated = await context.updateSession(context.session.session_id, { system_prompt: nextPrompt })
+  return {
+    type: 'notice',
+    message: 'Updated system prompt for session `' + updated.session_id + '`.',
+  }
+}
+
+async function executeModelCommand(arg: string, context: SlashExecutionContext): Promise<WebSlashResult> {
+  const target = arg.trim()
+  if (!target) {
+    context.openView?.('models')
+    return { type: 'notice', message: formatModel(context.session) }
+  }
+  if (!context.updateSession) {
+    return { type: 'error', message: '/model is not available in this web context.' }
+  }
+  const updated = await context.updateSession(context.session.session_id, { model: target })
+  return {
+    type: 'notice',
+    message: 'Model set to `' + cell(updated.model) + '` for session `' + updated.session_id + '`.',
+  }
 }
 
 async function executePlanCommand(arg: string, context: SlashExecutionContext): Promise<WebSlashResult> {

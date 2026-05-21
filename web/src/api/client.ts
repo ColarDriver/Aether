@@ -133,6 +133,8 @@ export const api = {
   sessions: () => request<{ sessions: SessionInfo[] }>('GET', '/api/sessions'),
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),
+  updateSession: (sessionId: string, body: { provider?: string | null; model?: string | null; base_url?: string | null; system_prompt?: string | null; update_base_url?: boolean; update_system_prompt?: boolean }) =>
+    request<SessionInfo>('PATCH', '/api/sessions/' + encodeURIComponent(sessionId), body),
   searchSessions: (query: string, limit = 50) =>
     request<{ sessions: SessionInfo[] }>('GET', '/api/sessions/search?q=' + encodeURIComponent(query) + '&limit=' + encodeURIComponent(String(limit))),
   sessionDetail: (sessionId: string) =>

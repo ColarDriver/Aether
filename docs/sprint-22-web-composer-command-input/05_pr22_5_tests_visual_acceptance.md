@@ -56,6 +56,7 @@ Implemented on branch `web-console-migration`:
   - `web/src/stores/chatStore.ts`
   - `web/src/components/chat/blocks/SystemNoticeBlock.tsx`
   - `aether/web/routes/plan.py`
+  - `aether/web/routes/sessions.py`
   - `web/src/stores/sessionStore.ts`
 - PR22.4 composer attachments and run payload persistence:
   - `web/src/components/chat/Composer.tsx`
@@ -71,7 +72,7 @@ Implemented on branch `web-console-migration`:
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (39 files / 104 tests after workspace reference and plan slash coverage)
+- `cd web && npm test` (40 files / 107 tests after session/model slash coverage)
 - `cd web && npm run build`
 - `python -m pytest aether/tests/web/test_web_run_ws.py aether/tests/services/test_agent_run_service.py` (10 passed)
 - `python -m pytest aether/tests/web/test_web_rest_services.py` (plan route coverage)

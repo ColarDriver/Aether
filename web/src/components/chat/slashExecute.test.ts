@@ -38,9 +38,12 @@ describe('slashExecute', () => {
   it('loads sessions and tools for catalog commands', async () => {
     const sessions = vi.fn().mockResolvedValue({ sessions: [session] })
     const tools = vi.fn().mockResolvedValue({ groups: [{ name: 'filesystem', tools: [{ name: 'read_file' }] }] })
+    const openView = vi.fn()
 
-    expect((await executeWebSlashCommand('/sessions', { session, commands, loadSessions: sessions })).message).toContain('session-')
-    expect((await executeWebSlashCommand('/tools', { session, commands, loadToolGroups: tools })).message).toContain('filesystem')
+    expect((await executeWebSlashCommand('/sessions', { session, commands, loadSessions: sessions, openView })).message).toContain('session-')
+    expect((await executeWebSlashCommand('/tools', { session, commands, loadToolGroups: tools, openView })).message).toContain('filesystem')
+    expect(openView).toHaveBeenCalledWith('sessions')
+    expect(openView).toHaveBeenCalledWith('tools')
   })
 
   it('returns clear errors for unsupported or unknown commands', async () => {
@@ -95,5 +98,34 @@ describe('slashExecute', () => {
     expect(result.type).toBe('notice')
     expect(result.message).toContain('# Plan')
     expect(result.message).toContain('Inspect')
+  })
+
+  it('creates and resumes sessions through web callbacks', async () => {
+    const createSession = vi.fn().mockResolvedValue({ ...session, session_id: 'new-session' })
+    const resumeSession = vi.fn().mockResolvedValue({ ...session, session_id: 'old-session' })
+    const openView = vi.fn()
+
+    expect((await executeWebSlashCommand('/new', { session, commands, createSession, openView })).message).toContain('new-session')
+    expect(createSession).toHaveBeenCalledWith({ provider: 'openai', model: 'gpt-5.4' })
+
+    expect((await executeWebSlashCommand('/resume old', { session, commands, resumeSession, openView })).message).toContain('old-session')
+    expect(resumeSession).toHaveBeenCalledWith('old')
+    expect(openView).toHaveBeenCalledWith('chat')
+  })
+
+  it('opens sessions for bare resume and updates model and system prompt', async () => {
+    const openView = vi.fn()
+    const updateSession = vi.fn()
+      .mockResolvedValueOnce({ ...session, model: 'gpt-5.4-mini' })
+      .mockResolvedValueOnce({ ...session, system_prompt: 'Be concise' })
+
+    expect((await executeWebSlashCommand('/resume', { session, commands, openView })).message).toContain('Opened Sessions')
+    expect(openView).toHaveBeenCalledWith('sessions')
+
+    expect((await executeWebSlashCommand('/model gpt-5.4-mini', { session, commands, updateSession })).message).toContain('gpt-5.4-mini')
+    expect(updateSession).toHaveBeenCalledWith(session.session_id, { model: 'gpt-5.4-mini' })
+
+    expect((await executeWebSlashCommand('/system Be concise', { session, commands, updateSession })).message).toContain('Updated system prompt')
+    expect(updateSession).toHaveBeenCalledWith(session.session_id, { system_prompt: 'Be concise' })
   })
 })

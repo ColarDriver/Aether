@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../stores/chatStore'
+import { MarkdownRenderer } from './MarkdownRenderer'
 
 type Props = {
   messages: ChatMessage[]
@@ -16,7 +17,11 @@ export function MessageList({ messages }: Props) {
           className={`message message-${message.role}${message.isError ? ' message-error' : ''}`}
         >
           <div className="message-role">{message.role}</div>
-          <pre>{message.text}</pre>
+          {message.role === 'assistant' || message.role === 'system' ? (
+            <MarkdownRenderer text={message.text} />
+          ) : (
+            <pre>{message.text}</pre>
+          )}
           {message.isStreaming ? <span className="streaming-caret" /> : null}
         </article>
       ))}

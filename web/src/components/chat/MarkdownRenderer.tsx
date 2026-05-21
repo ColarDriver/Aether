@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react'
+
 type Props = {
   text: string
 }
 
 export function MarkdownRenderer({ text }: Props) {
-  const blocks = text.split(/\n{2,}/)
+  const blocks = splitMarkdownBlocks(text)
   return (
     <div className="markdown-renderer">
       {blocks.map((block, index) => renderBlock(block, index))}
@@ -12,25 +14,154 @@ export function MarkdownRenderer({ text }: Props) {
 }
 
 function renderBlock(block: string, index: number) {
-  if (block.startsWith('### ')) return <h3 key={index}>{block.slice(4)}</h3>
-  if (block.startsWith('## ')) return <h2 key={index}>{block.slice(3)}</h2>
-  if (block.startsWith('# ')) return <h1 key={index}>{block.slice(2)}</h1>
+  if (block.startsWith('### ')) return <h3 key={index}>{renderInline(block.slice(4))}</h3>
+  if (block.startsWith('## ')) return <h2 key={index}>{renderInline(block.slice(3))}</h2>
+  if (block.startsWith('# ')) return <h1 key={index}>{renderInline(block.slice(2))}</h1>
   const fence = String.fromCharCode(96, 96, 96)
   if (block.startsWith(fence)) {
-    let code = block.slice(fence.length)
-    const newline = code.indexOf('\n')
-    code = newline >= 0 ? code.slice(newline + 1) : code
-    if (code.endsWith(fence)) code = code.slice(0, -fence.length)
-    return <pre className="markdown-code" key={index}>{code.trimEnd()}</pre>
+    const { language, code } = parseFence(block)
+    return (
+      <div className="markdown-code-wrap" key={index}>
+        {language ? <div className="markdown-code-header">{language}</div> : null}
+        <pre className="markdown-code"><code>{highlightCode(code, language)}</code></pre>
+      </div>
+    )
+  }
+  if (isMarkdownTable(block)) {
+    return <MarkdownTable block={block} key={index} />
   }
   if (block.includes('\n- ') || block.startsWith('- ')) {
     return (
       <ul key={index}>
         {block.split('\n').filter((line) => line.startsWith('- ')).map((line) => (
-          <li key={line}>{line.slice(2)}</li>
+          <li key={line}>{renderInline(line.slice(2))}</li>
         ))}
       </ul>
     )
   }
-  return <p key={index}>{block}</p>
+  if (/^\d+\. /.test(block)) {
+    return (
+      <ol key={index}>
+        {block.split('\n').filter((line) => /^\d+\. /.test(line)).map((line) => (
+          <li key={line}>{renderInline(line.replace(/^\d+\. /, ''))}</li>
+        ))}
+      </ol>
+    )
+  }
+  return <p key={index}>{renderInline(block)}</p>
+}
+
+function splitMarkdownBlocks(text: string): string[] {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const blocks: string[] = []
+  let current: string[] = []
+  let inFence = false
+  const fence = String.fromCharCode(96, 96, 96)
+
+  for (const line of lines) {
+    if (line.startsWith(fence)) {
+      current.push(line)
+      inFence = !inFence
+      if (!inFence) {
+        blocks.push(current.join('\n'))
+        current = []
+      }
+      continue
+    }
+    if (!inFence && line.trim() === '') {
+      if (current.length > 0) {
+        blocks.push(current.join('\n'))
+        current = []
+      }
+      continue
+    }
+    current.push(line)
+  }
+
+  if (current.length > 0) blocks.push(current.join('\n'))
+  return blocks
+}
+
+function parseFence(block: string): { language: string; code: string } {
+  const fence = String.fromCharCode(96, 96, 96)
+  const lines = block.split('\n')
+  const language = lines[0]?.slice(fence.length).trim() ?? ''
+  const codeLines = lines.slice(1)
+  if (codeLines[codeLines.length - 1]?.startsWith(fence)) codeLines.pop()
+  return { language, code: codeLines.join('\n').trimEnd() }
+}
+
+function isMarkdownTable(block: string): boolean {
+  const lines = block.split('\n').map((line) => line.trim())
+  return lines.length >= 2 && lines[0].startsWith('|') && /^\|?[\s:-]+\|[\s|:-]+$/.test(lines[1])
+}
+
+function MarkdownTable({ block }: { block: string }) {
+  const lines = block.split('\n').map((line) => splitTableRow(line))
+  const [headers, , ...rows] = lines
+  return (
+    <div className="markdown-table-wrap">
+      <table className="markdown-table">
+        <thead>
+          <tr>{headers.map((cell) => <th key={cell}>{renderInline(cell)}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function splitTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+}
+
+function renderInline(text: string): ReactNode[] {
+  const parts: ReactNode[] = []
+  const tick = String.fromCharCode(96)
+  const pattern = new RegExp('(' + tick + '[^' + tick + ']+' + tick + '|\\*\\*[^*]+\\*\\*)', 'g')
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index))
+    const value = match[0]
+    if (value.startsWith(tick)) {
+      parts.push(<code className="markdown-inline-code" key={parts.length}>{value.slice(1, -1)}</code>)
+    } else {
+      parts.push(<strong key={parts.length}>{value.slice(2, -2)}</strong>)
+    }
+    lastIndex = match.index + value.length
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex))
+  return parts
+}
+
+function highlightCode(code: string, language: string): ReactNode {
+  if (!['json', 'jsonc', 'js', 'javascript', 'ts', 'typescript'].includes(language.toLowerCase())) {
+    return code
+  }
+  const pattern = /("(?:\\.|[^"\\])*"|\btrue\b|\bfalse\b|\bnull\b|-?\b\d+(?:\.\d+)?\b)/g
+  const parts: ReactNode[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(code)) !== null) {
+    if (match.index > lastIndex) parts.push(code.slice(lastIndex, match.index))
+    const value = match[0]
+    const tokenClass = value.startsWith('"')
+      ? 'syntax-string'
+      : value === 'true' || value === 'false'
+        ? 'syntax-boolean'
+        : value === 'null'
+          ? 'syntax-null'
+          : 'syntax-number'
+    parts.push(<span className={tokenClass} key={parts.length}>{value}</span>)
+    lastIndex = match.index + value.length
+  }
+  if (lastIndex < code.length) parts.push(code.slice(lastIndex))
+  return parts
 }

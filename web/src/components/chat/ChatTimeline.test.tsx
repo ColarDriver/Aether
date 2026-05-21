@@ -54,6 +54,78 @@ describe('ChatTimeline', () => {
     expect(onApproval).toHaveBeenCalledWith({ confirmed: true })
   })
 
+  it('renders a full web chat turn across every primary block family', () => {
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'u-full', kind: 'user_message', content: 'Implement auth', attachments: [{ type: 'text', name: 'requirements.md', path: 'docs/requirements.md' }] },
+      { ...base, id: 'sys-full', kind: 'system_notice', content: '# Mode changed\n\nPlan mode enabled.' },
+      { ...base, id: 'status-full', kind: 'streaming_status', state: 'responding', detail: 'Drafting implementation', tokens: { output_tokens: 42 } },
+      { ...base, id: 'think-full', kind: 'thinking', content: 'Map routes and storage', isActive: true },
+      { ...base, id: 'assistant-full', kind: 'assistant_message', content: 'I will inspect the auth flow.' },
+      { ...base, id: 'tool-full', kind: 'tool_call', toolCallId: 'call-auth', toolName: 'read_file', arguments: { path: 'src/auth.ts' }, status: 'finished' },
+      { ...base, id: 'result-full', kind: 'tool_result', toolCallId: 'call-auth', toolName: 'read_file', content: 'auth module contents', isError: false, metadata: {} },
+      { ...base, id: 'diff-full', kind: 'diff', origin: 'transcript', path: 'src/auth.ts', diff: '@@ -1,1 +1,1 @@\n-old auth\n+new auth' },
+      {
+        ...base,
+        id: 'perm-full',
+        kind: 'permission_request',
+        promptId: 'perm-auth',
+        toolName: 'write_file',
+        arguments: { path: 'src/auth.ts' },
+        preview: { title: 'Modify auth file', subtitle: 'src/auth.ts' },
+        state: 'pending',
+      },
+      {
+        ...base,
+        id: 'approval-full',
+        kind: 'approval_request',
+        promptId: 'approval-auth',
+        approvalKind: 'plan',
+        planText: '# Plan\n\n1. Add auth middleware.',
+        planPath: '/tmp/aether/plans/auth.md',
+        questions: [],
+        state: 'pending',
+      },
+      {
+        ...base,
+        id: 'ask-full',
+        kind: 'ask_user_question',
+        promptId: 'ask-auth',
+        state: 'answered',
+        questions: [
+          {
+            id: 'strategy',
+            header: 'Auth strategy',
+            question: 'Which strategy should Aether use?',
+            options: [{ label: 'Session cookie', description: 'Server-side state' }],
+          },
+        ],
+        answers: { strategy: 'Session cookie' },
+      },
+      { ...base, id: 'task-full', kind: 'task_notification', taskId: 'task-auth', subagentType: 'explorer', status: 'completed', summary: 'Auth files mapped' },
+      { ...base, id: 'error-full', kind: 'error', code: 'preview_warning', message: 'Preview failed but run continued.' },
+    ]
+
+    render(<ChatTimeline blocks={blocks} />)
+
+    expect(screen.getByText('Implement auth')).toBeTruthy()
+    expect(screen.getByText('requirements.md')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Mode changed' })).toBeTruthy()
+    expect(screen.getByText('Responding')).toBeTruthy()
+    expect(screen.getByText('Drafting implementation')).toBeTruthy()
+    expect(screen.getByText('I will inspect the auth flow.')).toBeTruthy()
+    expect(screen.getByText('read_file')).toBeTruthy()
+    expect(screen.getByText('auth module contents')).toBeTruthy()
+    expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThanOrEqual(2)
+    expect(document.querySelector('.diff-line-remove')?.textContent).toContain('old auth')
+    expect(document.querySelector('.diff-line-add')?.textContent).toContain('new auth')
+    expect(screen.getByText('Modify auth file')).toBeTruthy()
+    expect(screen.getByText('Plan approval')).toBeTruthy()
+    expect(screen.getByText('Which strategy should Aether use?')).toBeTruthy()
+    expect(screen.getAllByText('Session cookie')).toHaveLength(2)
+    expect(screen.getByText('Subagent completed')).toBeTruthy()
+    expect(screen.getByText('Preview failed but run continued.')).toBeTruthy()
+  })
+
   it('groups multiple consecutive tool calls behind an activity summary', () => {
     const blocks: ChatBlock[] = [
       { ...base, id: 'tc1', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: { path: 'README.md' }, status: 'finished' },

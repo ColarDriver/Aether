@@ -1,5 +1,5 @@
 import { Activity, BarChart3, BookOpen, Boxes, Brain, CircleAlert, FileText, Folder, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useAppearanceStore } from "./stores/appearanceStore"
 import { useProviderStore } from './stores/providerStore'
@@ -28,6 +28,7 @@ export function App() {
   const { sessions, activeSessionId, isLoading: sessionsLoading, createSession, setActiveSession } = useSessionStore()
   const { current, providers, loadProviders } = useProviderStore()
   const bootstrapAppearance = useAppearanceStore((state) => state.bootstrap)
+  const [workspaceRailOpen, setWorkspaceRailOpen] = useState(true)
 
   useEffect(() => {
     void bootstrapAppearance()
@@ -55,9 +56,9 @@ export function App() {
           void createSession({ provider, model })
         }}
       />
-      <main className="workspace">
+      <main className={activeView === 'chat' ? 'workspace workspace-chat' : 'workspace'}>
         <TopBar
-          title={viewTitle(activeView)}
+          title={activeView === 'chat' ? activeSession?.summary || 'Chat' : viewTitle(activeView)}
           status={status?.ok ? 'online' : 'offline'}
           provider={current?.provider_name}
           model={current?.model}
@@ -71,9 +72,22 @@ export function App() {
             </div>
           ) : null}
           {activeView === 'chat' ? (
-            <div className="chat-workbench">
+            <div className={workspaceRailOpen ? 'chat-workbench' : 'chat-workbench chat-workbench-rail-closed'}>
               <ChatView session={activeSession} />
-              <WorkspaceRail onOpenWorkspace={() => setActiveView('workspace')} />
+              {workspaceRailOpen ? (
+                <WorkspaceRail
+                  onClose={() => setWorkspaceRailOpen(false)}
+                  onOpenWorkspace={() => setActiveView('workspace')}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="workspace-rail-edge"
+                  onClick={() => setWorkspaceRailOpen(true)}
+                >
+                  Files
+                </button>
+              )}
             </div>
           ) : null}
           {activeView === 'models' ? <ProviderSettings /> : null}
@@ -88,12 +102,14 @@ export function App() {
           {activeView === 'environment' ? <EnvironmentView /> : null}
           {activeView === 'settings' ? <SettingsView /> : null}
         </section>
-        <StatusBar
-          health={health?.status || 'unknown'}
-          services={health?.services?.length ?? 0}
-          sessions={sessions.length}
-          activeSession={activeSession?.session_id ?? null}
-        />
+        {activeView !== 'chat' ? (
+          <StatusBar
+            health={health?.status || 'unknown'}
+            services={health?.services?.length ?? 0}
+            sessions={sessions.length}
+            activeSession={activeSession?.session_id ?? null}
+          />
+        ) : null}
       </main>
       <ToastViewport />
     </div>

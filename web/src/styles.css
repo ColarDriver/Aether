@@ -263,19 +263,50 @@ button {
   overflow: hidden;
 }
 
+.workspace-chat {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .chat-workbench {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 0;
   align-items: stretch;
+  background: var(--bg);
 }
 
 .chat-workbench .chat-surface {
-  max-width: var(--chat-column-max);
+  max-width: none;
   justify-self: stretch;
+}
+
+.chat-workbench-rail-closed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-rail-edge {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  z-index: 4;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 11px;
+  cursor: pointer;
+  transform: translateY(-50%);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+
+.workspace-rail-edge:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .top-bar,
@@ -292,16 +323,39 @@ button {
   gap: 12px;
 }
 
+.workspace-chat .top-bar {
+  min-height: 42px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  padding: 8px 14px;
+}
+
 .top-bar h1 {
   margin: 0;
   font-size: 18px;
   letter-spacing: 0;
 }
 
+.workspace-chat .top-bar h1 {
+  max-width: 58vw;
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .top-bar p {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.workspace-chat .top-bar p {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.workspace-chat .top-bar .appearance-controls {
+  display: none;
 }
 
 .content-pane {
@@ -314,6 +368,7 @@ button {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
+  padding: 0;
 }
 
 .status-bar {
@@ -464,7 +519,6 @@ button {
 }
 
 .empty-state,
-.chat-surface,
 .info-grid {
   max-width: 920px;
   border: 1px solid var(--line);
@@ -495,12 +549,23 @@ button {
   color: var(--accent);
 }
 
+.chat-scroll > .empty-state {
+  margin: 56px auto;
+}
+
 .chat-surface {
   display: grid;
   grid-template-rows: auto auto minmax(220px, 1fr) auto;
   min-height: 0;
   height: 100%;
   width: 100%;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.chat-surface-empty {
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .chat-header {
@@ -508,17 +573,25 @@ button {
   gap: 10px;
   align-items: center;
   border-bottom: 1px solid var(--line);
-  padding: 14px;
+  padding: 10px 18px;
+  background: var(--bg);
+}
+
+.chat-header > div {
+  min-width: 0;
 }
 
 .chat-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
 }
 
 .chat-scroll {
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 22px 24px 32px;
   position: relative;
 }
 
@@ -937,13 +1010,15 @@ button {
 
 .chat-timeline {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  width: min(100%, var(--chat-column-max));
+  margin: 0 auto;
 }
 
 .chat-block {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  padding: 11px;
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .chat-message-group {
@@ -952,18 +1027,29 @@ button {
 }
 
 .chat-block-user {
+  width: fit-content;
+  max-width: min(72%, 720px);
+  justify-self: end;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 14px;
   background: var(--accent-soft);
+  padding: 10px 13px;
 }
 
 .chat-block-assistant {
-  background: var(--panel-2);
+  width: min(100%, 900px);
+  background: transparent;
 }
 
 .chat-block-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   text-transform: uppercase;
   margin-bottom: 6px;
+}
+
+.chat-block-user .chat-block-label {
+  display: none;
 }
 
 .chat-user-text,
@@ -1569,11 +1655,15 @@ button {
 
 .composer {
   position: relative;
-  border-top: 1px solid var(--line);
-  padding: 10px;
+  width: min(900px, calc(100% - 40px));
+  margin: 0 auto 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0;
   display: grid;
-  gap: 8px;
   background: var(--panel);
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
 }
 
 .composer-drag-active {
@@ -1584,6 +1674,7 @@ button {
 
 .composer-attachments {
   min-width: 0;
+  padding: 10px 12px 0;
 }
 
 .composer textarea {
@@ -1591,17 +1682,15 @@ button {
   min-height: 44px;
   max-height: 160px;
   resize: none;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 0;
+  background: transparent;
   color: var(--text);
-  padding: 10px;
+  padding: 12px 14px 7px;
   font: inherit;
 }
 
 .composer textarea:focus {
   outline: 0;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .composer-footer {
@@ -1610,6 +1699,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding: 4px 10px 10px;
 }
 
 .composer-context {
@@ -1723,8 +1813,8 @@ button {
 
 .slash-popover {
   position: absolute;
-  left: 10px;
-  right: 10px;
+  left: 0;
+  right: 0;
   bottom: calc(100% - 1px);
   z-index: 20;
   max-height: 260px;
@@ -1736,8 +1826,8 @@ button {
 
 .workspace-reference-popover {
   position: absolute;
-  left: 10px;
-  right: 10px;
+  left: 0;
+  right: 0;
   bottom: calc(100% - 1px);
   z-index: 21;
   max-height: 300px;
@@ -3230,8 +3320,8 @@ button {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(180px, 0.9fr) minmax(180px, 1.1fr);
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border-left: 1px solid var(--line);
+  background: var(--sidebar-bg);
   overflow: hidden;
 }
 
@@ -3242,7 +3332,7 @@ button {
   justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--line);
-  padding: 11px;
+  padding: 10px 11px;
 }
 
 .workspace-rail-header div:first-child {
@@ -3281,6 +3371,7 @@ button {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   border-bottom: 1px solid var(--line);
+  background: var(--sidebar-bg);
 }
 
 .workspace-rail-path {
@@ -3328,7 +3419,7 @@ button {
   min-width: 0;
   min-height: 30px;
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: var(--panel);
   color: var(--text);
   padding: 0 8px;
 }
@@ -3369,7 +3460,7 @@ button {
 
 .workspace-rail-entry:hover,
 .workspace-rail-entry.active {
-  background: var(--hover-bg);
+  background: var(--panel);
 }
 
 .workspace-rail-entry.active {
@@ -3393,6 +3484,7 @@ button {
 .workspace-rail-preview {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--panel);
 }
 
 .workspace-rail-preview-header {

@@ -56,4 +56,12 @@ describe('ChatView', () => {
     await waitFor(() => expect(api.sessionMessages).toHaveBeenCalledWith('session-1'))
     expect(api.sessionTasks).toHaveBeenCalledWith('session-1', { limit: 100 })
   })
+
+  it('keeps the composer visible when no session is selected', () => {
+    render(<ChatView session={null} />)
+
+    expect(screen.getByText('Start a session')).toBeTruthy()
+    expect(screen.getByRole('textbox')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
+  })
 })

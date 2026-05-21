@@ -7,10 +7,11 @@ import { Spinner } from '../shared/Spinner'
 import { MarkdownRenderer } from './MarkdownRenderer'
 
 type Props = {
+  onClose?: () => void
   onOpenWorkspace?: () => void
 }
 
-export function WorkspaceRail({ onOpenWorkspace }: Props) {
+export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
   const [tree, setTree] = useState<WorkspaceTree | null>(null)
   const [activeFile, setActiveFile] = useState<WorkspaceFile | null>(null)
   const [query, setQuery] = useState('')
@@ -81,6 +82,11 @@ export function WorkspaceRail({ onOpenWorkspace }: Props) {
           {onOpenWorkspace ? (
             <Button title="Open workspace page" aria-label="Open workspace page" onClick={onOpenWorkspace}>
               <ExternalLink size={15} />
+            </Button>
+          ) : null}
+          {onClose ? (
+            <Button title="Close workspace panel" aria-label="Close workspace panel" onClick={onClose}>
+              <X size={15} />
             </Button>
           ) : null}
         </div>

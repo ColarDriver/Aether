@@ -4,6 +4,7 @@ import type { SessionInfo, TaskSummary } from '../../api/types'
 import type { ChatBlock } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTaskStore } from '../../stores/taskStore'
 import { EmptyState } from '../shared/EmptyState'
@@ -44,6 +45,8 @@ export function ChatView({ session }: Props) {
   const resumeSession = useSessionStore((state) => state.resumeSession)
   const updateSession = useSessionStore((state) => state.updateSession)
   const setSessionMode = useSessionStore((state) => state.setSessionMode)
+  const currentProvider = useProviderStore((state) => state.current)
+  const providers = useProviderStore((state) => state.providers)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -111,17 +114,41 @@ export function ChatView({ session }: Props) {
     requestAnimationFrame(() => scrollToBottom('smooth'))
   }, [blocks, scrollToBottom, session])
 
-  if (!session) {
-    return (
-      <EmptyState
-        icon={<Bot />}
-        title="No session selected"
-        description="Create or select a session to start using the browser console."
-      />
-    )
+  const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
+  const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
+  const fallbackModel = currentProvider?.model || 'gpt-5.4'
+
+  const createSessionAndRun = (message: string, attachments?: Parameters<typeof startRun>[2]) => {
+    void createSession({ provider: fallbackProvider, model: fallbackModel })
+      .then((created) => startRun(created.session_id, message, attachments))
+      .catch((error) => {
+        // There is no session transcript yet, so surface the failure in devtools
+        // and keep the composer usable for retry.
+        console.error('Failed to create session before run', error)
+      })
   }
 
-  const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
+  if (!session) {
+    return (
+      <div className="chat-surface chat-surface-empty">
+        <div className="chat-scroll">
+          <EmptyState
+            icon={<Bot />}
+            title="Start a session"
+            description="Type a message below to create a browser session and run Aether."
+          />
+        </div>
+        <Composer
+          disabled={false}
+          running={false}
+          provider={fallbackProvider}
+          model={fallbackModel}
+          onSend={createSessionAndRun}
+          onCancel={() => undefined}
+        />
+      </div>
+    )
+  }
 
   const handleSlashCommand = (command: string) => {
     void executeWebSlashCommand(command, {

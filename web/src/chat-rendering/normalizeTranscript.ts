@@ -1,6 +1,6 @@
 import type { TranscriptMessage } from '../api/types'
 import type { ChatBlock, ToolStatus } from './blocks'
-import { answersFromMetadata, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown } from './content'
+import { answersFromMetadata, attachmentsFromMetadata, attachmentsFromUnknown, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown } from './content'
 
 export function normalizeTranscript(sessionId: string, transcript: TranscriptMessage[]): ChatBlock[] {
   const blocks: ChatBlock[] = []
@@ -10,6 +10,11 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
     const runId = 'persisted-' + index
 
     if (message.role === 'user') {
+      const metadata = recordFromUnknown(message.metadata)
+      const attachments = [
+        ...attachmentsFromUnknown(message.attachments),
+        ...attachmentsFromMetadata(metadata),
+      ]
       blocks.push({
         id: 'persisted-' + index + '-user',
         sessionId,
@@ -18,6 +23,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
         source: 'transcript',
         kind: 'user_message',
         content: message.text ?? '',
+        ...(attachments.length > 0 ? { attachments } : {}),
       })
       return
     }

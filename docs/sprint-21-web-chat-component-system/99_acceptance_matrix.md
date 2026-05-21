@@ -74,12 +74,17 @@ Implemented on branch `web-console-migration`:
   actions provide Aether-owned copy affordances for user prompts, assistant
   replies, fenced code, tool input, and tool output without adding renderer
   dependencies.
+- User attachment rendering: session transcripts now expose structured
+  `attachments`, `normalizeTranscript` preserves them on user blocks, and
+  `AttachmentGallery` renders file chips plus image previews in the timeline.
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (32 files / 76 tests after copy/action coverage)
+- `cd web && npm test` (33 files / 79 tests after attachment gallery coverage)
 - `cd web && npm run build`
 - `python -m pytest aether/tests/web` (22 passed)
+- `uv run pytest aether/tests/services/test_session_service.py` (7 passed)
+- `uv run pyright aether/services/sessions` (0 errors)
 - `uv run pyright aether/web` (0 errors)
 
 Remaining hardening before declaring Sprint 21 complete:

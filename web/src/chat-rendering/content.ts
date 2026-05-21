@@ -1,4 +1,4 @@
-import type { AskUserQuestion, AskUserQuestionOption, DiffContent } from './blocks'
+import type { AskUserQuestion, AskUserQuestionOption, ChatAttachment, DiffContent } from './blocks'
 
 export function stringFromUnknown(value: unknown): string {
   if (typeof value === 'string') return value
@@ -89,6 +89,52 @@ export function answersFromMetadata(metadata: Record<string, unknown>): Record<s
   return normalized
 }
 
+export function attachmentsFromUnknown(value: unknown): ChatAttachment[] {
+  if (!Array.isArray(value)) return []
+  return value.map(attachmentFromUnknown).filter((attachment): attachment is ChatAttachment => Boolean(attachment))
+}
+
+export function attachmentsFromMetadata(metadata: Record<string, unknown>): ChatAttachment[] {
+  for (const key of ['attachments', 'displayAttachments', 'display_attachments']) {
+    const attachments = attachmentsFromUnknown(metadata[key])
+    if (attachments.length > 0) return attachments
+  }
+  return []
+}
+
+function attachmentFromUnknown(value: unknown): ChatAttachment | null {
+  const input = recordFromUnknown(value)
+  const rawType = stringOrNull(input.type) ?? stringOrNull(input.kind)
+  const type = rawType === 'image' || rawType === 'text' || rawType === 'file'
+    ? rawType
+    : firstString(input.data, input.url, input.previewUrl)
+      ? 'image'
+      : 'file'
+  const name = firstString(input.name, input.filename)
+  const path = firstString(input.path, input.file_path, input.filePath)
+  const url = firstString(input.url, input.previewUrl, input.preview_url)
+  const mimeType = firstString(input.mimeType, input.mime_type, input.media_type)
+  const data = stringOrUndefined(input.data)
+  if (!rawType && !name && !path && !url && !mimeType && !data) return null
+  const lineStart = numberOrUndefined(input.lineStart ?? input.line_start)
+  const lineEnd = numberOrUndefined(input.lineEnd ?? input.line_end)
+  const note = stringOrUndefined(input.note)
+  const quote = stringOrUndefined(input.quote)
+  return {
+    type,
+    ...(name ? { name } : path ? { name: path.split('/').filter(Boolean).pop() ?? path } : {}),
+    ...(path ? { path } : {}),
+    ...(url ? { url } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    ...(data ? { data } : {}),
+    ...(Boolean(input.isDirectory ?? input.is_directory) ? { isDirectory: true } : {}),
+    ...(lineStart != null ? { lineStart } : {}),
+    ...(lineEnd != null ? { lineEnd } : {}),
+    ...(note ? { note } : {}),
+    ...(quote ? { quote } : {}),
+  }
+}
+
 function questionFromUnknown(value: unknown): AskUserQuestion | null {
   const input = recordFromUnknown(value)
   const question = stringOrNull(input.question) ?? stringOrNull(input.prompt)
@@ -144,4 +190,13 @@ function stringOrNull(value: unknown): string | null {
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
 }

@@ -659,6 +659,153 @@ button {
   color: var(--ok);
 }
 
+.attachment-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.attachment-gallery-start {
+  justify-content: flex-start;
+}
+
+.attachment-gallery-end {
+  justify-content: flex-end;
+}
+
+.attachment-chip {
+  max-width: min(100%, 280px);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.attachment-chip span,
+.attachment-chip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip small {
+  color: var(--muted);
+}
+
+.attachment-chip em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.attachment-image {
+  max-width: min(100%, 360px);
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.attachment-image:hover,
+.attachment-image:focus-visible {
+  border-color: var(--accent);
+}
+
+.attachment-image img {
+  max-width: 100%;
+  max-height: 260px;
+  display: block;
+  object-fit: cover;
+}
+
+.attachment-image span {
+  overflow: hidden;
+  padding: 0 2px 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.image-gallery-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.62);
+  padding: 24px;
+}
+
+.image-gallery-modal {
+  width: min(960px, 100%);
+  max-height: min(760px, 92vh);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.image-gallery-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.image-gallery-modal header div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.image-gallery-modal header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-gallery-modal header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.image-gallery-modal button {
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.image-gallery-stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  background: #080a0f;
+  padding: 12px;
+}
+
+.image-gallery-stage img {
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
 .chat-block-thinking {
   padding: 6px 8px;
   background: transparent;

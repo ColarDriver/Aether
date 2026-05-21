@@ -36,6 +36,7 @@ from aether.services.sessions.contracts import (
     SessionRenameRequest,
     SessionResumeRequest,
     SessionUpdateRequest,
+    TranscriptAttachment,
     TranscriptMessage,
     TranscriptToolCall,
 )
@@ -262,14 +263,145 @@ def message_to_transcript(msg: dict[str, Any]) -> TranscriptMessage:
     if role not in _ALLOWED_ROLES:
         role = "user"
     content = msg.get("content")
+    metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else None
+    text, attachments = extract_message_content(content, metadata=metadata)
     return TranscriptMessage(
         role=role,
-        text=content if isinstance(content, str) else None,
+        text=text,
         name=msg.get("name") if isinstance(msg.get("name"), str) else None,
         tool_call_id=msg.get("tool_call_id") if isinstance(msg.get("tool_call_id"), str) else None,
         tool_calls=extract_tool_calls(msg) if role == "assistant" else [],
+        attachments=attachments if role == "user" else [],
         is_error=bool(msg.get("is_error")) if role == "tool" else False,
-        metadata=msg.get("metadata") if isinstance(msg.get("metadata"), dict) else None,
+        metadata=metadata,
+    )
+
+
+def extract_message_content(
+    content: Any,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[str | None, list[TranscriptAttachment]]:
+    attachments = extract_attachments_from_metadata(metadata)
+    if isinstance(content, str):
+        return content, attachments
+    if not isinstance(content, list):
+        return None, attachments
+
+    text_parts: list[str] = []
+    content_attachments: list[TranscriptAttachment] = []
+    for item in content:
+        if isinstance(item, str):
+            if item:
+                text_parts.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        block_type = item.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            text = _first_string(item.get("text"), item.get("content"))
+            if text:
+                text_parts.append(text)
+            continue
+        attachment = attachment_from_content_block(item)
+        if attachment is not None:
+            content_attachments.append(attachment)
+
+    text = "\n".join(part for part in text_parts if part)
+    return (text if text else None), [*attachments, *content_attachments]
+
+
+def extract_attachments_from_metadata(metadata: dict[str, Any] | None) -> list[TranscriptAttachment]:
+    if not metadata:
+        return []
+    for key in ("attachments", "displayAttachments", "display_attachments"):
+        raw = metadata.get(key)
+        if isinstance(raw, list):
+            return [attachment for item in raw if (attachment := attachment_from_record(item)) is not None]
+    return []
+
+
+def attachment_from_content_block(block: dict[str, Any]) -> TranscriptAttachment | None:
+    block_type = block.get("type")
+    if block_type in {"image", "input_image", "image_url"}:
+        return image_attachment_from_block(block)
+    if block_type in {"file", "document"}:
+        return file_attachment_from_block(block)
+    return None
+
+
+def attachment_from_record(value: Any) -> TranscriptAttachment | None:
+    if not isinstance(value, dict):
+        return None
+    kind = _first_string(value.get("type"), value.get("kind"))
+    name = _first_string(value.get("name"), value.get("filename"))
+    path = _first_string(value.get("path"), value.get("file_path"), value.get("filePath"))
+    url = _first_string(value.get("url"), value.get("previewUrl"), value.get("preview_url"))
+    mime_type = _first_string(value.get("mimeType"), value.get("mime_type"), value.get("media_type"))
+    data = _first_string(value.get("data"))
+    if not any((kind, name, path, url, mime_type, data)):
+        return None
+    if kind == "image":
+        attachment_type = "image"
+    elif kind == "text":
+        attachment_type = "text"
+    else:
+        attachment_type = "image" if _first_string(data, url) else "file"
+    return TranscriptAttachment(
+        type=attachment_type,
+        name=name or _name_from_path(path) or attachment_type,
+        path=path,
+        url=url,
+        mime_type=mime_type,
+        data=data,
+        is_directory=bool(value.get("isDirectory") or value.get("is_directory")),
+        line_start=_int_or_none(value.get("lineStart"), value.get("line_start")),
+        line_end=_int_or_none(value.get("lineEnd"), value.get("line_end")),
+        note=_first_string(value.get("note")),
+        quote=_first_string(value.get("quote")),
+    )
+
+
+def image_attachment_from_block(block: dict[str, Any]) -> TranscriptAttachment:
+    source = block.get("source") if isinstance(block.get("source"), dict) else {}
+    image_url = block.get("image_url")
+    url = image_url.get("url") if isinstance(image_url, dict) else image_url if isinstance(image_url, str) else None
+    mime_type = _first_string(
+        block.get("mimeType"),
+        block.get("mime_type"),
+        block.get("media_type"),
+        source.get("media_type") if isinstance(source, dict) else None,
+    )
+    data = _first_string(
+        block.get("data"),
+        source.get("data") if isinstance(source, dict) else None,
+        url if isinstance(url, str) and url.startswith("data:") else None,
+    )
+    external_url = url if isinstance(url, str) and not url.startswith("data:") else None
+    return TranscriptAttachment(
+        type="image",
+        name=_first_string(block.get("name"), block.get("filename")) or "image",
+        url=external_url,
+        mime_type=mime_type,
+        data=data,
+    )
+
+
+def file_attachment_from_block(block: dict[str, Any]) -> TranscriptAttachment:
+    source = block.get("source") if isinstance(block.get("source"), dict) else {}
+    path = _first_string(
+        block.get("path"),
+        block.get("file_path"),
+        block.get("filePath"),
+        source.get("path") if isinstance(source, dict) else None,
+    )
+    mime_type = _first_string(block.get("mimeType"), block.get("mime_type"), block.get("media_type"))
+    return TranscriptAttachment(
+        type="file",
+        name=_first_string(block.get("name"), block.get("filename")) or _name_from_path(path) or "file",
+        path=path,
+        mime_type=mime_type,
+        data=_first_string(block.get("data"), source.get("data") if isinstance(source, dict) else None),
     )
 
 
@@ -302,6 +434,33 @@ def extract_tool_calls(msg: dict[str, Any]) -> list[TranscriptToolCall]:
             arguments = {}
         out.append(TranscriptToolCall(id=call_id, name=name, arguments=arguments))
     return out
+
+
+def _first_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _name_from_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    return Path(path).name or path
+
+
+def _int_or_none(*values: Any) -> int | None:
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                continue
+    return None
 
 
 def _record_matches_query(record: SessionRecord, needle: str) -> bool:

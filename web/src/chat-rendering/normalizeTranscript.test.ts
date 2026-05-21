@@ -89,4 +89,30 @@ describe('normalizeTranscript', () => {
       answers: { 'Continue?': 'Yes' },
     })
   })
+
+  it('keeps user attachments from transcript fields and metadata', () => {
+    const blocks = normalizeTranscript('session-4', [
+      {
+        role: 'user',
+        text: 'inspect this',
+        attachments: [
+          { type: 'file', name: 'app.ts', path: 'src/app.ts', line_start: 3, line_end: 5 },
+        ],
+        metadata: {
+          displayAttachments: [
+            { type: 'image', name: 'chart.png', data: 'data:image/png;base64,abc', mimeType: 'image/png' },
+          ],
+        },
+      },
+    ])
+
+    expect(blocks[0]).toMatchObject({
+      kind: 'user_message',
+      content: 'inspect this',
+      attachments: [
+        { type: 'file', name: 'app.ts', path: 'src/app.ts', lineStart: 3, lineEnd: 5 },
+        { type: 'image', name: 'chart.png', data: 'data:image/png;base64,abc', mimeType: 'image/png' },
+      ],
+    })
+  })
 })

@@ -14,12 +14,28 @@ class TranscriptToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptAttachment:
+    type: Literal["file", "image", "text"]
+    name: str | None = None
+    path: str | None = None
+    url: str | None = None
+    mime_type: str | None = None
+    data: str | None = None
+    is_directory: bool = False
+    line_start: int | None = None
+    line_end: int | None = None
+    note: str | None = None
+    quote: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptMessage:
     role: Literal["user", "assistant", "system", "tool"]
     text: str | None = None
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[TranscriptToolCall] = field(default_factory=list)
+    attachments: list[TranscriptAttachment] = field(default_factory=list)
     is_error: bool = False
     metadata: dict[str, Any] | None = None
 
@@ -108,6 +124,7 @@ __all__ = [
     "SessionRenameRequest",
     "SessionResumeRequest",
     "SessionUpdateRequest",
+    "TranscriptAttachment",
     "TranscriptMessage",
     "TranscriptToolCall",
 ]

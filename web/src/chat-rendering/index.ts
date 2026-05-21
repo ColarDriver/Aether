@@ -53,6 +53,8 @@ export {
 
 export {
   answersFromMetadata,
+  attachmentsFromMetadata,
+  attachmentsFromUnknown,
   extractDiffFromMetadata,
   firstNonEmptyLine,
   jsonPreview,

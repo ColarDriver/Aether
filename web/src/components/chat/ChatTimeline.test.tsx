@@ -17,7 +17,7 @@ afterEach(cleanup)
 describe('ChatTimeline', () => {
   it('renders user, assistant, thinking, tool, result, and diff blocks in one timeline', () => {
     const blocks: ChatBlock[] = [
-      { ...base, id: 'u', kind: 'user_message', content: 'hello' },
+      { ...base, id: 'u', kind: 'user_message', content: 'hello', attachments: [{ type: 'file', name: 'app.ts', path: 'src/app.ts' }] },
       { ...base, id: 'a', kind: 'assistant_message', content: 'I will read.' },
       { ...base, id: 't', kind: 'thinking', content: 'Need inspect', isActive: true },
       { ...base, id: 'tc', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: { path: 'README.md' }, status: 'finished' },
@@ -27,6 +27,7 @@ describe('ChatTimeline', () => {
     render(<ChatTimeline blocks={blocks} />)
 
     expect(screen.getByText('hello')).toBeTruthy()
+    expect(screen.getByText('app.ts')).toBeTruthy()
     expect(screen.getByText('I will read.')).toBeTruthy()
     expect(screen.getByText(/thinking/)).toBeTruthy()
     expect(screen.getByText('read_file')).toBeTruthy()

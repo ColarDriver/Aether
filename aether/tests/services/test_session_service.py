@@ -149,6 +149,43 @@ def test_transcript_normalizes_messages_and_malformed_tool_json(tmp_path, monkey
     assert asdict(transcript[2])["tool_call_id"] == "call-1"
 
 
+def test_transcript_extracts_text_and_attachments_from_content_parts(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="with-parts", provider="openai", model="gpt-5")
+    record.messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+                {
+                    "type": "file",
+                    "name": "app.py",
+                    "path": "src/app.py",
+                },
+            ],
+            "metadata": {
+                "displayAttachments": [
+                    {"type": "file", "name": "notes.md", "path": "docs/notes.md", "lineStart": 2}
+                ]
+            },
+        }
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    transcript = service.transcript("with-parts")
+
+    assert transcript[0].text == "inspect this image"
+    assert [attachment.type for attachment in transcript[0].attachments] == ["file", "image", "file"]
+    assert transcript[0].attachments[0].name == "notes.md"
+    assert transcript[0].attachments[0].line_start == 2
+    assert transcript[0].attachments[1].data == "data:image/png;base64,abc"
+    assert transcript[0].attachments[2].path == "src/app.py"
+
+
 
 def test_search_and_detail_include_matching_session_messages(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)

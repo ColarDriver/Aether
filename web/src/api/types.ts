@@ -19,12 +19,31 @@ export type TranscriptToolCall = {
   arguments: Record<string, unknown>
 }
 
+export type TranscriptAttachment = {
+  type: 'file' | 'image' | 'text'
+  name?: string | null
+  path?: string | null
+  url?: string | null
+  mime_type?: string | null
+  mimeType?: string | null
+  data?: string | null
+  is_directory?: boolean | null
+  isDirectory?: boolean | null
+  line_start?: number | null
+  lineStart?: number | null
+  line_end?: number | null
+  lineEnd?: number | null
+  note?: string | null
+  quote?: string | null
+}
+
 export type TranscriptMessage = {
   role: 'user' | 'assistant' | 'system' | 'tool'
   text?: string | null
   name?: string | null
   tool_call_id?: string | null
   tool_calls?: TranscriptToolCall[]
+  attachments?: TranscriptAttachment[] | null
   is_error?: boolean
   metadata?: Record<string, unknown> | null
 }

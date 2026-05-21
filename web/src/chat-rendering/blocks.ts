@@ -12,8 +12,14 @@ export type ChatAttachment = {
   type: 'file' | 'image' | 'text'
   name?: string
   path?: string
+  url?: string
   mimeType?: string
   data?: string
+  isDirectory?: boolean
+  lineStart?: number
+  lineEnd?: number
+  note?: string
+  quote?: string
 }
 
 export type TokenUsage = {

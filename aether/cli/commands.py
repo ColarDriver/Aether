@@ -18,6 +18,13 @@ class SlashCommand:
     description: str
 
 
+@dataclass(frozen=True, slots=True)
+class SlashCommandCatalogEntry:
+    name: str
+    description: str
+    category: str
+
+
 REGISTRY: dict[str, SlashCommand] = {
     "/help": SlashCommand("/help", "Show this help table"),
     "/exit": SlashCommand("/exit", "Exit the TUI"),
@@ -37,7 +44,34 @@ REGISTRY: dict[str, SlashCommand] = {
 }
 
 
+_SESSION_COMMANDS = frozenset(
+    {"/new", "/session", "/sessions", "/resume", "/system", "/model", "/plan"}
+)
+_CONTROL_COMMANDS = frozenset({"/interrupt"})
+_REMOTE_COMMANDS = frozenset({"/tools"})
+
 _COMMAND_NAME_RE = re.compile(r"^[a-zA-Z0-9:_-]+$")
+
+
+def command_category(name: str) -> str:
+    if name in _SESSION_COMMANDS:
+        return "session"
+    if name in _CONTROL_COMMANDS:
+        return "control"
+    if name in _REMOTE_COMMANDS:
+        return "remote"
+    return "local"
+
+
+def catalog_entries() -> list[SlashCommandCatalogEntry]:
+    return [
+        SlashCommandCatalogEntry(
+            name=command.name,
+            description=command.description,
+            category=command_category(command.name),
+        )
+        for command in sorted(REGISTRY.values(), key=lambda item: item.name)
+    ]
 
 
 def _looks_like_command_name(head: str) -> bool:
@@ -60,4 +94,11 @@ def is_slash(line: str) -> bool:
     return True
 
 
-__all__ = ["REGISTRY", "SlashCommand", "is_slash"]
+__all__ = [
+    "REGISTRY",
+    "SlashCommand",
+    "SlashCommandCatalogEntry",
+    "catalog_entries",
+    "command_category",
+    "is_slash",
+]

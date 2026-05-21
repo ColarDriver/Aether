@@ -1,5 +1,6 @@
 import type {
   AnalyticsReport,
+  CommandCatalog,
   ConfigPaths,
   DocContent,
   DocIndex,
@@ -109,6 +110,7 @@ function normalizeBaseUrl(value: string) {
 export const api = {
   status: () => request<StatusResponse>('GET', '/api/status'),
   health: () => request<HealthStatus>('GET', '/api/health'),
+  commands: () => request<CommandCatalog>('GET', '/api/commands'),
   analytics: (params: { days?: number; limit?: number } = {}) => {
     const query = new URLSearchParams()
     if (params.days) query.set('days', String(params.days))

@@ -150,6 +150,15 @@ def test_docs_routes_list_and_read_project_markdown(client: TestClient) -> None:
     assert missing.status_code == 404
 
 
+def test_commands_route_exposes_slash_catalog(client: TestClient) -> None:
+    result = client.get("/api/commands")
+
+    assert result.status_code == 200
+    by_name = {item["name"]: item for item in result.json()["commands"]}
+    assert by_name["/plan"]["category"] == "session"
+    assert by_name["/help"]["description"]
+
+
 def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None:
     tree = client.get("/api/workspace/tree")
     assert tree.status_code == 200

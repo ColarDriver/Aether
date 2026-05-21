@@ -178,6 +178,16 @@ export type RunSocketFrame = {
   payload?: Record<string, unknown>
 }
 
+export type SlashCommandInfo = {
+  name: string
+  description: string
+  category?: string | null
+}
+
+export type CommandCatalog = {
+  commands: SlashCommandInfo[]
+}
+
 
 export type LogFileSummary = {
   key: string

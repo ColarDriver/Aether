@@ -22,6 +22,7 @@ from aether.services.tools import ToolService
 from aether.services.workspace import WorkspaceService
 from aether.web.errors import install_error_handlers
 from aether.web.routes.analytics import router as analytics_router
+from aether.web.routes.commands import router as commands_router
 from aether.web.routes.config import router as config_router
 from aether.web.routes.diagnostics import router as diagnostics_router
 from aether.web.routes.docs import router as docs_router
@@ -121,6 +122,7 @@ def create_app(
 
     app.include_router(health_router)
     app.include_router(analytics_router)
+    app.include_router(commands_router)
     app.include_router(docs_router)
     app.include_router(workspace_router)
     app.include_router(sessions_router)

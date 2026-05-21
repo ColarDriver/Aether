@@ -3,9 +3,10 @@ import type { TaskNotificationBlock as TaskNotification } from '../../../chat-re
 
 type Props = {
   block: TaskNotification
+  onOpenTask?: (taskId: string) => void
 }
 
-export function TaskNotificationBlock({ block }: Props) {
+export function TaskNotificationBlock({ block, onOpenTask }: Props) {
   const Icon = iconForStatus(block.status)
   return (
     <article className={'chat-block task-notification task-notification-' + toneForStatus(block.status)}>
@@ -22,6 +23,11 @@ export function TaskNotificationBlock({ block }: Props) {
           {typeof block.durationSeconds === 'number' ? <span>{block.durationSeconds.toFixed(1)}s</span> : null}
           {block.outputFile ? <span>{block.outputFile}</span> : null}
         </div>
+        {onOpenTask ? (
+          <button type="button" onClick={() => onOpenTask(block.taskId)}>
+            Open task details
+          </button>
+        ) : null}
       </div>
     </article>
   )

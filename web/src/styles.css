@@ -718,6 +718,20 @@ button {
   font-size: 12px;
 }
 
+.task-notification-body button {
+  justify-self: start;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.task-notification-body button:hover {
+  border-color: var(--accent);
+}
+
 .task-notification-complete svg {
   color: var(--ok);
 }

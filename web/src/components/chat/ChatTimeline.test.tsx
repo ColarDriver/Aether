@@ -66,4 +66,20 @@ describe('ChatTimeline', () => {
 
     expect(screen.queryByRole('button', { name: 'Allow session' })).toBeNull()
   })
+
+  it('opens task details from task notification blocks', () => {
+    const onOpenTask = vi.fn()
+    render(
+      <ChatTimeline
+        blocks={[
+          { ...base, id: 'tn', kind: 'task_notification', taskId: 'task-1', status: 'completed', summary: 'done' },
+        ]}
+        onOpenTask={onOpenTask}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open task details' }))
+
+    expect(onOpenTask).toHaveBeenCalledWith('task-1')
+  })
 })

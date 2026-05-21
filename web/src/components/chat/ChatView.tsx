@@ -159,6 +159,7 @@ export function ChatView({ session }: Props) {
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}
+          onOpenTask={setSelectedTaskId}
           onRespondPermission={respondPermission}
           onRespondApproval={respondApproval}
         />

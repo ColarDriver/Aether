@@ -39,6 +39,9 @@ Frontend files:
 - `web/src/components/chat/ChatView.tsx`
   - owns selected task state,
   - closes task detail when the session changes.
+- `web/src/components/chat/blocks/TaskNotificationBlock.tsx`
+  - exposes the same detail action for completed async task notifications in
+    the transcript.
 
 Styles live in `web/src/styles.css` and reuse the existing modal shell.
 
@@ -47,6 +50,8 @@ Styles live in `web/src/styles.css` and reuse the existing modal shell.
 - `SessionTaskBar` calls `onOpenTask` when a task row is selected.
 - `TaskDetailDialog` loads detail and displays output tail/metadata.
 - `TaskDetailDialog` displays a readable error when the detail API fails.
+- `ChatTimeline` routes task-notification detail clicks to the same selected
+  task state.
 
 ## Follow-Ups
 

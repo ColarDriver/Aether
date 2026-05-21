@@ -20,9 +20,10 @@ type Props = {
   blocks: ChatBlock[]
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
+  onOpenTask?: (taskId: string) => void
 }
 
-export function ChatTimeline({ blocks, onRespondPermission, onRespondApproval }: Props) {
+export function ChatTimeline({ blocks, onRespondPermission, onRespondApproval, onOpenTask }: Props) {
   if (blocks.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
@@ -46,6 +47,7 @@ export function ChatTimeline({ blocks, onRespondPermission, onRespondApproval }:
             key={item.block.id}
             onRespondPermission={onRespondPermission}
             onRespondApproval={onRespondApproval}
+            onOpenTask={onOpenTask}
           />
         )
       })}
@@ -57,10 +59,12 @@ function ChatBlockView({
   block,
   onRespondPermission,
   onRespondApproval,
+  onOpenTask,
 }: {
   block: ChatBlock
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
+  onOpenTask?: (taskId: string) => void
 }) {
   switch (block.kind) {
     case 'user_message':
@@ -82,7 +86,7 @@ function ChatBlockView({
     case 'streaming_status':
       return <StreamingStatusBlock block={block} />
     case 'task_notification':
-      return <TaskNotificationBlock block={block} />
+      return <TaskNotificationBlock block={block} onOpenTask={onOpenTask} />
     case 'system_notice':
       return <SystemNoticeBlock block={block} />
     case 'error':

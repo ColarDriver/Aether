@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from aether.web.app import create_app
-from aether.web.entry import build_parser
+from aether.web.entry import build_parser, resolve_web_dist
 from aether.web.security import SESSION_HEADER_NAME, is_accepted_host
 from aether.web.static import inject_bootstrap
 
@@ -78,6 +78,18 @@ def test_entry_parser_imports_without_starting_server() -> None:
     assert args.host == "127.0.0.1"
     assert args.port == 9121
     assert args.no_open is True
+
+
+def test_entry_resolves_explicit_and_auto_web_dist(tmp_path: Path) -> None:
+    explicit = tmp_path / "custom-dist"
+    assert resolve_web_dist(explicit, project_root=tmp_path) == explicit
+
+    assert resolve_web_dist(None, project_root=tmp_path) is None
+
+    dist = tmp_path / "web" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    assert resolve_web_dist(None, project_root=tmp_path) == dist
 
 
 def _add_private_route(app: FastAPI) -> None:

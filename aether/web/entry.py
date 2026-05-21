@@ -24,9 +24,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_web_dist(web_dist: Path | None, *, project_root: Path | None = None) -> Path | None:
+    if web_dist is not None:
+        return web_dist
+    root = project_root or Path(__file__).resolve().parents[2]
+    candidate = root / "web" / "dist"
+    if (candidate / "index.html").exists():
+        return candidate
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    app = create_app(bound_host=args.host, web_dist=args.web_dist)
+    app = create_app(bound_host=args.host, web_dist=resolve_web_dist(args.web_dist))
     uvicorn.run(
         app,
         host=args.host,

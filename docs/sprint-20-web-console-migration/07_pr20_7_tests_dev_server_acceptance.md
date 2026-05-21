@@ -62,7 +62,7 @@ Frontend tests should cover:
 Wire Python static serving:
 
 - Dev mode can point users to Vite directly.
-- Built mode serves `web/dist` or an explicit `--web-dist` path.
+- Built mode serves auto-detected `web/dist` or an explicit `--web-dist` path.
 - `index.html` receives:
   - `window.__AETHER_BASE_PATH__`
   - `window.__AETHER_SESSION_TOKEN__`
@@ -80,7 +80,7 @@ Document two local modes:
    - Vite proxies `/api` to Python.
 2. Single Python server with built SPA:
    - `cd web && npm run build`
-   - `uv run aether-web --web-dist web/dist`
+   - `uv run aether-web` or `uv run aether-web --web-dist web/dist`
 
 ## Manual Acceptance Script
 

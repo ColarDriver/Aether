@@ -127,7 +127,7 @@ Implemented on branch `web-console-migration`:
 
 Latest verification performed during implementation:
 
-- `python -m pytest aether/tests/web` (20 passed after docs slice)
+- `python -m pytest aether/tests/web` (21 passed)
 - `python -m pytest aether/tests/services` (51 passed after docs slice)
 - `python -m pytest aether/tests/gateway` (241 passed)
 - `uv run pyright aether/web aether/services aether/gateway/handlers` (0 errors)

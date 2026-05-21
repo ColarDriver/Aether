@@ -43,10 +43,22 @@ web/src/components/chat/blocks/PermissionRequestBlock.test.tsx
 web/src/components/chat/blocks/ApprovalRequestBlock.test.tsx
 web/src/components/chat/blocks/AskUserQuestionBlock.test.tsx
 web/src/components/chat/MarkdownRenderer.test.tsx
-web/src/stores/chatStore.test.ts
 ```
 
-Existing tests can be renamed or expanded if they cover the same contract.
+Existing tests can be renamed or expanded if they cover the same contract. The
+current implementation intentionally removed `web/src/stores/chatStore.test.ts`
+after `chatStore` stopped owning transcript reconstruction; block reducer and
+normalization tests now cover that contract.
+
+Current indirect coverage:
+
+- `ChatTimeline.test.tsx` covers user/assistant/thinking/tool/result/prompt
+  integration.
+- `PromptContent.test.tsx` covers shared permission preview and question-answer
+  rendering.
+- `DiffViewer.test.tsx` covers unified diff parsing and line-number rendering.
+- `SessionsView.test.tsx` covers persisted transcript rendering through
+  `ChatTimeline`.
 
 ## Scenario Coverage
 

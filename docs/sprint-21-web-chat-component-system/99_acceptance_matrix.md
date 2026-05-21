@@ -46,6 +46,46 @@ Before Sprint 21 is considered complete, expect evidence in:
 - `web/src/styles.css`
 - frontend tests under `web/src/**/*.test.ts(x)`
 
+## Current Implementation Evidence
+
+Implemented on branch `web-console-migration`:
+
+- PR21.1 contract boundary: `web/src/chat-rendering/blocks.ts`,
+  `blockGuards.ts`, `content.ts`, and `index.ts` define the Aether-owned,
+  React-free chat block model.
+- PR21.2 normalization: `normalizeTranscript.ts`, `blockReducer.ts`, and
+  `runState.ts` normalize persisted transcript messages and live run frames into
+  `ChatBlock[]`.
+- PR21.3 message primitives: `ChatTimeline.tsx` and `components/chat/blocks/*`
+  render user, assistant, thinking, system, error, and streaming status blocks.
+- PR21.4 tools and diffs: `renderModel.ts`, timeline tool grouping,
+  `DiffViewer.tsx`, and tool/result blocks render tool calls, results,
+  ask_user_question results, and unified diff rows with line numbers.
+- PR21.5 prompts: `PromptContent.tsx`, `PermissionDialog.tsx`,
+  `ApprovalDialog.tsx`, `PermissionRequestBlock.tsx`, and
+  `ApprovalRequestBlock.tsx` share permission preview, plan markdown, and
+  question-answer rendering between modal and timeline surfaces.
+- PR21.6 timeline integration: `ChatView.tsx` and `SessionsView.tsx` both use
+  `ChatTimeline`; legacy `MessageList`, legacy top-level `ToolCallBlock`, and
+  `messagesBySession/toolsBySession` were removed.
+- PR21.6 scroll behavior: `ChatView.tsx` follows output only while near the
+  bottom and exposes a jump-to-latest button when the user scrolls away.
+
+Latest verification performed during implementation:
+
+- `cd web && npm test` (29 files / 70 tests after legacy test deletion)
+- `cd web && npm run build`
+- `python -m pytest aether/tests/web` (22 passed)
+- `uv run pyright aether/web` (0 errors)
+
+Remaining hardening before declaring Sprint 21 complete:
+
+- Add browser-level screenshot or interaction coverage for the full chat turn.
+- Add focused component tests for individual block files where coverage is only
+  indirect through `ChatTimeline`, `PromptContent`, and render-model tests.
+- Manually run the acceptance script against a live provider session and capture
+  any visual issues in follow-up PRs.
+
 ## Final Acceptance
 
 - Aether web renders a full agent turn through a single typed timeline.

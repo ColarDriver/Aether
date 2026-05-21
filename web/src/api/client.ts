@@ -1,4 +1,18 @@
-import type { HealthStatus, ProviderRuntimeStatus, ProviderSummary, SessionInfo, StatusResponse, TranscriptMessage } from './types'
+import type {
+  ConfigPaths,
+  EffectiveConfig,
+  HealthStatus,
+  ProviderModelList,
+  ProviderRuntimeStatus,
+  ProviderSelectionResult,
+  ProviderSummary,
+  SessionInfo,
+  SkillSummary,
+  StatusResponse,
+  ToolGroup,
+  ToolSummary,
+  TranscriptMessage,
+} from './types'
 
 const DEFAULT_BASE_URL =
   typeof import.meta !== 'undefined' && typeof import.meta.env.VITE_AETHER_WEB_URL === 'string'
@@ -39,7 +53,7 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 30_000)
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const response = await fetch(baseUrl + path, {
       method,
       headers: buildHeaders(),
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -55,7 +69,7 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   } catch (error) {
     clearTimeout(timeout)
     if (controller.signal.aborted) {
-      throw new Error(`Request timed out after ${Math.round((options?.timeoutMs ?? 30_000) / 1000)}s`)
+      throw new Error('Request timed out after ' + Math.round((options?.timeoutMs ?? 30_000) / 1000) + 's')
     }
     throw error
   }
@@ -72,7 +86,7 @@ function errorMessage(status: number, body: unknown) {
     const error = (body as { error?: { message?: unknown } }).error
     if (typeof error?.message === 'string') return error.message
   }
-  return `API error ${status}`
+  return 'API error ' + status
 }
 
 function normalizeBaseUrl(value: string) {
@@ -86,9 +100,19 @@ export const api = {
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),
   resumeSession: (sessionId: string) =>
-    request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/resume`),
+    request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/resume'),
   sessionMessages: (sessionId: string) =>
-    request<{ session_id: string; messages: TranscriptMessage[] }>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/messages`),
+    request<{ session_id: string; messages: TranscriptMessage[] }>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/messages'),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
+  providerModels: (provider: string) => request<ProviderModelList>('GET', '/api/providers/' + encodeURIComponent(provider) + '/models'),
+  selectModel: (body: { provider: string; model: string; persist_last_model?: boolean }) =>
+    request<ProviderSelectionResult>('POST', '/api/model/select', body),
+  toolGroups: () => request<{ groups: ToolGroup[] }>('GET', '/api/tools/groups'),
+  tools: () => request<{ tools: ToolSummary[] }>('GET', '/api/tools'),
+  skills: () => request<{ skills: SkillSummary[] }>('GET', '/api/skills'),
+  diagnostics: () => request<HealthStatus>('GET', '/api/health'),
+  config: () => request<EffectiveConfig>('GET', '/api/config'),
+  configPaths: () => request<ConfigPaths>('GET', '/api/config/paths'),
+  prefs: () => request<Record<string, unknown>>('GET', '/api/prefs'),
 }

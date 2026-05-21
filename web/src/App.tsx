@@ -7,7 +7,11 @@ import { Sidebar } from './components/layout/Sidebar'
 import { StatusBar } from './components/layout/StatusBar'
 import { TopBar } from './components/layout/TopBar'
 import { ChatView } from './components/chat/ChatView'
-import { EmptyState } from './components/shared/EmptyState'
+import { DiagnosticsView } from './components/settings/DiagnosticsView'
+import { ProviderSettings } from './components/settings/ProviderSettings'
+import { SettingsView } from './components/settings/SettingsView'
+import { SkillsView } from './components/settings/SkillsView'
+import { ToolsView } from './components/settings/ToolsView'
 import { Spinner } from './components/shared/Spinner'
 
 export function App() {
@@ -55,31 +59,12 @@ export function App() {
               <span>{error}</span>
             </div>
           ) : null}
-          {activeView === 'chat' ? (
-            <ChatView session={activeSession} />
-          ) : null}
-          {activeView === 'models' ? (
-            <InfoGrid
-              items={[
-                ['Provider', current?.provider_name || 'unconfigured'],
-                ['Family', current?.family || '-'],
-                ['Model', current?.model || '-'],
-                ['Credential', current?.credential?.configured ? 'configured' : 'missing'],
-              ]}
-            />
-          ) : null}
-          {activeView === 'tools' ? <CatalogPlaceholder icon={<Wrench />} title="Tool catalog" /> : null}
-          {activeView === 'skills' ? <CatalogPlaceholder icon={<Brain />} title="Skill catalog" /> : null}
-          {activeView === 'diagnostics' ? (
-            <InfoGrid
-              items={[
-                ['Health', health?.status || 'unknown'],
-                ['Diagnostics', health?.diagnostics?.enabled ? 'enabled' : 'disabled'],
-                ['Runtime', health?.runtime?.python_version || '-'],
-              ]}
-            />
-          ) : null}
-          {activeView === 'settings' ? <CatalogPlaceholder icon={<Settings />} title="Settings" /> : null}
+          {activeView === 'chat' ? <ChatView session={activeSession} /> : null}
+          {activeView === 'models' ? <ProviderSettings /> : null}
+          {activeView === 'tools' ? <ToolsView /> : null}
+          {activeView === 'skills' ? <SkillsView /> : null}
+          {activeView === 'diagnostics' ? <DiagnosticsView health={health} /> : null}
+          {activeView === 'settings' ? <SettingsView /> : null}
         </section>
         <StatusBar
           health={health?.status || 'unknown'}
@@ -88,35 +73,6 @@ export function App() {
           activeSession={activeSession?.session_id ?? null}
         />
       </main>
-    </div>
-  )
-}
-
-function CatalogPlaceholder({ icon, title }: { icon: React.ReactNode; title: string }) {
-  return (
-    <EmptyState
-      icon={icon}
-      title={title}
-      description="The REST API is available; the detailed browser view lands in the next UI slice."
-    />
-  )
-}
-
-function InfoGrid({ items }: { items: Array<[string, string]> }) {
-  return (
-    <div className="info-grid">
-      {items.map(([label, value]) => (
-        <div className="info-row" key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-        </div>
-      ))}
-      <div className="info-row">
-        <span>Surface</span>
-        <strong>
-          <ShieldCheck size={15} /> service-backed
-        </strong>
-      </div>
     </div>
   )
 }

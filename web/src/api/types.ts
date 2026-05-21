@@ -36,6 +36,24 @@ export type ProviderSummary = {
   default_base_url?: string | null
 }
 
+export type ModelSummary = {
+  id: string
+  display_name: string
+  context_window?: number | null
+}
+
+export type ProviderModelList = {
+  models: ModelSummary[]
+  discovery: {
+    kind: string
+    source?: string | null
+    reason?: string | null
+    error?: string | null
+    count?: number | null
+    base_url?: string | null
+  }
+}
+
 export type ProviderRuntimeStatus = {
   family: string
   provider_name: string
@@ -46,6 +64,40 @@ export type ProviderRuntimeStatus = {
   base_url_env_names: string[]
   source: string
   credential?: CredentialStatus | null
+}
+
+export type ProviderSelectionResult = {
+  provider: string
+  family: string
+  model: string
+  base_url?: string | null
+  ready: boolean
+  missing_credentials: string[]
+  credential?: CredentialStatus | null
+}
+
+export type ToolSummary = {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+  required: string[]
+  enabled: boolean
+}
+
+export type ToolGroup = {
+  name: string
+  tools: ToolSummary[]
+}
+
+export type SkillSummary = {
+  name: string
+  description: string
+  when_to_use: string
+  source: {
+    source: string
+    path?: string | null
+  }
+  version?: string | null
 }
 
 export type ServiceStatus = {
@@ -67,6 +119,16 @@ export type HealthStatus = {
     enabled: boolean
     pending_count: number
   } | null
+}
+
+export type ConfigPaths = {
+  aether_home: string
+  sessions_dir: string
+  prefs_file: string
+}
+
+export type EffectiveConfig = {
+  values: Record<string, unknown>
 }
 
 export type StatusResponse = {

@@ -22,7 +22,9 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
         <footer>
           <button type="button" onClick={() => onRespond({ type: 'deny' })}>Deny</button>
           <button type="button" onClick={() => onRespond({ type: 'allow_once' })}>Allow once</button>
-          <button type="button" onClick={() => onRespond({ type: 'allow_session' })}>Allow session</button>
+          {block.allowSession ? (
+            <button type="button" onClick={() => onRespond({ type: 'allow_session' })}>Allow session</button>
+          ) : null}
         </footer>
       ) : null}
     </article>

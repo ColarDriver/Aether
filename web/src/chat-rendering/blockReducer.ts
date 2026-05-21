@@ -129,6 +129,7 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
       risk: stringOrNull(request.risk),
       reason: stringOrNull(request.reason),
       preview: previewFromUnknown(request.preview),
+      allowSession: Boolean(request.allow_session),
       state: 'pending',
     }
     return {

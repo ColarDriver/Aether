@@ -124,6 +124,7 @@ export type PermissionRequestBlock = ChatBlockBase & {
   risk?: string | null
   reason?: string | null
   preview?: PermissionPreview | null
+  allowSession?: boolean
   state: 'pending' | 'allowed' | 'denied' | 'expired' | 'aborted'
 }
 

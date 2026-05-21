@@ -100,6 +100,7 @@ describe('reduceRunFrame', () => {
         prompt_id: 'permission-1',
         request: {
           tool_name: 'write_file',
+          allow_session: true,
           arguments: { path: 'app.py' },
           preview: { diff: '-old\n+new' },
         },
@@ -116,7 +117,7 @@ describe('reduceRunFrame', () => {
       }),
     )
 
-    expect(withApproval.pendingPermissionBlock).toMatchObject({ promptId: 'permission-1' })
+    expect(withApproval.pendingPermissionBlock).toMatchObject({ promptId: 'permission-1', allowSession: true })
     expect(withApproval.pendingApprovalBlock).toMatchObject({ promptId: 'approval-1' })
     expect(withApproval.blocksBySession.s1?.map((block) => block.kind)).toEqual([
       'permission_request',

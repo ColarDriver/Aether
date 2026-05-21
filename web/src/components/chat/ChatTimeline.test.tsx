@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatBlock } from '../../chat-rendering'
 import { ChatTimeline } from './ChatTimeline'
 
@@ -11,6 +11,8 @@ const base = {
   timestamp: 1,
   source: 'live' as const,
 }
+
+afterEach(cleanup)
 
 describe('ChatTimeline', () => {
   it('renders user, assistant, thinking, tool, result, and diff blocks in one timeline', () => {
@@ -35,7 +37,7 @@ describe('ChatTimeline', () => {
     const onPermission = vi.fn()
     const onApproval = vi.fn()
     const blocks: ChatBlock[] = [
-      { ...base, id: 'p', kind: 'permission_request', promptId: 'p1', toolName: 'write_file', arguments: {}, state: 'pending' },
+      { ...base, id: 'p', kind: 'permission_request', promptId: 'p1', toolName: 'write_file', arguments: {}, allowSession: true, state: 'pending' },
       { ...base, id: 'ap', kind: 'approval_request', promptId: 'a1', approvalKind: 'plan', planText: '# Plan', questions: [], state: 'pending' },
     ]
 
@@ -46,5 +48,18 @@ describe('ChatTimeline', () => {
 
     expect(onPermission).toHaveBeenCalledWith({ type: 'allow_once' })
     expect(onApproval).toHaveBeenCalledWith({ confirmed: true })
+  })
+
+  it('only renders allow-session when the permission block allows it', () => {
+    render(
+      <ChatTimeline
+        blocks={[
+          { ...base, id: 'p', kind: 'permission_request', promptId: 'p1', toolName: 'shell', arguments: {}, state: 'pending' },
+        ]}
+        onRespondPermission={() => undefined}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Allow session' })).toBeNull()
   })
 })

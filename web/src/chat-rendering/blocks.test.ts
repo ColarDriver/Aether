@@ -27,7 +27,7 @@ describe('chat rendering blocks', () => {
       { ...base, id: 'tc', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: {}, status: 'running' },
       { ...base, id: 'tr', kind: 'tool_result', toolCallId: 'call-1', content: 'done', isError: false, metadata: {} },
       { ...base, id: 'd', kind: 'diff', origin: 'tool_result', path: 'app.py', diff: '-old\n+new' },
-      { ...base, id: 'p', kind: 'permission_request', promptId: 'permission-1', toolName: 'write_file', arguments: {}, state: 'pending' },
+      { ...base, id: 'p', kind: 'permission_request', promptId: 'permission-1', toolName: 'write_file', arguments: {}, allowSession: true, state: 'pending' },
       { ...base, id: 'ap', kind: 'approval_request', promptId: 'approval-1', approvalKind: 'plan', questions: [], state: 'pending' },
       { ...base, id: 'q', kind: 'ask_user_question', questions: [{ question: 'Continue?' }], state: 'pending' },
       { ...base, id: 's', kind: 'streaming_status', state: 'thinking', tokens: { output_tokens: 12 } },

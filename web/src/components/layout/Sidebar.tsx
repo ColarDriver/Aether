@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, Search } from 'lucide-react'
+import { Circle, Layers, MessageSquare, Plus, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { navItems } from '../../App'
 import type { ConsoleView, SessionInfo } from '../../api/types'
@@ -56,22 +56,40 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
             <span>New session</span>
           </button>
         </div>
-        <nav className="nav-list" aria-label="Pinned console sections">
-          {navItems.filter((item) => ['chat', 'sessions', 'workspace', 'tools'].includes(item.id)).map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                className={activeView === item.id ? 'nav-item nav-item-active' : 'nav-item'}
-                type="button"
-                onClick={() => onSelectView(item.id)}
-              >
-                <Icon size={16} />
-                <span>{item.label}</span>
-              </button>
-            )
-          })}
-        </nav>
+        <section className="sidebar-session-card" aria-label="Active session">
+          <div className="sidebar-session-card-head">
+            <span className="sidebar-session-card-icon" aria-hidden="true">
+              <Layers size={15} />
+            </span>
+            <div>
+              <strong>{activeSession?.summary || activeSession?.session_id.slice(0, 8) || 'No active session'}</strong>
+              <span>{activeSession ? activeSession.provider + ' / ' + activeSession.model : 'Create or resume a session'}</span>
+            </div>
+          </div>
+          <div className="sidebar-session-card-meta">
+            <span><Circle size={7} fill="currentColor" />{activeSession?.mode || 'agent'}</span>
+            <span>{activeSession?.message_count ?? 0} msgs</span>
+          </div>
+        </section>
+        <section className="sidebar-quick-nav" aria-label="Quick views">
+          <div className="sidebar-section-title">Views</div>
+          <nav className="nav-list" aria-label="Pinned console sections">
+            {navItems.filter((item) => ['chat', 'sessions', 'workspace', 'tools'].includes(item.id)).map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.id}
+                  className={activeView === item.id ? 'nav-item nav-item-active' : 'nav-item'}
+                  type="button"
+                  onClick={() => onSelectView(item.id)}
+                >
+                  <Icon size={16} />
+                  <span>{item.label}</span>
+                </button>
+              )
+            })}
+          </nav>
+        </section>
         <div className="sidebar-section-header">
           <span>Sessions</span>
           <Button title="New session" aria-label="New session quick action" onClick={onNewSession}>

@@ -11,15 +11,17 @@ export function TaskNotificationBlock({ block, onOpenTask }: Props) {
   return (
     <article className={'chat-block task-notification task-notification-' + toneForStatus(block.status)}>
       <header>
-        <Icon size={15} aria-hidden="true" />
-        <strong>Subagent {block.status}</strong>
+        <span className="task-notification-icon" aria-hidden="true"><Icon size={15} /></span>
+        <div>
+          <strong>Subagent {block.status}</strong>
+          {block.subagentType ? <small>{block.subagentType}</small> : null}
+        </div>
         <span>{block.taskId}</span>
       </header>
       <div className="task-notification-body">
         {block.summary ? <p>{block.summary}</p> : null}
         {block.error ? <p className="task-notification-error">{block.error}</p> : null}
         <div>
-          {block.subagentType ? <span>{block.subagentType}</span> : null}
           {typeof block.durationSeconds === 'number' ? <span>{block.durationSeconds.toFixed(1)}s</span> : null}
           {block.outputFile ? <span>{block.outputFile}</span> : null}
         </div>

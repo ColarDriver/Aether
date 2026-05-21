@@ -1224,14 +1224,36 @@ button {
 .task-notification {
   display: grid;
   gap: 8px;
-  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  padding: 10px;
 }
 
 .task-notification header {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+}
+
+.task-notification header div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.task-notification header strong,
+.task-notification header small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-notification header small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .task-notification header span {
@@ -1243,6 +1265,16 @@ button {
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.task-notification-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
 }
 
 .task-notification-body {
@@ -1271,6 +1303,7 @@ button {
   justify-self: start;
   min-height: 30px;
   border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
   padding: 0 10px;
@@ -1281,21 +1314,31 @@ button {
   border-color: var(--accent);
 }
 
-.task-notification-complete svg {
+.task-notification-complete .task-notification-icon {
   color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 34%, var(--line));
+  background: var(--ok-soft);
 }
 
-.task-notification-active svg {
+.task-notification-active .task-notification-icon {
   color: var(--accent);
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
 }
 
-.task-notification-error svg,
 .task-notification-error {
   color: var(--danger);
 }
 
-.task-notification-warn svg {
+.task-notification-error .task-notification-icon {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  background: var(--danger-soft);
+}
+
+.task-notification-warn .task-notification-icon {
   color: #b9812d;
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--line));
+  background: var(--warning-soft);
 }
 
 .message-list {
@@ -1739,12 +1782,20 @@ button {
 }
 
 .chat-block-thinking {
-  padding: 2px 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: transparent;
 }
 
+.chat-block-thinking-active {
+  border-color: var(--accent-soft-strong);
+  background: color-mix(in srgb, var(--accent-soft) 26%, transparent);
+}
+
 .thinking-toggle {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
   width: 100%;
   align-items: center;
   gap: 8px;
@@ -1752,8 +1803,28 @@ button {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  padding: 0;
+  padding: 6px 8px;
   text-align: left;
+}
+
+.thinking-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.chat-block-thinking-active .thinking-icon svg {
+  animation: spin 1s linear infinite;
+}
+
+.thinking-toggle strong {
+  color: var(--text);
+  font-size: 12px;
 }
 
 .thinking-preview {
@@ -1765,14 +1836,18 @@ button {
   font-size: 12px;
 }
 
+.thinking-toggle em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .thinking-content {
   max-height: 260px;
   overflow: auto;
-  margin-top: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--panel-2);
-  padding: 9px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+  padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
 }
@@ -1796,20 +1871,46 @@ button {
 
 .chat-block-status {
   width: fit-content;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, auto) auto;
   align-items: center;
   gap: 8px;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--text);
-  padding: 6px 9px;
+  padding: 6px 8px;
   font-size: 12px;
 }
 
-.status-spark {
+.status-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
   color: var(--accent);
-  animation: blink 1.2s steps(1) infinite;
+}
+
+.chat-block-status-working .status-icon svg {
+  animation: spin 1s linear infinite;
+}
+
+.status-detail,
+.status-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-meta {
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .tool-call-group {

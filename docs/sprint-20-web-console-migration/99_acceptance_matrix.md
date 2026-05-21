@@ -125,7 +125,7 @@ Latest verification performed during implementation:
 - `python -m pytest aether/tests/web`
 - `python -m pytest aether/tests/services`
 - `python -m pytest aether/tests/gateway`
-- `cd web && npm test` (8 files / 14 tests, including markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (11 files / 17 tests, including layout, provider/diagnostics views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:

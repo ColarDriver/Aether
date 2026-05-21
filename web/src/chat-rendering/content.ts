@@ -1,4 +1,4 @@
-import type { AskUserQuestion, AskUserQuestionOption, ChatAttachment, DiffContent } from './blocks'
+import type { AskUserQuestion, AskUserQuestionOption, ChatAttachment, DiffContent, TaskNotificationBlock } from './blocks'
 
 export function stringFromUnknown(value: unknown): string {
   if (typeof value === 'string') return value
@@ -102,6 +102,34 @@ export function attachmentsFromMetadata(metadata: Record<string, unknown>): Chat
   return []
 }
 
+export type TaskNotificationContent = Pick<
+  TaskNotificationBlock,
+  'taskId' | 'subagentType' | 'status' | 'durationSeconds' | 'summary' | 'error' | 'outputFile'
+>
+
+export function parseTaskNotification(text: string): TaskNotificationContent | null {
+  const xml = taskNotificationXml(text)
+  if (!xml) return null
+  const taskId = readXmlTag(xml, 'task_id') ?? readXmlTag(xml, 'task-id') ?? readXmlTag(xml, 'tool-use-id')
+  const status = readXmlTag(xml, 'status')
+  if (!taskId || !status) return null
+  return {
+    taskId,
+    status,
+    subagentType: readXmlTag(xml, 'subagent_type') ?? readXmlTag(xml, 'subagent-type') ?? null,
+    durationSeconds: numberOrNull(readXmlTag(xml, 'duration_seconds') ?? readXmlTag(xml, 'duration-seconds')),
+    summary: readXmlTag(xml, 'summary') ?? null,
+    error: readXmlTag(xml, 'error') ?? null,
+    outputFile: readXmlTag(xml, 'output_file') ?? readXmlTag(xml, 'output-file') ?? null,
+  }
+}
+
+export function isTaskNotificationText(text: string): boolean {
+  const trimmed = text.trim()
+  const xml = taskNotificationXml(trimmed)
+  return Boolean(xml && xml === trimmed)
+}
+
 function attachmentFromUnknown(value: unknown): ChatAttachment | null {
   const input = recordFromUnknown(value)
   const rawType = stringOrNull(input.type) ?? stringOrNull(input.kind)
@@ -199,4 +227,29 @@ function numberOrUndefined(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed
   }
   return undefined
+}
+
+function numberOrNull(value: unknown): number | null {
+  return numberOrUndefined(value) ?? null
+}
+
+function taskNotificationXml(text: string): string | null {
+  const trimmed = text.trim()
+  const full = trimmed.match(/^<task-notification>\s*[\s\S]*<\/task-notification>$/i)
+  if (full) return trimmed
+  return trimmed.match(/<task-notification>\s*[\s\S]*?<\/task-notification>/i)?.[0] ?? null
+}
+
+function readXmlTag(xml: string, tag: string): string | undefined {
+  const match = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+  return match?.[1] ? decodeXmlText(match[1].trim()) : undefined
+}
+
+function decodeXmlText(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
 }

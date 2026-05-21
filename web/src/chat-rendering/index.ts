@@ -18,6 +18,7 @@ export type {
   PromptResolution,
   StreamingStatusBlock,
   SystemNoticeBlock,
+  TaskNotificationBlock,
   ThinkingBlock,
   TokenUsage,
   ToolCallBlock,
@@ -59,6 +60,7 @@ export {
   firstNonEmptyLine,
   jsonPreview,
   parseAskUserQuestions,
+  parseTaskNotification,
   recordFromUnknown,
   stringFromUnknown,
 } from './content'

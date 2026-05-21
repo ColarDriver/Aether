@@ -1,6 +1,15 @@
 import type { TranscriptMessage } from '../api/types'
 import type { ChatBlock, ToolStatus } from './blocks'
-import { answersFromMetadata, attachmentsFromMetadata, attachmentsFromUnknown, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown } from './content'
+import {
+  answersFromMetadata,
+  attachmentsFromMetadata,
+  attachmentsFromUnknown,
+  extractDiffFromMetadata,
+  isTaskNotificationText,
+  parseAskUserQuestions,
+  parseTaskNotification,
+  recordFromUnknown,
+} from './content'
 
 export function normalizeTranscript(sessionId: string, transcript: TranscriptMessage[]): ChatBlock[] {
   const blocks: ChatBlock[] = []
@@ -11,6 +20,20 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
 
     if (message.role === 'user') {
       const metadata = recordFromUnknown(message.metadata)
+      const text = message.text ?? ''
+      const notification = parseTaskNotification(text)
+      if (notification && (metadata.source === 'task_notification' || isTaskNotificationText(text))) {
+        blocks.push({
+          id: 'persisted-' + index + '-task-notification',
+          sessionId,
+          runId,
+          timestamp,
+          source: 'transcript',
+          kind: 'task_notification',
+          ...notification,
+        })
+        return
+      }
       const attachments = [
         ...attachmentsFromUnknown(message.attachments),
         ...attachmentsFromMetadata(metadata),
@@ -22,7 +45,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
         timestamp,
         source: 'transcript',
         kind: 'user_message',
-        content: message.text ?? '',
+        content: text,
         ...(attachments.length > 0 ? { attachments } : {}),
       })
       return

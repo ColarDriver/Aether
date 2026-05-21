@@ -161,6 +161,17 @@ export type StreamingStatusBlock = ChatBlockBase & {
   tokens?: TokenUsage
 }
 
+export type TaskNotificationBlock = ChatBlockBase & {
+  kind: 'task_notification'
+  taskId: string
+  subagentType?: string | null
+  status: string
+  durationSeconds?: number | null
+  summary?: string | null
+  error?: string | null
+  outputFile?: string | null
+}
+
 export type SystemNoticeBlock = ChatBlockBase & {
   kind: 'system_notice'
   content: string
@@ -183,6 +194,7 @@ export type ChatBlock =
   | ApprovalRequestBlock
   | AskUserQuestionBlock
   | StreamingStatusBlock
+  | TaskNotificationBlock
   | SystemNoticeBlock
   | ErrorBlock
 

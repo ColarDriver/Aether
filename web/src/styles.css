@@ -588,6 +588,69 @@ button {
   color: #b9812d;
 }
 
+.task-notification {
+  display: grid;
+  gap: 8px;
+  background: var(--panel-2);
+}
+
+.task-notification header {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.task-notification header span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.task-notification-body {
+  display: grid;
+  gap: 6px;
+}
+
+.task-notification-body p {
+  margin: 0;
+}
+
+.task-notification-body div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.task-notification-body span {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.task-notification-complete svg {
+  color: var(--ok);
+}
+
+.task-notification-active svg {
+  color: var(--accent);
+}
+
+.task-notification-error svg,
+.task-notification-error {
+  color: var(--danger);
+}
+
+.task-notification-warn svg {
+  color: #b9812d;
+}
+
 .message-list {
   display: grid;
   gap: 12px;

@@ -8,6 +8,7 @@
 | Active task visibility | status and progress fields | `SessionTaskBar` auto-expands | component test |
 | Terminal history | terminal status classification | collapsible bar | component test |
 | Error handling | service validation/not-found | API error propagation | Python route test |
+| Task notification transcript | XML parser | `TaskNotificationBlock` | render/model tests |
 
 ## Current Evidence
 
@@ -21,6 +22,9 @@ Implemented on branch `web-console-migration`:
 - `web/src/stores/taskStore.ts`
 - `web/src/components/chat/SessionTaskBar.tsx`
 - `web/src/components/chat/ChatView.tsx` integration
+- `web/src/chat-rendering/content.ts` task-notification parser
+- `web/src/chat-rendering/normalizeTranscript.ts` task-notification block mapping
+- `web/src/components/chat/blocks/TaskNotificationBlock.tsx`
 
 Verification performed:
 

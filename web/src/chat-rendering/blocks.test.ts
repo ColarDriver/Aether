@@ -4,6 +4,7 @@ import {
   extractDiffFromMetadata,
   firstNonEmptyLine,
   jsonPreview,
+  parseTaskNotification,
   parseAskUserQuestions,
   recordFromUnknown,
   stringFromUnknown,
@@ -31,6 +32,7 @@ describe('chat rendering blocks', () => {
       { ...base, id: 'ap', kind: 'approval_request', promptId: 'approval-1', approvalKind: 'plan', questions: [], state: 'pending' },
       { ...base, id: 'q', kind: 'ask_user_question', questions: [{ question: 'Continue?' }], state: 'pending' },
       { ...base, id: 's', kind: 'streaming_status', state: 'thinking', tokens: { output_tokens: 12 } },
+      { ...base, id: 'tn', kind: 'task_notification', taskId: 'task-1', status: 'completed', summary: 'done' },
       { ...base, id: 'sys', kind: 'system_notice', content: 'cancelled' },
       { ...base, id: 'e', kind: 'error', message: 'failed', code: 'run_failed' },
     ]
@@ -46,6 +48,7 @@ describe('chat rendering blocks', () => {
       'approval_request',
       'ask_user_question',
       'streaming_status',
+      'task_notification',
       'system_notice',
       'error',
     ])
@@ -132,5 +135,25 @@ describe('chat rendering content helpers', () => {
     ])
     expect(parseAskUserQuestions({ questions: [] })).toEqual([])
     expect(parseAskUserQuestions(null)).toEqual([])
+  })
+
+  it('parses Aether task notifications from XML', () => {
+    expect(parseTaskNotification(`
+      <task-notification>
+        <task_id>task-1</task_id>
+        <subagent_type>explorer</subagent_type>
+        <status>completed</status>
+        <duration_seconds>2.5</duration_seconds>
+        <summary>Inspected &amp; summarized</summary>
+      </task-notification>
+    `)).toEqual({
+      taskId: 'task-1',
+      subagentType: 'explorer',
+      status: 'completed',
+      durationSeconds: 2.5,
+      summary: 'Inspected & summarized',
+      error: null,
+      outputFile: null,
+    })
   })
 })

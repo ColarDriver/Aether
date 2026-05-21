@@ -20,6 +20,7 @@ describe('ChatTimeline', () => {
       { ...base, id: 'u', kind: 'user_message', content: 'hello', attachments: [{ type: 'file', name: 'app.ts', path: 'src/app.ts' }] },
       { ...base, id: 'a', kind: 'assistant_message', content: 'I will read.' },
       { ...base, id: 't', kind: 'thinking', content: 'Need inspect', isActive: true },
+      { ...base, id: 'tn', kind: 'task_notification', taskId: 'task-1', subagentType: 'explorer', status: 'completed', summary: 'Task done' },
       { ...base, id: 'tc', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: { path: 'README.md' }, status: 'finished' },
       { ...base, id: 'tr', kind: 'tool_result', toolCallId: 'call-1', toolName: 'read_file', content: 'contents', isError: false, metadata: {} },
     ]
@@ -30,6 +31,8 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('app.ts')).toBeTruthy()
     expect(screen.getByText('I will read.')).toBeTruthy()
     expect(screen.getByText(/thinking/)).toBeTruthy()
+    expect(screen.getByText('Subagent completed')).toBeTruthy()
+    expect(screen.getByText('Task done')).toBeTruthy()
     expect(screen.getByText('read_file')).toBeTruthy()
     expect(screen.getByText('contents')).toBeTruthy()
   })

@@ -9,6 +9,7 @@ import {
   PermissionRequestBlock,
   StreamingStatusBlock,
   SystemNoticeBlock,
+  TaskNotificationBlock,
   ThinkingBlock,
   ToolCallGroup,
   ToolResultBlock,
@@ -80,6 +81,8 @@ function ChatBlockView({
       return <AskUserQuestionBlock block={block} />
     case 'streaming_status':
       return <StreamingStatusBlock block={block} />
+    case 'task_notification':
+      return <TaskNotificationBlock block={block} />
     case 'system_notice':
       return <SystemNoticeBlock block={block} />
     case 'error':

@@ -115,4 +115,24 @@ describe('normalizeTranscript', () => {
       ],
     })
   })
+
+  it('normalizes task-notification user turns without exposing raw XML', () => {
+    const blocks = normalizeTranscript('session-5', [
+      {
+        role: 'user',
+        text: '<task-notification>\n  <task_id>task-1</task_id>\n  <subagent_type>explorer</subagent_type>\n  <status>completed</status>\n  <duration_seconds>4.0</duration_seconds>\n  <summary>Done</summary>\n</task-notification>',
+        metadata: { source: 'task_notification' },
+      },
+    ])
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'task_notification',
+      taskId: 'task-1',
+      subagentType: 'explorer',
+      status: 'completed',
+      durationSeconds: 4,
+      summary: 'Done',
+    })
+  })
 })

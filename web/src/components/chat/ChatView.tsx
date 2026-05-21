@@ -24,6 +24,11 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
 const EMPTY_CHAT_BLOCKS: ChatBlock[] = []
 const EMPTY_TASKS: TaskSummary[] = []
 
+export type ScrollSnapshot = {
+  scrollTop: number
+  atBottom: boolean
+}
+
 export function ChatView({ session }: Props) {
   const sessionId = session?.session_id ?? null
   const loadTranscript = useChatStore((state) => state.loadTranscript)
@@ -52,6 +57,7 @@ export function ChatView({ session }: Props) {
   const shouldAutoScrollRef = useRef(true)
   const programmaticScrollRef = useRef(false)
   const lastSessionIdRef = useRef<string | null>(null)
+  const scrollSnapshotsRef = useRef<Record<string, ScrollSnapshot>>({})
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
 
@@ -74,7 +80,13 @@ export function ChatView({ session }: Props) {
     const atBottom = isNearChatBottom(element)
     shouldAutoScrollRef.current = atBottom
     setShowJumpToLatest(!atBottom)
-  }, [])
+    if (sessionId) {
+      scrollSnapshotsRef.current[sessionId] = {
+        scrollTop: element.scrollTop,
+        atBottom,
+      }
+    }
+  }, [sessionId])
 
   useEffect(() => {
     if (!sessionId) return
@@ -100,6 +112,17 @@ export function ChatView({ session }: Props) {
     if (lastSessionIdRef.current === sessionId) return
     lastSessionIdRef.current = sessionId
     setSelectedTaskId(null)
+    const snapshot = sessionId ? scrollSnapshotsRef.current[sessionId] : undefined
+    if (snapshot && !snapshot.atBottom) {
+      shouldAutoScrollRef.current = false
+      setShowJumpToLatest(true)
+      requestAnimationFrame(() => {
+        const element = scrollRef.current
+        if (!element) return
+        element.scrollTop = restoredChatScrollTop(snapshot, element)
+      })
+      return
+    }
     shouldAutoScrollRef.current = true
     setShowJumpToLatest(false)
     requestAnimationFrame(() => scrollToBottom('auto'))
@@ -252,6 +275,13 @@ export function ChatView({ session }: Props) {
 
 export function isNearChatBottom(element: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX
+}
+
+export function restoredChatScrollTop(
+  snapshot: ScrollSnapshot,
+  element: Pick<HTMLElement, 'scrollHeight' | 'clientHeight'>,
+): number {
+  return Math.max(0, Math.min(snapshot.scrollTop, element.scrollHeight - element.clientHeight))
 }
 
 const starterPrompts = [

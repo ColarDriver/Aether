@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
 import { useTaskStore } from '../../stores/taskStore'
-import { ChatView, isNearChatBottom } from './ChatView'
+import { ChatView, isNearChatBottom, restoredChatScrollTop } from './ChatView'
 
 afterEach(() => {
   cleanup()
@@ -31,6 +31,12 @@ describe('isNearChatBottom', () => {
   it('treats the scroll position as bottom only within the follow threshold', () => {
     expect(isNearChatBottom({ scrollHeight: 1000, scrollTop: 540, clientHeight: 420 })).toBe(true)
     expect(isNearChatBottom({ scrollHeight: 1000, scrollTop: 500, clientHeight: 420 })).toBe(false)
+  })
+
+  it('clamps restored chat scroll snapshots to the current content height', () => {
+    expect(restoredChatScrollTop({ scrollTop: 500, atBottom: false }, { scrollHeight: 1000, clientHeight: 400 })).toBe(500)
+    expect(restoredChatScrollTop({ scrollTop: 900, atBottom: false }, { scrollHeight: 1000, clientHeight: 400 })).toBe(600)
+    expect(restoredChatScrollTop({ scrollTop: -10, atBottom: false }, { scrollHeight: 1000, clientHeight: 400 })).toBe(0)
   })
 })
 

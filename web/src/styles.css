@@ -472,3 +472,116 @@ button {
     flex-wrap: wrap;
   }
 }
+
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(18, 24, 38, 0.42);
+  padding: 18px;
+  z-index: 20;
+}
+
+.prompt-modal {
+  width: min(780px, 100%);
+  max-height: min(720px, 90vh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2);
+}
+
+.prompt-modal header,
+.prompt-modal footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-modal footer {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  justify-content: flex-end;
+}
+
+.prompt-modal button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.prompt-modal .primary-action {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.prompt-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
+.command-preview,
+.markdown-code {
+  border: 1px solid var(--line);
+  background: #101828;
+  color: #eef4ff;
+  padding: 10px;
+  overflow: auto;
+}
+
+.diff-viewer {
+  border: 1px solid var(--line);
+  margin-top: 10px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 22px;
+  align-items: center;
+}
+
+.diff-line code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-marker {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.diff-line-add {
+  background: #d1fadf;
+}
+
+.diff-line-remove {
+  background: #fee4e2;
+}
+
+.diff-line-context {
+  background: #f8fafc;
+}
+
+.markdown-renderer h1,
+.markdown-renderer h2,
+.markdown-renderer h3,
+.markdown-renderer p,
+.markdown-renderer ul {
+  margin-top: 0;
+}

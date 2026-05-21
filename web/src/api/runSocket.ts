@@ -74,6 +74,14 @@ export class RunSocketClient {
     this.send({ type: 'run.cancel', payload: { session_id: sessionId, run_id: runId } })
   }
 
+  respondPermission(promptId: string, decision: Record<string, unknown>) {
+    this.send({ type: 'permission.respond', payload: { prompt_id: promptId, decision } })
+  }
+
+  respondApproval(promptId: string, result: Record<string, unknown>) {
+    this.send({ type: 'approval.respond', payload: { prompt_id: promptId, ...result } })
+  }
+
   private startPing() {
     this.stopPing()
     this.pingTimer = setInterval(() => this.send({ type: 'ping' }), 30_000)
@@ -100,7 +108,7 @@ export function buildRunSocketUrl() {
   const url = new URL(base || window.location.origin)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   const prefix = url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '')
-  url.pathname = `${prefix}/api/runs/ws`
+  url.pathname = prefix + '/api/runs/ws'
   const token = getSessionToken()
   if (token) url.searchParams.set('token', token)
   return url.toString()

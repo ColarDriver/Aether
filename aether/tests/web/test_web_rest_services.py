@@ -91,6 +91,21 @@ def test_config_prefs_and_diagnostics_routes(client: TestClient) -> None:
     assert prefs.status_code == 200
     assert prefs.json()["version"] >= 1
 
+    saved = client.put("/api/prefs", json={"key": "ui.theme", "value": "dark"})
+    assert saved.status_code == 200
+    assert saved.json() == {"ok": True, "key": "ui.theme", "value": "dark"}
+
+    pref = client.get("/api/prefs/ui.theme")
+    assert pref.status_code == 200
+    assert pref.json() == {"key": "ui.theme", "value": "dark"}
+
+    deleted = client.request("DELETE", "/api/prefs", json={"key": "ui.theme"})
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True, "key": "ui.theme", "deleted": True}
+
+    invalid = client.put("/api/prefs", json={"key": "version", "value": 2})
+    assert invalid.status_code == 400
+
     diagnostics = client.get("/api/diagnostics")
     assert diagnostics.status_code == 200
     assert "enabled" in diagnostics.json()

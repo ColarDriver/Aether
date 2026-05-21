@@ -138,6 +138,13 @@ export type EffectiveConfig = {
   values: Record<string, unknown>
 }
 
+export type PrefMutationResult = {
+  ok: boolean
+  key: string
+  value?: unknown
+  deleted?: boolean
+}
+
 export type StatusResponse = {
   ok: boolean
   name: string

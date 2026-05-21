@@ -2,6 +2,7 @@ import { Plus, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { navItems } from '../../App'
 import type { ConsoleView, SessionInfo } from '../../api/types'
+import { AppearanceControls } from '../shared/AppearanceControls'
 import { Button } from '../shared/Button'
 
 type Props = {
@@ -73,6 +74,20 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
             <small>{session.model}</small>
           </button>
         ))}
+      </div>
+      <div className="sidebar-control-center" aria-label="Aether control center">
+        <div>
+          <strong>Control Center</strong>
+          <span>{sessions.length} sessions</span>
+        </div>
+        <AppearanceControls compact />
+        <button
+          type="button"
+          className={activeView === 'settings' ? 'sidebar-settings-link sidebar-settings-link-active' : 'sidebar-settings-link'}
+          onClick={() => onSelectView('settings')}
+        >
+          Settings
+        </button>
       </div>
     </aside>
   )

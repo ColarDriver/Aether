@@ -35,6 +35,8 @@ describe('Sidebar', () => {
 
     expect(screen.getByText('Aether')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Models/ })).toBeTruthy()
+    expect(screen.getByLabelText('Aether control center')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Settings' }).length).toBeGreaterThan(0)
     expect(screen.getByText('Plan auth flow')).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'auth' } })

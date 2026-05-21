@@ -1,4 +1,4 @@
-import { Paperclip, Send, Square } from 'lucide-react'
+import { Boxes, CircleGauge, Folder, Paperclip, Route, Send, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { SlashCommandInfo } from '../../api/types'
@@ -19,9 +19,26 @@ type Props = {
   onCancel: () => void
   onSlashCommand?: (command: string) => void
   slashCommands?: SlashCommandInfo[]
+  provider?: string | null
+  model?: string | null
+  mode?: string | null
+  inputTokens?: number | null
+  outputTokens?: number | null
 }
 
-export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, slashCommands }: Props) {
+export function Composer({
+  disabled,
+  running,
+  onSend,
+  onCancel,
+  onSlashCommand,
+  slashCommands,
+  provider,
+  model,
+  mode,
+  inputTokens,
+  outputTokens,
+}: Props) {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [cursorPosition, setCursorPosition] = useState(0)
@@ -178,34 +195,53 @@ export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, 
         }}
         onKeyUp={updateCursorPosition}
       />
-      <div className="composer-actions">
-        <input
-          ref={fileInputRef}
-          className="composer-file-input"
-          type="file"
-          multiple
-          onChange={(event) => {
-            const files = event.target.files ? Array.from(event.target.files) : []
-            event.target.value = ''
-            void addFiles(files)
-          }}
-        />
-        <Button
-          aria-label="Attach files"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || running}
-        >
-          <Paperclip size={16} />
-        </Button>
-        {running ? (
-          <Button aria-label="Stop run" onClick={onCancel}>
-            <Square size={16} />
+      <div className="composer-footer">
+        <div className="composer-context">
+          <span className="composer-chip composer-chip-model" title={provider && model ? provider + ' / ' + model : 'Provider not loaded'}>
+            <Boxes size={14} />
+            <span>{provider && model ? model : 'Model'}</span>
+          </span>
+          <span className="composer-chip" title="Workspace references use @path search">
+            <Folder size={14} />
+            <span>Workspace</span>
+          </span>
+          {mode ? (
+            <span className={mode === 'plan' ? 'composer-chip composer-chip-plan' : 'composer-chip'} title="Current session mode">
+              <Route size={14} />
+              <span>{mode}</span>
+            </span>
+          ) : null}
+          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
+        </div>
+        <div className="composer-actions">
+          <input
+            ref={fileInputRef}
+            className="composer-file-input"
+            type="file"
+            multiple
+            onChange={(event) => {
+              const files = event.target.files ? Array.from(event.target.files) : []
+              event.target.value = ''
+              void addFiles(files)
+            }}
+          />
+          <Button
+            aria-label="Attach files"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || running}
+          >
+            <Paperclip size={16} />
           </Button>
-        ) : (
-          <Button aria-label="Send message" onClick={submit} disabled={disabled || (!value.trim() && attachments.length === 0)}>
-            <Send size={16} />
-          </Button>
-        )}
+          {running ? (
+            <Button aria-label="Stop run" onClick={onCancel}>
+              <Square size={16} />
+            </Button>
+          ) : (
+            <Button aria-label="Send message" onClick={submit} disabled={disabled || (!value.trim() && attachments.length === 0)}>
+              <Send size={16} />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -217,4 +253,33 @@ function isExactSlashCommand(value: string, commands: SlashCommandInfo[]): boole
   const head = trimmed.split(/\s+/, 1)[0]
   if (head !== trimmed) return true
   return commands.some((command) => command.name === head)
+}
+
+function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | null; outputTokens?: number | null }) {
+  const total = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+  const percent = total > 0 ? Math.min(99, Math.max(1, Math.round(total / 2000))) : 0
+  const circumference = 61.261
+  const offset = circumference - (circumference * percent) / 100
+  const title = total > 0
+    ? `${total.toLocaleString()} active-run tokens (${inputTokens ?? 0} in / ${outputTokens ?? 0} out)`
+    : 'No active-run token usage yet'
+
+  return (
+    <span className="composer-context-ring" title={title} aria-label={title}>
+      <CircleGauge size={14} className="composer-context-ring-icon" />
+      <span className="ctx-ring">
+        <svg className="ctx-ring-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <circle className="ctx-ring-track" cx="12" cy="12" r="9.75" />
+          <circle
+            className="ctx-ring-value"
+            cx="12"
+            cy="12"
+            r="9.75"
+            style={{ strokeDashoffset: offset }}
+          />
+        </svg>
+        <span className="ctx-ring-center">{percent > 0 ? percent : '-'}</span>
+      </span>
+    </span>
+  )
 }

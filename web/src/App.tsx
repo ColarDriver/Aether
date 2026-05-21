@@ -8,6 +8,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import { StatusBar } from './components/layout/StatusBar'
 import { TopBar } from './components/layout/TopBar'
 import { ChatView } from './components/chat/ChatView'
+import { WorkspaceRail } from './components/chat/WorkspaceRail'
 import { DiagnosticsView } from './components/settings/DiagnosticsView'
 import { ProviderSettings } from './components/settings/ProviderSettings'
 import { SettingsView } from './components/settings/SettingsView'
@@ -69,7 +70,12 @@ export function App() {
               <span>{error}</span>
             </div>
           ) : null}
-          {activeView === 'chat' ? <ChatView session={activeSession} /> : null}
+          {activeView === 'chat' ? (
+            <div className="chat-workbench">
+              <ChatView session={activeSession} />
+              <WorkspaceRail onOpenWorkspace={() => setActiveView('workspace')} />
+            </div>
+          ) : null}
           {activeView === 'models' ? <ProviderSettings /> : null}
           {activeView === 'sessions' ? <SessionsView /> : null}
           {activeView === 'tools' ? <ToolsView /> : null}

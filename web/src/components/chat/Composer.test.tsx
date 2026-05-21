@@ -140,4 +140,27 @@ describe('Composer', () => {
       expect.objectContaining({ type: 'text', name: 'app.ts', path: 'src/app.ts' }),
     ])
   })
+
+  it('renders command-surface metadata in the footer', () => {
+    const onSend = vi.fn()
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        onCancel={() => undefined}
+        onSend={onSend}
+        slashCommands={slashCommands}
+        provider="codex"
+        model="gpt-5.4"
+        mode="plan"
+        inputTokens={1200}
+        outputTokens={800}
+      />,
+    )
+
+    expect(screen.getByText('gpt-5.4')).toBeTruthy()
+    expect(screen.getByText('Workspace')).toBeTruthy()
+    expect(screen.getByText('plan')).toBeTruthy()
+    expect(screen.getByLabelText(/2,000 active-run tokens/)).toBeTruthy()
+  })
 })

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 
@@ -15,8 +15,8 @@ def mount_spa(app: FastAPI, web_dist: Path, *, session_token: str) -> None:
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="web-assets")
 
-    @app.get("/{path:path}", include_in_schema=False)
-    async def spa_fallback(request: Request, path: str) -> HTMLResponse | JSONResponse:
+    @app.get("/{path:path}", include_in_schema=False, response_model=None)
+    async def spa_fallback(request: Request, path: str) -> Response:
         if request.url.path.startswith("/api/"):
             return JSONResponse(
                 status_code=404,

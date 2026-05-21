@@ -84,3 +84,21 @@ def _add_private_route(app: FastAPI) -> None:
     @app.get("/api/private")
     async def private() -> dict[str, bool]:
         return {"ok": True}
+
+
+
+def test_static_spa_mount_serves_index_with_bootstrap(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        "<html><head></head><body><div id='root'></div></body></html>",
+        encoding="utf-8",
+    )
+    app = create_app(auth_enabled=True, session_token="static-token", web_dist=dist)
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "window.__AETHER_SESSION_TOKEN__='static-token'" in response.text
+    assert "window.__AETHER_BASE_PATH__=''" in response.text

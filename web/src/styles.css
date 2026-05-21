@@ -527,20 +527,33 @@ button {
 }
 
 .session-task-item {
+  border-top: 1px solid var(--line);
+}
+
+.session-task-row {
   min-height: 42px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 9px;
-  border-top: 1px solid var(--line);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
   padding: 9px 0;
+  text-align: left;
+  cursor: pointer;
 }
 
-.session-task-item > div {
+.session-task-row:hover {
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+.session-task-row > div {
   min-width: 0;
 }
 
-.session-task-item svg {
+.session-task-row svg {
   margin-top: 1px;
   color: var(--muted);
 }
@@ -586,6 +599,77 @@ button {
 
 .session-task-warn svg {
   color: #b9812d;
+}
+
+.task-detail-modal header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.task-detail-modal header strong,
+.task-detail-modal header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-detail-modal header span {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.task-detail-modal header button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.task-detail-content {
+  display: grid;
+  gap: 12px;
+}
+
+.task-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.task-detail-info,
+.task-detail-note {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 8px 10px;
+}
+
+.task-detail-info-wide {
+  grid-column: 1 / -1;
+}
+
+.task-detail-info span,
+.task-detail-note span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-detail-info strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.task-detail-note p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.task-detail-note-error {
+  border-color: #f3b5af;
 }
 
 .task-notification {

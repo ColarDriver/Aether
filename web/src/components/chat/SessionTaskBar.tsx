@@ -4,9 +4,10 @@ import type { TaskSummary } from '../../api/types'
 
 type Props = {
   tasks: TaskSummary[]
+  onOpenTask?: (task: TaskSummary) => void
 }
 
-export function SessionTaskBar({ tasks }: Props) {
+export function SessionTaskBar({ tasks, onOpenTask }: Props) {
   const [expanded, setExpanded] = useState(false)
   const activeCount = tasks.filter((task) => !isTaskTerminal(task)).length
   const completedCount = tasks.filter((task) => task.status === 'completed').length
@@ -40,7 +41,7 @@ export function SessionTaskBar({ tasks }: Props) {
       {expanded ? (
         <ol className="session-task-list">
           {sortedTasks.map((task) => (
-            <TaskItem key={task.task_id} task={task} />
+            <TaskItem key={task.task_id} onOpenTask={onOpenTask} task={task} />
           ))}
         </ol>
       ) : null}
@@ -52,24 +53,31 @@ export function isTaskTerminal(task: Pick<TaskSummary, 'status'>): boolean {
   return task.status === 'completed' || task.status === 'failed' || task.status === 'interrupted' || task.status === 'killed'
 }
 
-function TaskItem({ task }: { task: TaskSummary }) {
+function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task: TaskSummary) => void }) {
   const Icon = iconForTask(task)
   const tone = toneForTask(task)
   const detail = task.error || task.summary || activityDetail(task)
   return (
     <li className={'session-task-item session-task-' + tone}>
-      <Icon size={15} aria-hidden="true" />
-      <div>
-        <div className="session-task-main">
-          <span>{task.prompt}</span>
-          <em>{task.subagent_type}</em>
+      <button
+        type="button"
+        className="session-task-row"
+        onClick={() => onOpenTask?.(task)}
+        aria-label={'Open task ' + task.task_id}
+      >
+        <Icon size={15} aria-hidden="true" />
+        <div>
+          <div className="session-task-main">
+            <span>{task.prompt}</span>
+            <em>{task.subagent_type}</em>
+          </div>
+          {detail ? <p>{detail}</p> : null}
         </div>
-        {detail ? <p>{detail}</p> : null}
-      </div>
-      <span className="session-task-meta">
-        {task.status}
-        {task.model ? ' · ' + task.model : ''}
-      </span>
+        <span className="session-task-meta">
+          {task.status}
+          {task.model ? ' · ' + task.model : ''}
+        </span>
+      </button>
     </li>
   )
 }

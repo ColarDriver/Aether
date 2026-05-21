@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TaskSummary } from '../../api/types'
 import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 
@@ -63,5 +63,14 @@ describe('SessionTaskBar', () => {
     expect(isTaskTerminal({ status: 'completed' })).toBe(true)
     expect(isTaskTerminal({ status: 'failed' })).toBe(true)
     expect(isTaskTerminal({ status: 'running' })).toBe(false)
+  })
+
+  it('opens a task detail request from a task row', () => {
+    const onOpenTask = vi.fn()
+    render(<SessionTaskBar onOpenTask={onOpenTask} tasks={[baseTask]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open task task-1' }))
+
+    expect(onOpenTask).toHaveBeenCalledWith(baseTask)
   })
 })

@@ -12,6 +12,7 @@ import { Composer } from './Composer'
 import { PermissionDialog } from './PermissionDialog'
 import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 import { executeWebSlashCommand } from './slashExecute'
+import { TaskDetailDialog } from './TaskDetailDialog'
 
 type Props = {
   session: SessionInfo | null
@@ -46,6 +47,7 @@ export function ChatView({ session }: Props) {
   const programmaticScrollRef = useRef(false)
   const lastSessionIdRef = useRef<string | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     shouldAutoScrollRef.current = true
@@ -89,6 +91,7 @@ export function ChatView({ session }: Props) {
   useEffect(() => {
     if (lastSessionIdRef.current === sessionId) return
     lastSessionIdRef.current = sessionId
+    setSelectedTaskId(null)
     shouldAutoScrollRef.current = true
     setShowJumpToLatest(false)
     requestAnimationFrame(() => scrollToBottom('auto'))
@@ -152,7 +155,7 @@ export function ChatView({ session }: Props) {
           <div className="token-pill">{usage.input_tokens ?? 0} in / {usage.output_tokens ?? 0} out</div>
         ) : null}
       </div>
-      <SessionTaskBar tasks={tasks} />
+      <SessionTaskBar tasks={tasks} onOpenTask={(task) => setSelectedTaskId(task.task_id)} />
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}
@@ -187,6 +190,13 @@ export function ChatView({ session }: Props) {
           prompt={pendingApproval}
           onApprove={(answers) => respondApproval({ confirmed: true, ...(answers ? { answers } : {}) })}
           onReject={() => respondApproval({ confirmed: false })}
+        />
+      ) : null}
+      {selectedTaskId ? (
+        <TaskDetailDialog
+          taskId={selectedTaskId}
+          initialTask={tasks.find((task) => task.task_id === selectedTaskId)}
+          onClose={() => setSelectedTaskId(null)}
         />
       ) : null}
     </div>

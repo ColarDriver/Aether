@@ -52,6 +52,7 @@ export {
 } from './blockGuards'
 
 export {
+  answersFromMetadata,
   extractDiffFromMetadata,
   firstNonEmptyLine,
   jsonPreview,

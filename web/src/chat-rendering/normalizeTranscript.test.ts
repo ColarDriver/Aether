@@ -71,6 +71,13 @@ describe('normalizeTranscript', () => {
           },
         ],
       },
+      {
+        role: 'tool',
+        name: 'ask_user_question',
+        tool_call_id: 'ask-1',
+        text: 'answered',
+        metadata: { answer_pairs: [{ label: 'Continue?', value: 'Yes' }] },
+      },
     ])
 
     expect(blocks).toHaveLength(1)
@@ -78,6 +85,8 @@ describe('normalizeTranscript', () => {
       kind: 'ask_user_question',
       toolCallId: 'ask-1',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+      state: 'answered',
+      answers: { 'Continue?': 'Yes' },
     })
   })
 })

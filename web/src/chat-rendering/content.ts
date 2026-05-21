@@ -69,6 +69,26 @@ export function parseAskUserQuestions(value: unknown): AskUserQuestion[] {
   return single ? [single] : []
 }
 
+export function answersFromMetadata(metadata: Record<string, unknown>): Record<string, string> {
+  const normalized: Record<string, string> = {}
+  const answers = recordFromUnknown(metadata.answers)
+  for (const [key, value] of Object.entries(answers)) {
+    const text = stringFromUnknown(value).trim()
+    if (text) normalized[key] = text
+  }
+
+  if (Array.isArray(metadata.answer_pairs)) {
+    for (const pair of metadata.answer_pairs) {
+      const record = recordFromUnknown(pair)
+      const label = stringOrNull(record.label)
+      const value = stringOrNull(record.value)
+      if (label && value != null) normalized[label] = value
+    }
+  }
+
+  return normalized
+}
+
 function questionFromUnknown(value: unknown): AskUserQuestion | null {
   const input = recordFromUnknown(value)
   const question = stringOrNull(input.question) ?? stringOrNull(input.prompt)

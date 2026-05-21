@@ -1,6 +1,6 @@
 import type { TranscriptMessage } from '../api/types'
 import type { ChatBlock, ToolStatus } from './blocks'
-import { extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown } from './content'
+import { answersFromMetadata, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown } from './content'
 
 export function normalizeTranscript(sessionId: string, transcript: TranscriptMessage[]): ChatBlock[] {
   const blocks: ChatBlock[] = []
@@ -68,6 +68,19 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
     if (message.role === 'tool') {
       const metadata = recordFromUnknown(message.metadata)
       const toolCallId = message.tool_call_id || 'tool-' + index
+      const askIndex = blocks.findIndex((block) => block.kind === 'ask_user_question' && block.toolCallId === toolCallId)
+      if (askIndex >= 0) {
+        const block = blocks[askIndex]
+        if (block?.kind === 'ask_user_question') {
+          const answers = answersFromMetadata(metadata)
+          blocks[askIndex] = {
+            ...block,
+            state: message.is_error ? 'cancelled' : 'answered',
+            ...(Object.keys(answers).length > 0 ? { answers } : {}),
+          }
+        }
+        return
+      }
       blocks.push({
         id: 'persisted-' + index + '-result-' + toolCallId,
         sessionId,

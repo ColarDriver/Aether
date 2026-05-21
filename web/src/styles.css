@@ -784,6 +784,29 @@ button {
   font-size: 12px;
 }
 
+.question-answers {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.question-answers > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.22fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.question-answers span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.question-answers p {
+  margin: 0;
+}
+
 .question-form,
 .question-form-item {
   display: grid;
@@ -1202,21 +1225,29 @@ button {
 
 .diff-line {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 48px 48px 28px minmax(0, 1fr);
   min-height: 22px;
   align-items: center;
 }
 
 .diff-line code {
-  white-space: pre-wrap;
-  word-break: break-word;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
 }
 
-.diff-marker {
+.diff-marker,
+.diff-line-number {
   height: 100%;
   display: grid;
   place-items: center;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.diff-line-number {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
 }
 
 .diff-line-add {
@@ -1229,6 +1260,12 @@ button {
 
 .diff-line-context {
   background: #f8fafc;
+}
+
+.diff-line-hunk,
+.diff-line-meta {
+  background: var(--panel-2);
+  color: var(--muted);
 }
 
 .markdown-renderer h1,

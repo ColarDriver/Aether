@@ -23,10 +23,15 @@ export function buildChatRenderModel(blocks: ChatBlock[]): ChatRenderModel {
   const diffsByToolCallId = new Map<string, DiffBlock[]>()
   const childToolCallsByParent = new Map<string, ToolCallBlock[]>()
   const toolCallIds = new Set<string>()
+  const associatedResultIds = new Set<string>()
   let pendingToolCalls: ToolCallBlock[] = []
 
   for (const block of blocks) {
-    if (block.kind === 'tool_call') toolCallIds.add(block.toolCallId)
+    if (block.kind === 'tool_call') {
+      toolCallIds.add(block.toolCallId)
+      associatedResultIds.add(block.toolCallId)
+    }
+    if (block.kind === 'ask_user_question' && block.toolCallId) associatedResultIds.add(block.toolCallId)
     if (block.kind === 'tool_result') toolResultsByCallId.set(block.toolCallId, block)
     if (block.kind === 'diff') {
       const toolCallId = toolCallIdFromDiff(block)
@@ -51,13 +56,13 @@ export function buildChatRenderModel(blocks: ChatBlock[]): ChatRenderModel {
   for (const block of blocks) {
     if (block.kind === 'assistant_message' && !block.content.trim()) continue
 
-    if (block.kind === 'tool_result' && toolCallIds.has(block.toolCallId)) {
+    if (block.kind === 'tool_result' && associatedResultIds.has(block.toolCallId)) {
       continue
     }
 
     if (block.kind === 'diff') {
       const toolCallId = toolCallIdFromDiff(block)
-      if (toolCallId && toolCallIds.has(toolCallId)) continue
+      if (toolCallId && associatedResultIds.has(toolCallId)) continue
     }
 
     if (block.kind === 'tool_call') {

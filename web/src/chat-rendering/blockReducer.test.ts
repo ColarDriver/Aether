@@ -61,6 +61,36 @@ describe('reduceRunFrame', () => {
     expect(finished.blocksBySession.s1?.[0]).toMatchObject({ status: 'finished' })
   })
 
+  it('marks ask_user_question blocks answered from tool result metadata', () => {
+    const started = reduceRunFrame(
+      createChatRenderState(),
+      frame('tool.started', {
+        session_id: 's1',
+        run_id: 'r1',
+        tool_call_id: 'ask-1',
+        tool_name: 'ask_user_question',
+        arguments: { questions: [{ id: 'mode', prompt: 'Which mode?' }] },
+      }),
+    )
+    const finished = reduceRunFrame(
+      started,
+      frame('tool.finished', {
+        session_id: 's1',
+        run_id: 'r1',
+        tool_call_id: 'ask-1',
+        tool_name: 'ask_user_question',
+        content: 'User has answered your questions.',
+        metadata: { answer_pairs: [{ label: 'Mode', value: 'Careful' }] },
+      }),
+    )
+
+    expect(finished.blocksBySession.s1?.[0]).toMatchObject({
+      kind: 'ask_user_question',
+      state: 'answered',
+      answers: { Mode: 'Careful' },
+    })
+  })
+
   it('creates prompt blocks and exposes pending prompt state', () => {
     const withPermission = reduceRunFrame(
       createChatRenderState(),

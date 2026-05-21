@@ -7,7 +7,7 @@ import type {
   TokenUsage,
   ToolCallBlock,
 } from './blocks'
-import { extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown, stringFromUnknown } from './content'
+import { answersFromMetadata, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown, stringFromUnknown } from './content'
 import type { ChatRenderState, RunStatusSnapshot } from './runState'
 import { frameRunId, frameSessionId } from './runState'
 
@@ -339,7 +339,12 @@ function upsertToolFinished(
       } satisfies ToolCallBlock
     }
     if (block.kind === 'ask_user_question' && block.toolCallId === input.toolCallId) {
-      return { ...block, state: input.isError ? 'cancelled' : 'answered' } satisfies ChatBlock
+      const answers = answersFromMetadata(input.metadata)
+      return {
+        ...block,
+        state: input.isError ? 'cancelled' : 'answered',
+        ...(Object.keys(answers).length > 0 ? { answers } : {}),
+      } satisfies ChatBlock
     }
     return block
   })

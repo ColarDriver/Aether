@@ -38,4 +38,16 @@ describe('buildChatRenderModel', () => {
     expect(model.items[0]).toMatchObject({ kind: 'block', block: { kind: 'ask_user_question' } })
     expect(model.items[1]).toMatchObject({ kind: 'block', block: { kind: 'tool_result' } })
   })
+
+  it('does not duplicate tool results already represented by ask_user_question blocks', () => {
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'ask', kind: 'ask_user_question', toolCallId: 'ask-1', questions: [{ question: 'Continue?' }], state: 'answered', answers: { Continue: 'Yes' } },
+      { ...base, id: 'result', kind: 'tool_result', toolCallId: 'ask-1', content: 'answered', isError: false, metadata: {} },
+    ]
+
+    const model = buildChatRenderModel(blocks)
+
+    expect(model.items).toHaveLength(1)
+    expect(model.items[0]).toMatchObject({ kind: 'block', block: { kind: 'ask_user_question' } })
+  })
 })

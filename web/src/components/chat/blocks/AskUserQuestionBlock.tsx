@@ -23,6 +23,17 @@ export function AskUserQuestionBlock({ block }: Props) {
           ) : null}
         </div>
       ))}
+      {block.answers && Object.keys(block.answers).length > 0 ? (
+        <div className="question-answers">
+          <strong>User answered</strong>
+          {Object.entries(block.answers).map(([label, value]) => (
+            <div key={label}>
+              <span>{label}</span>
+              <p>{value}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </article>
   )
 }

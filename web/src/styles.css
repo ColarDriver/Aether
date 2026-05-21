@@ -161,11 +161,26 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--rail-bg);
   color: var(--rail-fg);
   padding: 12px 10px;
+}
+
+.app-rail-section {
+  display: grid;
+  gap: 6px;
+}
+
+.app-rail-section-quiet {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.app-rail-spacer {
+  flex: 1;
+  min-height: 8px;
 }
 
 .sidebar {
@@ -246,6 +261,7 @@ button {
 }
 
 .app-rail .nav-item {
+  position: relative;
   width: 38px;
   height: 38px;
   justify-content: center;
@@ -284,6 +300,18 @@ button {
 .app-rail .nav-item-active {
   background: rgba(255, 255, 255, 0.12);
   color: var(--rail-fg);
+}
+
+.app-rail .nav-item-active::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 0 999px 999px 0;
+  background: var(--accent);
+  transform: translateY(-50%);
 }
 
 .sidebar-section-header {

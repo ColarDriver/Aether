@@ -31,21 +31,16 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
     <>
       <nav className="app-rail" aria-label="Console sections">
         <div className="brand-mark">A</div>
-        {navItems.map((item) => {
-          const Icon = item.icon
-          return (
-            <button
-              key={item.id}
-              className={activeView === item.id ? 'nav-item nav-item-active' : 'nav-item'}
-              type="button"
-              title={item.label}
-              aria-label={item.label}
-              onClick={() => onSelectView(item.id)}
-            >
-              <Icon size={16} />
-            </button>
-          )
-        })}
+        <div className="app-rail-section">
+          {railPrimaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+        </div>
+        <div className="app-rail-section app-rail-section-quiet">
+          {railSecondaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+        </div>
+        <div className="app-rail-spacer" />
+        <div className="app-rail-section">
+          {railBottomItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+        </div>
       </nav>
       <aside className="sidebar">
         <div className="brand">
@@ -139,6 +134,32 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
         </div>
       </aside>
     </>
+  )
+}
+
+const railPrimaryIds = new Set<ConsoleView>(['chat', 'sessions', 'models', 'tools', 'workspace'])
+const railBottomIds = new Set<ConsoleView>(['settings'])
+const railPrimaryItems = navItems.filter((item) => railPrimaryIds.has(item.id))
+const railSecondaryItems = navItems.filter((item) => !railPrimaryIds.has(item.id) && !railBottomIds.has(item.id))
+const railBottomItems = navItems.filter((item) => railBottomIds.has(item.id))
+
+function renderRailButton(
+  item: (typeof navItems)[number],
+  activeView: ConsoleView,
+  onSelectView: (view: ConsoleView) => void,
+) {
+  const Icon = item.icon
+  return (
+    <button
+      key={item.id}
+      className={activeView === item.id ? 'nav-item nav-item-active' : 'nav-item'}
+      type="button"
+      title={item.label}
+      aria-label={item.label}
+      onClick={() => onSelectView(item.id)}
+    >
+      <Icon size={16} />
+    </button>
   )
 }
 

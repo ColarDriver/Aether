@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { CodeBlock } from './blocks/CodeBlock'
 
 type Props = {
   text: string
@@ -20,12 +21,7 @@ function renderBlock(block: string, index: number) {
   const fence = String.fromCharCode(96, 96, 96)
   if (block.startsWith(fence)) {
     const { language, code } = parseFence(block)
-    return (
-      <div className="markdown-code-wrap" key={index}>
-        {language ? <div className="markdown-code-header">{language}</div> : null}
-        <pre className="markdown-code"><code>{highlightCode(code, language)}</code></pre>
-      </div>
-    )
+    return <CodeBlock code={code} key={index} language={language} />
   }
   if (isMarkdownTable(block)) {
     return <MarkdownTable block={block} key={index} />
@@ -177,29 +173,4 @@ function safeHref(href: string): string {
   const trimmed = href.trim()
   if (/^(https?:|mailto:|#|\/(?!\/)|\.\/|\.\.\/)/i.test(trimmed)) return trimmed
   return '#'
-}
-
-function highlightCode(code: string, language: string): ReactNode {
-  if (!['json', 'jsonc', 'js', 'javascript', 'ts', 'typescript'].includes(language.toLowerCase())) {
-    return code
-  }
-  const pattern = /("(?:\\.|[^"\\])*"|\btrue\b|\bfalse\b|\bnull\b|-?\b\d+(?:\.\d+)?\b)/g
-  const parts: ReactNode[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(code)) !== null) {
-    if (match.index > lastIndex) parts.push(code.slice(lastIndex, match.index))
-    const value = match[0]
-    const tokenClass = value.startsWith('"')
-      ? 'syntax-string'
-      : value === 'true' || value === 'false'
-        ? 'syntax-boolean'
-        : value === 'null'
-          ? 'syntax-null'
-          : 'syntax-number'
-    parts.push(<span className={tokenClass} key={parts.length}>{value}</span>)
-    lastIndex = match.index + value.length
-  }
-  if (lastIndex < code.length) parts.push(code.slice(lastIndex))
-  return parts
 }

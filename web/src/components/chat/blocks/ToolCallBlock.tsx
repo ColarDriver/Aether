@@ -1,9 +1,9 @@
 import { ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import type { DiffBlock as DiffChatBlock, ToolCallBlock as ToolCall, ToolResultBlock as ToolResult } from '../../../chat-rendering'
-import { jsonPreview } from '../../../chat-rendering'
 import { DiffBlock } from './DiffBlock'
 import { ToolResultBlock } from './ToolResultBlock'
+import { CodeBlock } from './CodeBlock'
 
 type Props = {
   block: ToolCall
@@ -25,7 +25,9 @@ export function ToolCallBlock({ block, result, diffs = [] }: Props) {
       </button>
       {expanded || result || diffs.length > 0 ? (
         <div className="tool-call-body">
-          {Object.keys(block.arguments).length > 0 ? <pre>{jsonPreview(block.arguments)}</pre> : null}
+          {Object.keys(block.arguments).length > 0 ? (
+            <CodeBlock code={JSON.stringify(block.arguments, null, 2)} language="json" title="Input" />
+          ) : null}
           {diffs.map((diff) => <DiffBlock block={diff} key={diff.id} />)}
           {result ? <ToolResultBlock block={result} /> : null}
         </div>

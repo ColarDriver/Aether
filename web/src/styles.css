@@ -575,8 +575,6 @@ button {
 
 .chat-user-text,
 .thinking-content,
-.tool-call-body pre,
-.tool-result-block pre,
 .prompt-inline-block pre {
   margin: 0;
   white-space: pre-wrap;
@@ -715,11 +713,9 @@ button {
   padding: 10px;
 }
 
-.tool-call-body > pre,
 .tool-result-block {
   border: 1px solid var(--line);
   background: var(--panel-2);
-  padding: 9px;
   overflow: auto;
 }
 
@@ -1144,27 +1140,29 @@ button {
   padding: 14px;
 }
 
-.command-preview,
-.markdown-code {
+.code-block {
   border: 1px solid var(--line);
   background: #101828;
   color: #eef4ff;
+  overflow: hidden;
+}
+
+.code-block-body {
+  margin: 0;
   padding: 10px;
   overflow: auto;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.markdown-code-wrap {
-  margin: 10px 0;
-  border: 1px solid var(--line);
-  background: #101828;
+.code-block-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.markdown-code-wrap .markdown-code {
-  border: 0;
-  margin: 0;
-}
-
-.markdown-code-header {
+.code-block-header {
   min-height: 28px;
   display: flex;
   align-items: center;
@@ -1173,6 +1171,10 @@ button {
   color: #9fb1cc;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.markdown-renderer .code-block {
+  margin: 10px 0;
 }
 
 .markdown-inline-code {
@@ -1316,7 +1318,7 @@ button {
 .markdown-renderer blockquote:last-child,
 .markdown-renderer ul:last-child,
 .markdown-renderer ol:last-child,
-.markdown-renderer .markdown-code-wrap:last-child,
+.markdown-renderer .code-block:last-child,
 .markdown-renderer .markdown-table-wrap:last-child {
   margin-bottom: 0;
 }

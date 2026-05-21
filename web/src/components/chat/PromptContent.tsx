@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { AskUserQuestion, PermissionPreview } from '../../chat-rendering'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { DiffViewer } from './DiffViewer'
+import { CodeBlock } from './blocks/CodeBlock'
 
 type PermissionPreviewContentProps = {
   preview?: PermissionPreview | null
@@ -20,11 +21,11 @@ export function PermissionPreviewContent({
     <div className="prompt-content">
       {preview?.subtitle ? <p className="muted">{preview.subtitle}</p> : null}
       {reason ? <p>{reason}</p> : null}
-      {preview?.command ? <pre className="command-preview">{preview.command}</pre> : null}
+      {preview?.command ? <CodeBlock code={preview.command} language="shell" title="Command" /> : null}
       {preview?.body ? <p>{preview.body}</p> : null}
       {preview?.diff ? <DiffViewer diff={preview.diff} /> : null}
       {showArguments && Object.keys(args).length > 0 ? (
-        <pre className="prompt-json-preview">{JSON.stringify(args, null, 2)}</pre>
+        <CodeBlock code={JSON.stringify(args, null, 2)} language="json" title="Arguments" />
       ) : null}
     </div>
   )

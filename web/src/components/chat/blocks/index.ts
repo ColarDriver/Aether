@@ -1,6 +1,7 @@
 export { ApprovalRequestBlock } from './ApprovalRequestBlock'
 export { AskUserQuestionBlock } from './AskUserQuestionBlock'
 export { AssistantMessageBlock, shouldUseDocumentLayout } from './AssistantMessageBlock'
+export { CodeBlock, highlightCode } from './CodeBlock'
 export { DiffBlock } from './DiffBlock'
 export { ErrorBlock } from './ErrorBlock'
 export { PermissionRequestBlock } from './PermissionRequestBlock'

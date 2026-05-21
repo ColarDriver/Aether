@@ -15,14 +15,14 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
         <span className="prompt-inline-icon"><Icon size={16} /></span>
         <div>
           <strong>{block.preview?.title || block.toolName}</strong>
-          {block.reason ? <small>{block.reason}</small> : null}
+          {block.risk || block.category ? <small>{block.risk || block.category}</small> : null}
         </div>
         <span>{block.state}</span>
       </header>
       <PermissionPreviewContent
         args={block.arguments}
         preview={block.preview}
-        reason={null}
+        reason={block.reason}
       />
       {block.state === 'pending' && onRespond ? (
         <footer>

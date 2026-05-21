@@ -51,16 +51,21 @@ Implemented on branch `web-console-migration`:
   - `web/src/components/chat/SlashPopover.tsx`
   - `web/src/components/chat/Composer.tsx`
   - `web/src/styles.css`
+- PR22.3 initial slash execution and timeline notices:
+  - `web/src/components/chat/slashExecute.ts`
+  - `web/src/stores/chatStore.ts`
+  - `web/src/components/chat/blocks/SystemNoticeBlock.tsx`
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (36 files / 86 tests)
+- `cd web && npm test` (38 files / 93 tests after slash execution coverage)
 - `cd web && npm run build`
-- `python -m pytest aether/tests/web/test_web_rest_services.py aether/tests/gateway/test_commands_methods.py`
+- `python -m pytest aether/tests/web aether/tests/gateway/test_commands_methods.py` (30 passed)
 - `uv run pyright aether/web aether/gateway/handlers/commands_methods.py`
 
 Remaining before Sprint 22 completion:
 
-- PR22.3 slash execution and timeline notices.
+- Expand PR22.3 beyond `/help`, `/session`, `/sessions`, `/tools`, and `/model`
+  once web-native plan/model/session mutation APIs are in place.
 - PR22.4 composer attachments, file references, paste, and drag/drop.
 - Full manual browser acceptance after PR22.3 and PR22.4.

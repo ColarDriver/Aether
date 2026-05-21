@@ -7,6 +7,7 @@ import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
 import { Composer } from './Composer'
 import { PermissionDialog } from './PermissionDialog'
+import { executeWebSlashCommand } from './slashExecute'
 
 type Props = {
   session: SessionInfo | null
@@ -20,6 +21,8 @@ export function ChatView({ session }: Props) {
   const tokenUsageByRun = useChatStore((state) => state.tokenUsageByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
+  const appendLocalNotice = useChatStore((state) => state.appendLocalNotice)
+  const appendLocalError = useChatStore((state) => state.appendLocalError)
   const activeRunId = useChatStore((state) => state.activeRunId)
   const pendingPermission = useChatStore((state) => state.pendingPermission)
   const pendingApproval = useChatStore((state) => state.pendingApproval)
@@ -86,6 +89,24 @@ export function ChatView({ session }: Props) {
 
   const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
 
+  const handleSlashCommand = (command: string) => {
+    void executeWebSlashCommand(command, { session })
+      .then((result) => {
+        if (result.type === 'notice') {
+          appendLocalNotice(session.session_id, result.message)
+          return
+        }
+        if (result.type === 'error') {
+          appendLocalError(session.session_id, result.message)
+          return
+        }
+        startRun(session.session_id, result.message)
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      })
+  }
+
   return (
     <div className="chat-surface">
       <div className="chat-header">
@@ -116,6 +137,7 @@ export function ChatView({ session }: Props) {
         disabled={!session}
         running={Boolean(activeRunId)}
         onSend={(message) => startRun(session.session_id, message)}
+        onSlashCommand={handleSlashCommand}
         onCancel={() => cancelRun(session.session_id)}
       />
       {pendingPermission ? (

@@ -852,6 +852,14 @@ button {
   font-size: 12px;
 }
 
+.chat-block-system-rich {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+
 .chat-block-status {
   width: fit-content;
   display: inline-flex;

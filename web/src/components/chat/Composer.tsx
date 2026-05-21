@@ -4,16 +4,18 @@ import { api } from '../../api/client'
 import type { SlashCommandInfo } from '../../api/types'
 import { Button } from '../shared/Button'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
+import { isSlashCommandInput } from './slashExecute'
 
 type Props = {
   disabled: boolean
   running: boolean
   onSend: (message: string) => void
   onCancel: () => void
+  onSlashCommand?: (command: string) => void
   slashCommands?: SlashCommandInfo[]
 }
 
-export function Composer({ disabled, running, onSend, onCancel, slashCommands }: Props) {
+export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, slashCommands }: Props) {
   const [value, setValue] = useState('')
   const [cursorPosition, setCursorPosition] = useState(0)
   const [loadedCommands, setLoadedCommands] = useState<SlashCommandInfo[]>([])
@@ -41,6 +43,10 @@ export function Composer({ disabled, running, onSend, onCancel, slashCommands }:
     if (!text || disabled || running) return
     setValue('')
     setCursorPosition(0)
+    if (onSlashCommand && isSlashCommandInput(text)) {
+      onSlashCommand(text)
+      return
+    }
     onSend(text)
   }
 
@@ -78,6 +84,11 @@ export function Composer({ disabled, running, onSend, onCancel, slashCommands }:
         }}
         onClick={updateCursorPosition}
         onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey && isExactSlashCommand(value, commands)) {
+            event.preventDefault()
+            submit()
+            return
+          }
           if (slashPopoverRef.current?.handleKey(event)) return
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
@@ -97,4 +108,12 @@ export function Composer({ disabled, running, onSend, onCancel, slashCommands }:
       )}
     </div>
   )
+}
+
+function isExactSlashCommand(value: string, commands: SlashCommandInfo[]): boolean {
+  const trimmed = value.trim()
+  if (!isSlashCommandInput(trimmed)) return false
+  const head = trimmed.split(/\s+/, 1)[0]
+  if (head !== trimmed) return true
+  return commands.some((command) => command.name === head)
 }

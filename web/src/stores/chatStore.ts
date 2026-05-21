@@ -51,11 +51,14 @@ type ChatState = {
   connect: () => void
   startRun: (sessionId: string, message: string) => string
   cancelRun: (sessionId: string) => void
+  appendLocalNotice: (sessionId: string, content: string) => void
+  appendLocalError: (sessionId: string, message: string) => void
   respondPermission: (decision: Record<string, unknown>) => void
   respondApproval: (result: Record<string, unknown>) => void
 }
 
 let unsubscribeSocket: (() => void) | null = null
+let localBlockSequence = 0
 
 export const useChatStore = create<ChatState>((set, get) => ({
   connected: false,
@@ -117,6 +120,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   cancelRun: (sessionId) => {
     runSocket.cancelRun(sessionId, get().activeRunId ?? undefined)
   },
+  appendLocalNotice: (sessionId, content) => {
+    set((state) => appendLocalBlock(state, {
+      id: nextLocalBlockId('notice'),
+      sessionId,
+      timestamp: Date.now(),
+      source: 'optimistic',
+      kind: 'system_notice',
+      content,
+    }))
+  },
+  appendLocalError: (sessionId, message) => {
+    set((state) => appendLocalBlock(state, {
+      id: nextLocalBlockId('error'),
+      sessionId,
+      timestamp: Date.now(),
+      source: 'optimistic',
+      kind: 'error',
+      message,
+      code: 'web_slash_command',
+    }))
+  },
   respondPermission: (decision) => {
     const prompt = get().pendingPermission
     if (!prompt) return
@@ -136,6 +160,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
   },
 }))
+
+function nextLocalBlockId(prefix: string): string {
+  localBlockSequence += 1
+  return prefix + '-' + Date.now() + '-' + localBlockSequence
+}
+
+function appendLocalBlock(state: ChatState, block: ChatBlock): Partial<ChatState> {
+  return {
+    blocksBySession: {
+      ...state.blocksBySession,
+      [block.sessionId]: [...(state.blocksBySession[block.sessionId] ?? []), block],
+    },
+  }
+}
 
 function applyPromptFrame(
   frame: RunSocketFrame,

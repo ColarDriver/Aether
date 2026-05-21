@@ -4,11 +4,13 @@ import type { SessionInfo } from '../../api/types'
 import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useTaskStore } from '../../stores/taskStore'
 import { EmptyState } from '../shared/EmptyState'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
 import { Composer } from './Composer'
 import { PermissionDialog } from './PermissionDialog'
+import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 import { executeWebSlashCommand } from './slashExecute'
 
 type Props = {
@@ -18,8 +20,9 @@ type Props = {
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
 
 export function ChatView({ session }: Props) {
+  const sessionId = session?.session_id ?? null
   const loadTranscript = useChatStore((state) => state.loadTranscript)
-  const blocks = useChatStore((state) => (session ? state.blocksBySession[session.session_id] ?? [] : []))
+  const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? [] : []))
   const tokenUsageByRun = useChatStore((state) => state.tokenUsageByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
@@ -30,6 +33,8 @@ export function ChatView({ session }: Props) {
   const pendingApproval = useChatStore((state) => state.pendingApproval)
   const respondPermission = useChatStore((state) => state.respondPermission)
   const respondApproval = useChatStore((state) => state.respondApproval)
+  const tasks = useTaskStore((state) => (sessionId ? state.tasksBySession[sessionId] ?? [] : []))
+  const loadSessionTasks = useTaskStore((state) => state.loadSessionTasks)
   const setActiveView = useAppStore((state) => state.setActiveView)
   const createSession = useSessionStore((state) => state.createSession)
   const resumeSession = useSessionStore((state) => state.resumeSession)
@@ -62,18 +67,32 @@ export function ChatView({ session }: Props) {
   }, [])
 
   useEffect(() => {
-    if (!session) return
-    void loadTranscript(session.session_id)
-  }, [loadTranscript, session])
+    if (!sessionId) return
+    void loadTranscript(sessionId)
+  }, [loadTranscript, sessionId])
 
   useEffect(() => {
-    const sessionId = session?.session_id ?? null
+    if (!sessionId) return
+    void loadSessionTasks(sessionId)
+  }, [loadSessionTasks, sessionId])
+
+  useEffect(() => {
+    if (!sessionId) return
+    const hasActiveTasks = tasks.some((task) => !isTaskTerminal(task))
+    if (!activeRunId && !hasActiveTasks) return
+    const interval = window.setInterval(() => {
+      void loadSessionTasks(sessionId)
+    }, 2000)
+    return () => window.clearInterval(interval)
+  }, [activeRunId, loadSessionTasks, sessionId, tasks])
+
+  useEffect(() => {
     if (lastSessionIdRef.current === sessionId) return
     lastSessionIdRef.current = sessionId
     shouldAutoScrollRef.current = true
     setShowJumpToLatest(false)
     requestAnimationFrame(() => scrollToBottom('auto'))
-  }, [scrollToBottom, session?.session_id])
+  }, [scrollToBottom, sessionId])
 
   useEffect(() => {
     if (!session) return
@@ -133,6 +152,7 @@ export function ChatView({ session }: Props) {
           <div className="token-pill">{usage.input_tokens ?? 0} in / {usage.output_tokens ?? 0} out</div>
         ) : null}
       </div>
+      <SessionTaskBar tasks={tasks} />
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}

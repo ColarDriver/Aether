@@ -115,6 +115,40 @@ export type ToolGroup = {
   tools: ToolSummary[]
 }
 
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'killed' | string
+
+export type TaskSummary = {
+  task_id: string
+  parent_session_id: string
+  subagent_type: string
+  prompt: string
+  status: TaskStatus
+  started_at: number
+  finished_at?: number | null
+  last_heartbeat: number
+  model?: string | null
+  isolation?: string | null
+  worktree_path?: string | null
+  parent_task_id?: string | null
+  child_depth: number
+  background: boolean
+  tool_use_count: number
+  input_tokens: number
+  output_tokens: number
+  iterations: number
+  summary?: string | null
+  error?: string | null
+  result_path?: string | null
+  output_tail?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+export type TaskListResult = {
+  tasks: TaskSummary[]
+  active_count: number
+  total_count: number
+}
+
 export type SkillSummary = {
   name: string
   description: string

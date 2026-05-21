@@ -418,7 +418,7 @@ button {
 
 .chat-surface {
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto;
+  grid-template-rows: auto auto minmax(220px, 1fr) auto;
   min-height: 520px;
 }
 
@@ -456,6 +456,136 @@ button {
   padding: 0 10px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
   cursor: pointer;
+}
+
+.session-task-bar {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.session-task-bar-header {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: auto auto minmax(80px, 180px) auto auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  border: 0;
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-task-bar-header:hover {
+  background: var(--panel-2);
+}
+
+.session-task-bar-header strong {
+  font-size: 12px;
+}
+
+.session-task-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.session-task-progress {
+  height: 6px;
+  min-width: 80px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.session-task-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.session-task-count,
+.session-task-meta {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.session-task-list {
+  display: grid;
+  gap: 0;
+  max-height: 220px;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 14px 10px;
+}
+
+.session-task-item {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  border-top: 1px solid var(--line);
+  padding: 9px 0;
+}
+
+.session-task-item > div {
+  min-width: 0;
+}
+
+.session-task-item svg {
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.session-task-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-task-main span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-task-main em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.session-task-item p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.session-task-complete svg {
+  color: var(--ok);
+}
+
+.session-task-active svg {
+  color: var(--accent);
+}
+
+.session-task-error svg {
+  color: var(--danger);
+}
+
+.session-task-warn svg {
+  color: #b9812d;
 }
 
 .message-list {

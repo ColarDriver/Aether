@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from aether.runtime.tasks import TaskRecord, TaskStatus, TaskStore
 from aether.services.docs import DocsService
 from aether.services.environment import EnvironmentService
 from aether.services.providers import ModelSelectionService, ProviderService
 from aether.services.runs import AgentRunService
 from aether.services.sessions import SessionService
 from aether.services.skills import SkillService
+from aether.services.tasks import TaskService
 from aether.services.workspace import WorkspaceService
 from aether.web.app import create_app
 
@@ -33,12 +35,14 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         encoding="utf-8",
     )
     skill_service = SkillService(config=SimpleNamespace(skill_search_paths=(str(skills_root),)))
+    task_store = TaskStore(root=tmp_path / "tasks")
     app = create_app(
         auth_enabled=False,
         session_service=sessions,
         provider_service=ProviderService(environ={}),
         model_selection_service=ModelSelectionService(environ={}),
         skill_service=skill_service,
+        task_service=TaskService(store=task_store),
         environment_service=EnvironmentService(env_path=tmp_path / ".env", environ={}),
         docs_service=DocsService(docs_root=docs_root),
         workspace_service=WorkspaceService(root=workspace_root),
@@ -165,6 +169,64 @@ def test_commands_route_exposes_slash_catalog(client: TestClient) -> None:
     by_name = {item["name"]: item for item in result.json()["commands"]}
     assert by_name["/plan"]["category"] == "session"
     assert by_name["/help"]["description"]
+
+
+def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> None:
+    store = client.app.state.aether_services.tasks._store
+    assert isinstance(store, TaskStore)
+    store.create(
+        TaskRecord(
+            task_id="task-running",
+            parent_session_id="task_web",
+            subagent_type="explorer",
+            prompt="Inspect renderer",
+            status=TaskStatus.RUNNING,
+            started_at=20.0,
+            model="gpt-5.4",
+            background=True,
+            tool_use_count=2,
+            input_tokens=100,
+            output_tokens=25,
+            iterations=1,
+            agent_type_def_snapshot={"name": "explorer", "description": "Inspect code"},
+        )
+    )
+    store.append_output("task-running", "first line\nsecond line\n")
+    store.create(
+        TaskRecord(
+            task_id="task-done",
+            parent_session_id="other_session",
+            subagent_type="worker",
+            prompt="Patch files",
+            status=TaskStatus.COMPLETED,
+            started_at=10.0,
+            finished_at=12.0,
+            summary="patched",
+        )
+    )
+
+    session_tasks = client.get("/api/sessions/task_web/tasks")
+    assert session_tasks.status_code == 200
+    body = session_tasks.json()
+    assert body["total_count"] == 1
+    assert body["active_count"] == 1
+    assert body["tasks"][0]["task_id"] == "task-running"
+    assert body["tasks"][0]["metadata"]["agent_type"] == "explorer"
+    assert body["tasks"][0]["output_tail"] is None
+
+    detail = client.get("/api/tasks/task-running")
+    assert detail.status_code == 200
+    assert detail.json()["output_tail"] == "first line\nsecond line\n"
+
+    global_active = client.get("/api/tasks?active_only=true")
+    assert global_active.status_code == 200
+    assert [task["task_id"] for task in global_active.json()["tasks"]] == ["task-running"]
+
+    missing = client.get("/api/tasks/missing")
+    assert missing.status_code == 404
+
+    invalid = client.get("/api/tasks?limit=0")
+    assert invalid.status_code == 400
 
 
 def test_plan_routes_read_and_update_session_mode(client: TestClient) -> None:

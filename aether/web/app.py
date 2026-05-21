@@ -18,6 +18,7 @@ from aether.services.providers import ModelSelectionService, ProviderService
 from aether.services.runs import AgentRunService
 from aether.services.sessions import SessionService
 from aether.services.skills import SkillService
+from aether.services.tasks import TaskService
 from aether.services.tools import ToolService
 from aether.services.workspace import WorkspaceService
 from aether.web.errors import install_error_handlers
@@ -34,6 +35,7 @@ from aether.web.routes.providers import router as providers_router
 from aether.web.routes.runs import router as runs_router
 from aether.web.routes.sessions import router as sessions_router
 from aether.web.routes.skills import router as skills_router
+from aether.web.routes.tasks import router as tasks_router
 from aether.web.routes.tools import router as tools_router
 from aether.web.routes.workspace import router as workspace_router
 from aether.web.security import create_session_token, install_security
@@ -51,6 +53,7 @@ class WebServices:
     model_selection: ModelSelectionService
     tools: ToolService
     skills: SkillService
+    tasks: TaskService
     diagnostics: DiagnosticsService
     environment: EnvironmentService
     runs: AgentRunService
@@ -74,6 +77,7 @@ def create_app(
     model_selection_service: ModelSelectionService | None = None,
     tool_service: ToolService | None = None,
     skill_service: SkillService | None = None,
+    task_service: TaskService | None = None,
     diagnostics_service: DiagnosticsService | None = None,
     environment_service: EnvironmentService | None = None,
     run_service: AgentRunService | None = None,
@@ -104,6 +108,7 @@ def create_app(
         model_selection=model_selection_service or ModelSelectionService(),
         tools=tool_service or ToolService(),
         skills=skill_service or SkillService(),
+        tasks=task_service or TaskService(),
         diagnostics=diagnostics_service or DiagnosticsService(),
         environment=environment_service or EnvironmentService(),
         runs=run_service or AgentRunService(session_service=sessions),
@@ -132,6 +137,7 @@ def create_app(
     app.include_router(providers_router)
     app.include_router(tools_router)
     app.include_router(skills_router)
+    app.include_router(tasks_router)
     app.include_router(diagnostics_router)
     app.include_router(environment_router)
     app.include_router(logs_router)

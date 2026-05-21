@@ -21,6 +21,8 @@ import type {
   SessionInfo,
   SkillSummary,
   StatusResponse,
+  TaskListResult,
+  TaskSummary,
   ToolGroup,
   ToolSummary,
   TranscriptMessage,
@@ -156,6 +158,15 @@ export const api = {
   toolGroups: () => request<{ groups: ToolGroup[] }>('GET', '/api/tools/groups'),
   tools: () => request<{ tools: ToolSummary[] }>('GET', '/api/tools'),
   skills: () => request<{ skills: SkillSummary[] }>('GET', '/api/skills'),
+  tasks: (params: { sessionId?: string; activeOnly?: boolean; includeOutputTail?: boolean; limit?: number } = {}) => {
+    const query = taskQuery(params)
+    return request<TaskListResult>('GET', '/api/tasks' + query)
+  },
+  sessionTasks: (sessionId: string, params: { activeOnly?: boolean; includeOutputTail?: boolean; limit?: number } = {}) => {
+    const query = taskQuery(params)
+    return request<TaskListResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/tasks' + query)
+  },
+  taskDetail: (taskId: string) => request<TaskSummary>('GET', '/api/tasks/' + encodeURIComponent(taskId)),
   diagnostics: () => request<HealthStatus>('GET', '/api/health'),
   logFiles: () => request<{ files: LogFileSummary[] }>('GET', '/api/logs/files'),
   logs: (params: { file?: string; lines?: number; level?: string; component?: string; search?: string }) => {
@@ -183,4 +194,14 @@ export const api = {
 
 function encodePathSegments(path: string) {
   return path.split('/').map((part) => encodeURIComponent(part)).join('/')
+}
+
+function taskQuery(params: { sessionId?: string; activeOnly?: boolean; includeOutputTail?: boolean; limit?: number }) {
+  const query = new URLSearchParams()
+  if (params.sessionId) query.set('session_id', params.sessionId)
+  if (params.activeOnly) query.set('active_only', 'true')
+  if (params.includeOutputTail) query.set('include_output_tail', 'true')
+  if (params.limit) query.set('limit', String(params.limit))
+  const serialized = query.toString()
+  return serialized ? '?' + serialized : ''
 }

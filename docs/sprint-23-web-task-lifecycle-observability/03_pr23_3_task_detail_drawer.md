@@ -25,6 +25,10 @@ detail surface containing:
 
 The dialog is read-only. It does not stop or mutate tasks.
 
+Active tasks are refreshed while the dialog is open so status, counters, and the
+output tail keep moving with the underlying `TaskStore`. Terminal tasks stop
+polling automatically. Users can also trigger a manual refresh.
+
 ## Implementation
 
 Frontend files:
@@ -35,7 +39,9 @@ Frontend files:
 - `web/src/components/chat/TaskDetailDialog.tsx`
   - calls `api.taskDetail(taskId)`,
   - uses the initial list row as an optimistic preview while loading,
-  - renders output tail through the shared `CodeBlock`.
+  - renders output tail through the shared `CodeBlock`,
+  - polls active tasks every two seconds,
+  - exposes a manual refresh button.
 - `web/src/components/chat/ChatView.tsx`
   - owns selected task state,
   - closes task detail when the session changes.
@@ -50,6 +56,8 @@ Styles live in `web/src/styles.css` and reuse the existing modal shell.
 - `SessionTaskBar` calls `onOpenTask` when a task row is selected.
 - `TaskDetailDialog` loads detail and displays output tail/metadata.
 - `TaskDetailDialog` displays a readable error when the detail API fails.
+- `TaskDetailDialog` refreshes on demand.
+- `TaskDetailDialog` polls active tasks and stops once a terminal state lands.
 - `ChatTimeline` routes task-notification detail clicks to the same selected
   task state.
 

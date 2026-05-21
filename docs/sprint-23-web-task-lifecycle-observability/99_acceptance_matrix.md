@@ -10,6 +10,7 @@
 | Error handling | service validation/not-found | API error propagation | Python route test |
 | Task notification transcript | XML parser | `TaskNotificationBlock` | render/model tests |
 | Task detail inspection | `/api/tasks/{id}` | `TaskDetailDialog` | component test |
+| Active task detail refresh | output tail from task store | manual refresh + active polling | component test |
 
 ## Current Evidence
 

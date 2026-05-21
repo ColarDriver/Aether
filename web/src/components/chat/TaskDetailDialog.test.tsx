@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import type { TaskSummary } from '../../api/types'
-import { TaskDetailDialog } from './TaskDetailDialog'
+import { TASK_DETAIL_REFRESH_MS, TaskDetailDialog } from './TaskDetailDialog'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 const task: TaskSummary = {
@@ -58,5 +59,43 @@ describe('TaskDetailDialog', () => {
     render(<TaskDetailDialog taskId="missing" onClose={() => undefined} />)
 
     await waitFor(() => expect(screen.getByText('Task not found')).toBeTruthy())
+  })
+
+  it('refreshes task detail on demand', async () => {
+    vi.spyOn(api, 'taskDetail')
+      .mockResolvedValueOnce(task)
+      .mockResolvedValueOnce({ ...task, output_tail: 'new output\n', output_tokens: 50 })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByText('done')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh task details' }))
+
+    await waitFor(() => expect(screen.getByText('new output')).toBeTruthy())
+    expect(api.taskDetail).toHaveBeenCalledTimes(2)
+  })
+
+  it('polls active tasks and stops after they reach a terminal state', async () => {
+    vi.useFakeTimers()
+    const running = { ...task, status: 'running', finished_at: null, output_tail: 'running output\n' }
+    const completed = { ...task, output_tail: 'final output\n' }
+    vi.spyOn(api, 'taskDetail')
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(completed)
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.getByText('running output')).toBeTruthy()
+
+    await act(async () => {
+      vi.advanceTimersByTime(TASK_DETAIL_REFRESH_MS)
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('final output')).toBeTruthy()
+    expect(api.taskDetail).toHaveBeenCalledTimes(2)
   })
 })

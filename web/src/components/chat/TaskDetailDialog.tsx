@@ -1,5 +1,5 @@
-import { X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { TaskSummary } from '../../api/types'
 import { CodeBlock } from './blocks'
@@ -10,31 +10,51 @@ type Props = {
   onClose: () => void
 }
 
+export const TASK_DETAIL_REFRESH_MS = 2000
+
 export function TaskDetailDialog({ taskId, initialTask, onClose }: Props) {
   const [task, setTask] = useState<TaskSummary | null>(initialTask ?? null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const mountedRef = useRef(false)
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    void api.taskDetail(taskId)
-      .then((detail) => {
-        if (cancelled) return
-        setTask(detail)
-      })
-      .catch((reason) => {
-        if (cancelled) return
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+    mountedRef.current = true
     return () => {
-      cancelled = true
+      mountedRef.current = false
+    }
+  }, [])
+
+  const loadTask = useCallback(async (options: { initial?: boolean } = {}) => {
+    if (options.initial) setLoading(true)
+    setRefreshing(true)
+    setError(null)
+    try {
+      const detail = await api.taskDetail(taskId)
+      if (!mountedRef.current) return
+      setTask(detail)
+    } catch (reason) {
+      if (!mountedRef.current) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      if (!mountedRef.current) return
+      setLoading(false)
+      setRefreshing(false)
     }
   }, [taskId])
+
+  useEffect(() => {
+    void loadTask({ initial: true })
+  }, [loadTask])
+
+  useEffect(() => {
+    if (!task || isTaskTerminal(task)) return
+    const interval = window.setInterval(() => {
+      void loadTask()
+    }, TASK_DETAIL_REFRESH_MS)
+    return () => window.clearInterval(interval)
+  }, [loadTask, task])
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -44,12 +64,18 @@ export function TaskDetailDialog({ taskId, initialTask, onClose }: Props) {
             <strong>{task?.prompt || taskId}</strong>
             <span>{taskId}</span>
           </div>
-          <button type="button" aria-label="Close task details" onClick={onClose}>
-            <X size={16} aria-hidden="true" />
-          </button>
+          <div className="task-detail-actions">
+            <button type="button" aria-label="Refresh task details" disabled={refreshing} onClick={() => void loadTask()}>
+              <RefreshCw size={16} aria-hidden="true" />
+            </button>
+            <button type="button" aria-label="Close task details" onClick={onClose}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
         </header>
         <div className="prompt-body task-detail-body">
           {error ? <div className="chat-block chat-block-error">{error}</div> : null}
+          {refreshing && task ? <div className="task-detail-refreshing">Refreshing task details...</div> : null}
           {task ? <TaskDetailContent task={task} /> : loading ? <div className="empty-chat">Loading task details...</div> : null}
         </div>
       </section>
@@ -107,4 +133,8 @@ function TaskTextSection({ title, text, tone }: { title: string; text: string; t
 function formatTimestamp(value?: number | null): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
   return new Date(value * 1000).toLocaleString()
+}
+
+function isTaskTerminal(task: Pick<TaskSummary, 'status'>): boolean {
+  return task.status === 'completed' || task.status === 'failed' || task.status === 'interrupted' || task.status === 'killed'
 }

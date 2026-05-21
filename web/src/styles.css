@@ -621,15 +621,31 @@ button {
   font-size: 12px;
 }
 
+.task-detail-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .task-detail-modal header button {
   display: grid;
   place-items: center;
   padding: 0;
 }
 
+.task-detail-modal header button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 .task-detail-content {
   display: grid;
   gap: 12px;
+}
+
+.task-detail-refreshing {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .task-detail-grid {

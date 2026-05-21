@@ -147,3 +147,23 @@ def test_transcript_normalizes_messages_and_malformed_tool_json(tmp_path, monkey
     assert transcript[2].is_error is True
     assert transcript[2].metadata == {"kind": "test"}
     assert asdict(transcript[2])["tool_call_id"] == "call-1"
+
+
+
+def test_search_and_detail_include_matching_session_messages(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="alpha-session", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "content": "please inspect auth flow"},
+        {"role": "assistant", "content": "done"},
+    ]
+    record.first_user_message = "please inspect auth flow"
+    save_session(record, base=tmp_path / "sessions")
+    service.create(SessionCreateRequest(session_id="beta-session", provider="codex", model="gpt-5.4"))
+
+    search = service.search("auth")
+    assert [item.session_id for item in search.sessions] == ["alpha-session"]
+
+    detail = service.detail("alpha")
+    assert detail.session_id == "alpha-session"
+    assert detail.messages[0].text == "please inspect auth flow"

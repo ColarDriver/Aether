@@ -112,6 +112,28 @@ button {
   text-transform: uppercase;
 }
 
+.session-search {
+  margin: 0 10px 8px;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 8px;
+  color: var(--muted);
+}
+
+.session-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
 .session-list {
   overflow: auto;
 }

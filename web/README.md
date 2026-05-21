@@ -59,7 +59,7 @@ python -m pytest aether/tests/gateway
 
 1. Start the backend and Vite dev server.
 2. Open the Vite URL.
-3. Create or select a session.
+3. Create or select a session; use the sidebar search once several sessions exist.
 4. Send a message and confirm assistant deltas stream into one response.
 5. Trigger a permission or plan approval and confirm the modal can approve/reject.
 6. Reload the page and confirm transcript messages plus historical tool/diff blocks still render.

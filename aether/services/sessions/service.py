@@ -92,6 +92,23 @@ class SessionService:
             records = records[:limit]
         return SessionListResult([self.info(record) for record in records])
 
+    def search(self, query: str, *, limit: int | None = 50) -> SessionListResult:
+        needle = (query or "").strip().lower()
+        records = list_sessions(base=self._session_dir)
+        if needle:
+            records = [record for record in records if _record_matches_query(record, needle)]
+        if isinstance(limit, int) and limit > 0:
+            records = records[:limit]
+        return SessionListResult([self.info(record) for record in records])
+
+    def detail(self, session_id_or_prefix: str) -> SessionCurrentResult:
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        return SessionCurrentResult(
+            session_id=record.session_id,
+            info=self.info(record),
+            messages=[message_to_transcript(message) for message in record.messages],
+        )
+
     def resume(self, request: SessionResumeRequest) -> SessionCurrentResult:
         key = _require_non_empty(request.session_id_or_prefix, "session_id")
         record = self.resolve_record(key)
@@ -285,6 +302,39 @@ def extract_tool_calls(msg: dict[str, Any]) -> list[TranscriptToolCall]:
             arguments = {}
         out.append(TranscriptToolCall(id=call_id, name=name, arguments=arguments))
     return out
+
+
+def _record_matches_query(record: SessionRecord, needle: str) -> bool:
+    fields = [
+        record.session_id,
+        record.provider,
+        record.model,
+        record.first_user_message,
+        record.system_prompt,
+    ]
+    if any(needle in str(value or "").lower() for value in fields):
+        return True
+    for message in record.messages:
+        if needle in _message_search_text(message).lower():
+            return True
+    return False
+
+
+def _message_search_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(parts)
+    return ""
 
 
 def session_info_to_dict(info: SessionInfo) -> dict[str, Any]:

@@ -56,6 +56,15 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
     assert resumed.json()["session_id"] == "web_ses"
     assert resumed.json()["messages"] == []
 
+    detail = client.get("/api/sessions/web_ses")
+    assert detail.status_code == 200
+    assert detail.json()["session_id"] == "web_ses"
+    assert detail.json()["info"]["session_id"] == "web_ses"
+
+    search = client.get("/api/sessions/search?q=web")
+    assert search.status_code == 200
+    assert search.json()["sessions"][0]["session_id"] == "web_ses"
+
     messages = client.get("/api/sessions/web_ses/messages")
     assert messages.status_code == 200
     assert messages.json() == {"session_id": "web_ses", "messages": []}

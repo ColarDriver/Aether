@@ -37,6 +37,9 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /Models/ })).toBeTruthy()
     expect(screen.getByText('Plan auth flow')).toBeTruthy()
 
+    fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'auth' } })
+    expect(screen.getByText('Plan auth flow')).toBeTruthy()
+
     fireEvent.click(screen.getByRole('button', { name: /Models/ }))
     fireEvent.click(screen.getByText('Plan auth flow'))
     fireEvent.click(screen.getByRole('button', { name: 'New session' }))

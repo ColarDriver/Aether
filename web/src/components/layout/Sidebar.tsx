@@ -1,4 +1,5 @@
-import { Plus } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { navItems } from '../../App'
 import type { ConsoleView, SessionInfo } from '../../api/types'
 import { Button } from '../shared/Button'
@@ -13,6 +14,16 @@ type Props = {
 }
 
 export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession, onSelectView, onNewSession }: Props) {
+  const [query, setQuery] = useState('')
+  const filteredSessions = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return sessions
+    return sessions.filter((session) =>
+      [session.session_id, session.summary, session.provider, session.model]
+        .some((value) => String(value ?? '').toLowerCase().includes(needle)),
+    )
+  }, [query, sessions])
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -44,9 +55,14 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
           <Plus size={15} />
         </Button>
       </div>
+      <label className="session-search">
+        <Search size={14} />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search sessions" />
+      </label>
       <div className="session-list">
         {sessions.length === 0 ? <div className="muted pad">No sessions yet</div> : null}
-        {sessions.map((session) => (
+        {sessions.length > 0 && filteredSessions.length === 0 ? <div className="muted pad">No matching sessions</div> : null}
+        {filteredSessions.map((session) => (
           <button
             type="button"
             key={session.session_id}

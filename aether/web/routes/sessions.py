@@ -53,6 +53,18 @@ async def current_session(request: Request) -> dict[str, object]:
     return {"session": to_jsonable(current) if current is not None else None}
 
 
+@router.get("/api/sessions/search")
+async def search_sessions(request: Request, q: str = "", limit: int | None = 50) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(services.sessions.search(q, limit=limit))
+
+
+@router.get("/api/sessions/{session_id}")
+async def session_detail(request: Request, session_id: str) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(services.sessions.detail(session_id))
+
+
 @router.post("/api/sessions/{session_id}/resume")
 async def resume_session(request: Request, session_id: str) -> dict[str, object]:
     services = request.app.state.aether_services

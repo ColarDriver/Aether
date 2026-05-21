@@ -37,4 +37,34 @@ describe('ApprovalDialog', () => {
     expect(onApprove).toHaveBeenCalledOnce()
     expect(onReject).toHaveBeenCalledOnce()
   })
+
+  it('submits question answers with the approval', () => {
+    const onApprove = vi.fn()
+    render(
+      <ApprovalDialog
+        prompt={{
+          ...prompt,
+          kind: 'questions',
+          planText: null,
+          questions: [
+            {
+              id: 'mode',
+              prompt: 'Which mode?',
+              options: [
+                { id: 'fast', label: 'Fast', description: 'Less detail' },
+                { id: 'careful', label: 'Careful', description: 'More detail' },
+              ],
+            },
+          ],
+        }}
+        onApprove={onApprove}
+        onReject={() => undefined}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Careful/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answers' }))
+
+    expect(onApprove).toHaveBeenCalledWith({ mode: 'Careful' })
+  })
 })

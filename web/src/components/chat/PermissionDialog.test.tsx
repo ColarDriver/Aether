@@ -29,4 +29,26 @@ describe('PermissionDialog', () => {
     fireEvent.click(screen.getByText('Allow once'))
     expect(onAllow).toHaveBeenCalledOnce()
   })
+
+  it('uses the shared permission preview renderer for diff and arguments', () => {
+    render(
+      <PermissionDialog
+        prompt={{
+          promptId: 'p1',
+          runId: 'r1',
+          request: {
+            tool_name: 'write_file',
+            arguments: { path: 'app.py' },
+            preview: { title: 'Edit file', diff: '@@ -1 +1 @@\n-old\n+new' },
+          },
+        }}
+        onAllow={() => undefined}
+        onAllowSession={() => undefined}
+        onDeny={() => undefined}
+      />,
+    )
+
+    expect(screen.getByRole('table', { name: 'Code diff' })).toBeTruthy()
+    expect(screen.getByText(/app.py/)).toBeTruthy()
+  })
 })

@@ -1,5 +1,5 @@
 import type { PermissionRequestBlock as PermissionRequest } from '../../../chat-rendering'
-import { DiffViewer } from '../DiffViewer'
+import { PermissionPreviewContent } from '../PromptContent'
 
 type Props = {
   block: PermissionRequest
@@ -13,10 +13,11 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
         <strong>{block.preview?.title || block.toolName}</strong>
         <span>{block.state}</span>
       </header>
-      {block.reason ? <p>{block.reason}</p> : null}
-      {block.preview?.command ? <pre className="command-preview">{block.preview.command}</pre> : null}
-      {block.preview?.body ? <p>{block.preview.body}</p> : null}
-      {block.preview?.diff ? <DiffViewer diff={block.preview.diff} /> : null}
+      <PermissionPreviewContent
+        args={block.arguments}
+        preview={block.preview}
+        reason={block.reason}
+      />
       {block.state === 'pending' && onRespond ? (
         <footer>
           <button type="button" onClick={() => onRespond({ type: 'deny' })}>Deny</button>

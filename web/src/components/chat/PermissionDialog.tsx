@@ -1,5 +1,5 @@
 import type { PermissionPrompt } from '../../stores/chatStore'
-import { DiffViewer } from './DiffViewer'
+import { PermissionPreviewContent } from './PromptContent'
 
 type Props = {
   prompt: PermissionPrompt
@@ -18,11 +18,11 @@ export function PermissionDialog({ prompt, onAllow, onAllowSession, onDeny }: Pr
           <span>{prompt.request.risk || prompt.request.category}</span>
         </header>
         <div className="prompt-body">
-          {preview?.subtitle ? <p className="muted">{preview.subtitle}</p> : null}
-          {preview?.command ? <pre className="command-preview">{preview.command}</pre> : null}
-          {preview?.body ? <p>{preview.body}</p> : null}
-          {preview?.diff ? <DiffViewer diff={preview.diff} /> : null}
-          <pre>{JSON.stringify(prompt.request.arguments ?? {}, null, 2)}</pre>
+          <PermissionPreviewContent
+            args={prompt.request.arguments}
+            preview={preview}
+            reason={prompt.request.reason}
+          />
         </div>
         <footer>
           <button type="button" onClick={onDeny}>Deny</button>

@@ -129,7 +129,7 @@ export function ChatView({ session }: Props) {
       {pendingApproval ? (
         <ApprovalDialog
           prompt={pendingApproval}
-          onApprove={() => respondApproval({ confirmed: true })}
+          onApprove={(answers) => respondApproval({ confirmed: true, ...(answers ? { answers } : {}) })}
           onReject={() => respondApproval({ confirmed: false })}
         />
       ) : null}

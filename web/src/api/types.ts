@@ -13,11 +13,18 @@ export type SessionInfo = {
   mode?: string | null
 }
 
+export type TranscriptToolCall = {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
 export type TranscriptMessage = {
   role: 'user' | 'assistant' | 'system' | 'tool'
   text?: string | null
   name?: string | null
   tool_call_id?: string | null
+  tool_calls?: TranscriptToolCall[]
   is_error?: boolean
   metadata?: Record<string, unknown> | null
 }

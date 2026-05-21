@@ -94,10 +94,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingApproval: null,
   loadTranscript: async (sessionId) => {
     const { messages } = await api.sessionMessages(sessionId)
+    const transcript = transcriptToChatState(sessionId, messages)
     set((state) => ({
       messagesBySession: {
         ...state.messagesBySession,
-        [sessionId]: messages.map((message, index) => transcriptToChatMessage(message, index)),
+        [sessionId]: transcript.messages,
+      },
+      toolsBySession: {
+        ...state.toolsBySession,
+        [sessionId]: transcript.tools,
       },
     }))
   },
@@ -149,6 +154,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ pendingApproval: null })
   },
 }))
+
+export function transcriptToChatState(
+  sessionId: string,
+  transcript: TranscriptMessage[],
+): { messages: ChatMessage[]; tools: ToolBlock[] } {
+  const messages: ChatMessage[] = []
+  const tools: ToolBlock[] = []
+  const toolsByCallId = new Map<string, number>()
+
+  transcript.forEach((message, index) => {
+    if (message.role === 'assistant') {
+      const text = message.text ?? ''
+      if (text.trim() || !message.tool_calls?.length) {
+        messages.push(transcriptToChatMessage(message, index))
+      }
+      for (const toolCall of message.tool_calls ?? []) {
+        toolsByCallId.set(toolCall.id, tools.length)
+        tools.push({
+          id: 'persisted-tool-' + index + '-' + toolCall.id,
+          sessionId,
+          runId: 'persisted-' + index,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name || 'tool',
+          arguments: toolCall.arguments ?? {},
+          status: 'running',
+        })
+      }
+      return
+    }
+
+    if (message.role === 'tool') {
+      const toolCallId = message.tool_call_id ?? ''
+      const toolIndex = toolsByCallId.get(toolCallId)
+      const result = {
+        status: 'finished' as const,
+        content: message.text ?? '',
+        isError: Boolean(message.is_error),
+        metadata: message.metadata ?? undefined,
+      }
+      if (toolIndex === undefined) {
+        tools.push({
+          id: 'persisted-tool-result-' + index,
+          sessionId,
+          runId: 'persisted-' + index,
+          toolCallId: toolCallId || 'tool-' + index,
+          toolName: message.name || 'tool',
+          arguments: {},
+          ...result,
+        })
+      } else {
+        tools[toolIndex] = { ...tools[toolIndex], ...result }
+      }
+      return
+    }
+
+    messages.push(transcriptToChatMessage(message, index))
+  })
+
+  return { messages, tools }
+}
 
 function transcriptToChatMessage(message: TranscriptMessage, index: number): ChatMessage {
   return {

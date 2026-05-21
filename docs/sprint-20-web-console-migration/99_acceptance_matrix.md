@@ -117,7 +117,7 @@ Implemented on branch `web-console-migration`:
 - PR20.2 REST services: sessions, config/prefs, providers/models, tools, skills, diagnostics, health, and run status/cancel routes over `aether/services/*`.
 - PR20.3 run WebSocket: structured `/api/runs/ws` protocol, event mapping, cancellation, web prompt broker, approval and permission responders.
 - PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, sidebar, status bar, and console shell.
-- PR20.5 chat surface: transcript loading, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
+- PR20.5 chat surface: transcript loading, persisted tool/diff reconstruction, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
 - PR20.6 console views: provider/model selection, tools, skills, diagnostics, and read-only settings views.
 
 Latest verification performed during implementation:
@@ -125,12 +125,11 @@ Latest verification performed during implementation:
 - `python -m pytest aether/tests/web`
 - `python -m pytest aether/tests/services`
 - `python -m pytest aether/tests/gateway`
-- `cd web && npm test` (7 files / 12 tests, including markdown table/code and approval dialog coverage)
+- `cd web && npm test` (8 files / 14 tests, including markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:
 
 - Add browser E2E/screenshot coverage for the full chat and settings workflows.
 - Consider replacing the local lightweight markdown renderer with a full GFM/highlight pipeline if web output needs task lists, nested tables, or language-grade syntax highlighting.
-- Add richer persisted transcript/tool reconstruction from historical tool calls.
 - Decide whether Hermes-only dashboard domains such as plugins, analytics, logs, profiles, cron, and PTY should stay out of Aether or receive their own future service-backed sprints.

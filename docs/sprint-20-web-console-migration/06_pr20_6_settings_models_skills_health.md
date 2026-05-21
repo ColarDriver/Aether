@@ -166,7 +166,7 @@ Frontend tests:
 - Provider view renders current runtime and missing credentials.
 - Model picker calls model-select API.
 - Auxiliary slots render inherited/custom state.
-- Tools view groups tools.
+- Tools view groups tools and exposes searchable detail/schema inspection.
 - Skills view renders details and missing state.
 - Diagnostics view renders service statuses.
 - Docs view renders markdown index and selected content.

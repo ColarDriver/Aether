@@ -1985,3 +1985,224 @@ button {
     max-height: 420px;
   }
 }
+
+
+.tools-panel {
+  max-width: 1320px;
+}
+
+.tools-layout {
+  min-height: min(700px, calc(100vh - 190px));
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.tools-index,
+.tool-detail {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.tools-index {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.tools-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tools-search input {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+.tools-group-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+}
+
+.tools-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.tools-group-list button {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tools-group-list button:hover,
+.tools-group-list button.active {
+  background: var(--panel-2);
+}
+
+.tools-group-list button.active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.tools-group-list button strong {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tools-group-list button span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tool-detail {
+  overflow: auto;
+}
+
+.tool-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px;
+}
+
+.tool-detail-header h3 {
+  margin: 2px 0 5px;
+  font: 20px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tool-detail-header p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.tool-detail-header > div > span {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.tool-status,
+.workspace-pill {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 2px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tool-status-enabled {
+  color: var(--ok);
+}
+
+.tool-detail-section {
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tool-detail-section > strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tool-required-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-required-list span {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 3px 7px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tool-required-list em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.tool-param-table-wrap {
+  overflow: auto;
+}
+
+.tool-param-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tool-param-table th,
+.tool-param-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tool-param-table th {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.tool-param-table code {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tool-schema {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (max-width: 940px) {
+  .tools-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tools-index {
+    max-height: 420px;
+  }
+}

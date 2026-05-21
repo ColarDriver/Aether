@@ -3,95 +3,194 @@ import { CodeBlock } from './blocks/CodeBlock'
 
 type Props = {
   text: string
+  streaming?: boolean
 }
 
-export function MarkdownRenderer({ text }: Props) {
+type MarkdownBlock =
+  | { type: 'code'; language: string; code: string }
+  | { type: 'heading'; level: 1 | 2 | 3 | 4; content: string }
+  | { type: 'hr' }
+  | { type: 'table'; block: string }
+  | { type: 'blockquote'; content: string }
+  | { type: 'list'; ordered: boolean; items: ListItem[] }
+  | { type: 'paragraph'; content: string }
+
+type ListItem = {
+  content: string
+  checked?: boolean
+}
+
+export function MarkdownRenderer({ text, streaming = false }: Props) {
   const blocks = splitMarkdownBlocks(text)
   return (
     <div className="markdown-renderer">
-      {blocks.map((block, index) => renderBlock(block, index))}
+      {blocks.map((block, index) => renderBlock(block, index, streaming && index === blocks.length - 1))}
+      {blocks.length === 0 && streaming ? <span className="streaming-caret" /> : null}
     </div>
   )
 }
 
-function renderBlock(block: string, index: number) {
-  if (block.startsWith('### ')) return <h3 key={index}>{renderInline(block.slice(4))}</h3>
-  if (block.startsWith('## ')) return <h2 key={index}>{renderInline(block.slice(3))}</h2>
-  if (block.startsWith('# ')) return <h1 key={index}>{renderInline(block.slice(2))}</h1>
-  const fence = String.fromCharCode(96, 96, 96)
-  if (block.startsWith(fence)) {
-    const { language, code } = parseFence(block)
-    return <CodeBlock code={code} key={index} language={language} />
+function renderBlock(block: MarkdownBlock, index: number, streaming = false) {
+  const caret = streaming ? <StreamingCaret /> : null
+  if (block.type === 'heading') {
+    const content = <>{renderInline(block.content)}{caret}</>
+    if (block.level === 1) return <h1 key={index}>{content}</h1>
+    if (block.level === 2) return <h2 key={index}>{content}</h2>
+    if (block.level === 3) return <h3 key={index}>{content}</h3>
+    return <h4 key={index}>{content}</h4>
   }
-  if (isMarkdownTable(block)) {
-    return <MarkdownTable block={block} key={index} />
-  }
-  if (block.split('\n').every((line) => line.trim().startsWith('>'))) {
+  if (block.type === 'code') return <CodeBlock code={block.code} key={index} language={block.language} />
+  if (block.type === 'table') return <MarkdownTable block={block.block} key={index} />
+  if (block.type === 'hr') return <hr className="markdown-hr" key={index} />
+  if (block.type === 'blockquote') {
     return (
       <blockquote key={index}>
-        {renderInline(block.split('\n').map((line) => line.replace(/^\s*>\s?/, '')).join('\n'))}
+        {renderInline(block.content)}
+        {caret}
       </blockquote>
     )
   }
-  if (block.includes('\n- ') || block.startsWith('- ')) {
+  if (block.type === 'list') {
+    const Tag = block.ordered ? 'ol' : 'ul'
     return (
-      <ul key={index}>
-        {block.split('\n').filter((line) => line.startsWith('- ')).map((line) => (
-          <li key={line}>{renderInline(line.slice(2))}</li>
+      <Tag className={hasTasks(block.items) ? 'markdown-task-list' : undefined} key={index}>
+        {block.items.map((item, itemIndex) => (
+          <li className={item.checked != null ? 'markdown-task-item' : undefined} key={itemIndex}>
+            {item.checked != null ? <input checked={item.checked} readOnly type="checkbox" /> : null}
+            <span>{renderInline(item.content)}{streaming && itemIndex === block.items.length - 1 ? caret : null}</span>
+          </li>
         ))}
-      </ul>
+      </Tag>
     )
   }
-  if (/^\d+\. /.test(block)) {
-    return (
-      <ol key={index}>
-        {block.split('\n').filter((line) => /^\d+\. /.test(line)).map((line) => (
-          <li key={line}>{renderInline(line.replace(/^\d+\. /, ''))}</li>
-        ))}
-      </ol>
-    )
-  }
-  return <p key={index}>{renderInline(block)}</p>
+  return <p key={index}>{renderInline(block.content)}{caret}</p>
 }
 
-function splitMarkdownBlocks(text: string): string[] {
-  const lines = text.replace(/\r\n/g, '\n').split('\n')
-  const blocks: string[] = []
-  let current: string[] = []
-  let inFence = false
-  const fence = String.fromCharCode(96, 96, 96)
+function StreamingCaret() {
+  return <span aria-hidden="true" className="streaming-caret streaming-caret-inline" />
+}
 
-  for (const line of lines) {
+function splitMarkdownBlocks(text: string): MarkdownBlock[] {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const fence = String.fromCharCode(96, 96, 96)
+  const blocks: MarkdownBlock[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    if (!line.trim()) {
+      index += 1
+      continue
+    }
     if (line.startsWith(fence)) {
-      current.push(line)
-      inFence = !inFence
-      if (!inFence) {
-        blocks.push(current.join('\n'))
-        current = []
+      const language = line.slice(fence.length).trim()
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length && !(lines[index] ?? '').startsWith(fence)) {
+        codeLines.push(lines[index] ?? '')
+        index += 1
+      }
+      if (index < lines.length) index += 1
+      blocks.push({ type: 'code', language, code: codeLines.join('\n').trimEnd() })
+      continue
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/)
+    if (heading?.[1] && heading[2]) {
+      blocks.push({ type: 'heading', level: heading[1].length as 1 | 2 | 3 | 4, content: heading[2] })
+      index += 1
+      continue
+    }
+
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      blocks.push({ type: 'hr' })
+      index += 1
+      continue
+    }
+
+    if (line.trim().startsWith('|') && index + 1 < lines.length) {
+      const tableLines: string[] = []
+      while (index < lines.length && isTableLine(lines[index] ?? '')) {
+        tableLines.push(lines[index] ?? '')
+        index += 1
+      }
+      if (isMarkdownTable(tableLines.join('\n'))) {
+        blocks.push({ type: 'table', block: tableLines.join('\n') })
+      } else {
+        blocks.push({ type: 'paragraph', content: tableLines.join('\n') })
       }
       continue
     }
-    if (!inFence && line.trim() === '') {
-      if (current.length > 0) {
-        blocks.push(current.join('\n'))
-        current = []
+
+    if (line.trim().startsWith('>')) {
+      const quoteLines: string[] = []
+      while (index < lines.length && (lines[index] ?? '').trim().startsWith('>')) {
+        quoteLines.push((lines[index] ?? '').replace(/^\s*>\s?/, ''))
+        index += 1
       }
+      blocks.push({ type: 'blockquote', content: quoteLines.join('\n') })
       continue
     }
-    current.push(line)
+
+    const firstListItem = parseListItem(line)
+    if (firstListItem) {
+      const items: ListItem[] = []
+      const ordered = firstListItem.ordered
+      while (index < lines.length) {
+        const next = parseListItem(lines[index] ?? '')
+        if (!next || next.ordered !== ordered) break
+        items.push({ content: next.content, checked: next.checked })
+        index += 1
+      }
+      blocks.push({ type: 'list', ordered, items })
+      continue
+    }
+
+    const paragraphLines: string[] = []
+    while (index < lines.length && !startsBlock(lines[index] ?? '', lines[index + 1] ?? '')) {
+      paragraphLines.push(lines[index] ?? '')
+      index += 1
+    }
+    if (paragraphLines.length > 0) blocks.push({ type: 'paragraph', content: paragraphLines.join('\n') })
   }
 
-  if (current.length > 0) blocks.push(current.join('\n'))
   return blocks
 }
 
-function parseFence(block: string): { language: string; code: string } {
+function startsBlock(line: string, nextLine: string): boolean {
+  if (!line.trim()) return true
   const fence = String.fromCharCode(96, 96, 96)
-  const lines = block.split('\n')
-  const language = lines[0]?.slice(fence.length).trim() ?? ''
-  const codeLines = lines.slice(1)
-  if (codeLines[codeLines.length - 1]?.startsWith(fence)) codeLines.pop()
-  return { language, code: codeLines.join('\n').trimEnd() }
+  return (
+    line.startsWith(fence) ||
+    /^(#{1,4})\s+/.test(line) ||
+    /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
+    (line.trim().startsWith('|') && isTableLine(nextLine)) ||
+    line.trim().startsWith('>') ||
+    Boolean(parseListItem(line))
+  )
+}
+
+function parseListItem(line: string): (ListItem & { ordered: boolean }) | null {
+  const unordered = line.match(/^\s{0,3}[-*+]\s+(\[[ xX]\]\s+)?([\s\S]*)$/)
+  if (unordered) {
+    return {
+      ordered: false,
+      ...taskContent(unordered[1], unordered[2] ?? ''),
+    }
+  }
+  const ordered = line.match(/^\s{0,3}\d+[.)]\s+(\[[ xX]\]\s+)?([\s\S]*)$/)
+  if (ordered) {
+    return {
+      ordered: true,
+      ...taskContent(ordered[1], ordered[2] ?? ''),
+    }
+  }
+  return null
+}
+
+function taskContent(marker: string | undefined, content: string): ListItem {
+  if (!marker) return { content }
+  return { content, checked: /\[[xX]\]/.test(marker) }
 }
 
 function isMarkdownTable(block: string): boolean {
@@ -104,6 +203,15 @@ function isMarkdownTable(block: string): boolean {
       lines.every((line) => line.startsWith('|') && line.includes('|'))
     )
   )
+}
+
+function isTableLine(line: string): boolean {
+  const trimmed = line.trim()
+  return trimmed.startsWith('|') && trimmed.includes('|')
+}
+
+function hasTasks(items: ListItem[]): boolean {
+  return items.some((item) => item.checked != null)
 }
 
 function MarkdownTable({ block }: { block: string }) {
@@ -140,7 +248,18 @@ function isSeparatorRow(row: string[]): boolean {
 function renderInline(text: string): ReactNode[] {
   const parts: ReactNode[] = []
   const tick = String.fromCharCode(96)
-  const pattern = new RegExp('(\\[[^\\]]+\\]\\([^)]+\\)|' + tick + '[^' + tick + ']+' + tick + '|\\*\\*[^*]+\\*\\*)', 'g')
+  const pattern = new RegExp(
+    '(' +
+      '\\[[^\\]]+\\]\\([^)]+\\)' +
+      '|' + tick + '[^' + tick + ']+' + tick +
+      '|\\*\\*[^*]+\\*\\*' +
+      '|~~[^~]+~~' +
+      '|(?<!\\*)\\*[^*]+\\*(?!\\*)' +
+      '|\\bhttps?:\\/\\/[^\\s<>)\\]]+' +
+      '|\\n' +
+    ')',
+    'g',
+  )
   let lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = pattern.exec(text)) !== null) {
@@ -155,8 +274,20 @@ function renderInline(text: string): ReactNode[] {
           {link.label}
         </a>,
       )
+    } else if (value.startsWith('~~')) {
+      parts.push(<del key={parts.length}>{renderInline(value.slice(2, -2))}</del>)
+    } else if (value.startsWith('*') && !value.startsWith('**')) {
+      parts.push(<em key={parts.length}>{renderInline(value.slice(1, -1))}</em>)
+    } else if (/^https?:\/\//i.test(value)) {
+      parts.push(
+        <a href={safeHref(value)} key={parts.length} rel="noreferrer" target="_blank">
+          {value}
+        </a>,
+      )
+    } else if (value === '\n') {
+      parts.push(<br key={parts.length} />)
     } else {
-      parts.push(<strong key={parts.length}>{value.slice(2, -2)}</strong>)
+      parts.push(<strong key={parts.length}>{renderInline(value.slice(2, -2))}</strong>)
     }
     lastIndex = match.index + value.length
   }

@@ -1630,6 +1630,15 @@ button {
   color: #8fd694;
 }
 
+.syntax-comment {
+  color: #91a0b8;
+  font-style: italic;
+}
+
+.syntax-keyword {
+  color: #d6b3ff;
+}
+
 .syntax-number,
 .syntax-boolean {
   color: #9cc9ff;
@@ -1674,6 +1683,40 @@ button {
 .markdown-table th {
   background: var(--panel-2);
   font-weight: 600;
+}
+
+.markdown-hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.markdown-renderer h4 {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.markdown-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.markdown-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.markdown-task-item input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.streaming-caret-inline {
+  margin-left: 2px;
+  margin-top: 0;
+  vertical-align: -0.12em;
 }
 
 .diff-viewer {
@@ -1732,6 +1775,7 @@ button {
 .markdown-renderer h1,
 .markdown-renderer h2,
 .markdown-renderer h3,
+.markdown-renderer h4,
 .markdown-renderer p,
 .markdown-renderer blockquote,
 .markdown-renderer ul,
@@ -1760,6 +1804,7 @@ button {
 .markdown-renderer ul:last-child,
 .markdown-renderer ol:last-child,
 .markdown-renderer .code-block:last-child,
+.markdown-renderer .markdown-hr:last-child,
 .markdown-renderer .markdown-table-wrap:last-child {
   margin-bottom: 0;
 }

@@ -17,11 +17,13 @@ describe('MarkdownRenderer', () => {
 
   it('renders fenced code with language and syntax spans', () => {
     const fence = String.fromCharCode(96, 96, 96)
-    render(<MarkdownRenderer text={fence + 'json\n{"ok": true, "count": 2}\n' + fence} />)
+    render(<MarkdownRenderer text={fence + 'typescript\nconst value = {"ok": true, "count": 2}\n// done\n' + fence} />)
 
-    expect(screen.getByText('json')).toBeTruthy()
+    expect(screen.getByText('typescript')).toBeTruthy()
+    expect(document.querySelector('.syntax-keyword')?.textContent).toBe('const')
     expect(document.querySelector('.syntax-string')?.textContent).toBe('"ok"')
     expect(document.querySelector('.syntax-boolean')?.textContent).toBe('true')
+    expect(document.querySelector('.syntax-comment')?.textContent).toBe('// done')
   })
 
   it('renders inline code and strong text without raw html', () => {
@@ -45,5 +47,32 @@ describe('MarkdownRenderer', () => {
     expect(document.querySelector('blockquote')?.textContent).toContain('Read docs.')
     expect(screen.getByRole('link', { name: 'docs' }).getAttribute('href')).toBe('https://example.com')
     expect(screen.getByRole('link', { name: 'bad' }).getAttribute('href')).toBe('#')
+  })
+
+  it('renders task lists, h4 headings, horizontal rules, and ordered paren lists', () => {
+    render(<MarkdownRenderer text={'#### Checklist\n\n- [x] Done\n- [ ] Next\n\n---\n\n1) First\n2) Second'} />)
+
+    expect(screen.getByRole('heading', { level: 4, name: 'Checklist' })).toBeTruthy()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).checked).toBe(true)
+    expect(document.querySelector('.markdown-hr')).toBeTruthy()
+    expect(screen.getByText('Second').closest('ol')).toBeTruthy()
+  })
+
+  it('renders italic, strike, bare URLs, and paragraph line breaks', () => {
+    render(<MarkdownRenderer text={'A *quiet* ~~old~~ link https://example.com\nnext line'} />)
+
+    expect(screen.getByText('quiet').tagName).toBe('EM')
+    expect(screen.getByText('old').tagName).toBe('DEL')
+    expect(screen.getByRole('link', { name: 'https://example.com' }).getAttribute('href')).toBe('https://example.com')
+    expect(document.querySelector('br')).toBeTruthy()
+  })
+
+  it('keeps the streaming caret inside the last markdown block', () => {
+    render(<MarkdownRenderer text={'- one\n- two'} streaming />)
+
+    const caret = document.querySelector('.streaming-caret-inline')
+    expect(caret).toBeTruthy()
+    expect(caret?.closest('li')?.textContent).toContain('two')
   })
 })

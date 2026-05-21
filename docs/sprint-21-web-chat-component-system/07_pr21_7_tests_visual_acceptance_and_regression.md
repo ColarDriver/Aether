@@ -112,14 +112,38 @@ Current indirect coverage:
 - heading,
 - list,
 - ordered list,
+- task list,
 - table,
 - partial table while streaming,
 - fenced code,
 - incomplete fenced code while streaming,
 - inline code,
 - bold,
+- italic,
+- strike,
 - links,
-- blockquote.
+- bare HTTP(S) links,
+- blockquote,
+- horizontal rule,
+- streaming caret placement inside the final block.
+
+## Current Markdown Evidence
+
+`web/src/components/chat/MarkdownRenderer.tsx` keeps the renderer Aether-owned
+while covering the common GFM surface used in chat transcripts:
+
+- headings through H4,
+- fenced code blocks with the shared `CodeBlock` and lightweight
+  keyword/string/comment spans,
+- inline code, strong, italic, strike,
+- explicit safe links and bare HTTP(S) URLs,
+- tables, including partial streaming tables,
+- blockquotes,
+- horizontal rules,
+- unordered, ordered, and task-list items,
+- a streaming caret rendered inside the final block.
+
+Focused coverage lives in `web/src/components/chat/MarkdownRenderer.test.tsx`.
 
 ## Manual Acceptance Script
 

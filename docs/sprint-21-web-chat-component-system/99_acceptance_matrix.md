@@ -77,10 +77,17 @@ Implemented on branch `web-console-migration`:
 - User attachment rendering: session transcripts now expose structured
   `attachments`, `normalizeTranscript` preserves them on user blocks, and
   `AttachmentGallery` renders file chips plus image previews in the timeline.
+- Markdown hardening: `MarkdownRenderer.tsx` now covers common assistant-output
+  GFM patterns without adding a heavy renderer dependency: H1-H4, fenced code
+  with lightweight keyword/string/comment spans, inline code, strong/italic/strike,
+  safe explicit links, bare HTTP links,
+  tables including partial streaming tables, blockquotes, horizontal rules,
+  ordered list forms, and task-list checkboxes. Streaming caret placement is
+  inside the last rendered block rather than appended after the whole document.
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (33 files / 79 tests after attachment gallery coverage)
+- `cd web && npm test` (latest web suite includes MarkdownRenderer GFM coverage)
 - `cd web && npm run build`
 - `python -m pytest aether/tests/web` (22 passed)
 - `uv run pytest aether/tests/services/test_session_service.py` (7 passed)

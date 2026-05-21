@@ -38,7 +38,7 @@ Serve it from the Python web entrypoint:
 uv run aether-web --web-dist web/dist
 ~~~
 
-The Python static mount injects window.__AETHER_BASE_PATH__ and window.__AETHER_SESSION_TOKEN__ into index.html. Unknown non-API routes fall back to the SPA index; unknown API routes return a structured JSON 404.
+The Python static mount injects window.__AETHER_BASE_PATH__ and window.__AETHER_SESSION_TOKEN__ into index.html. Unknown non-API routes fall back to the SPA index; unknown API routes return a structured JSON 404. The Environment view edits .env in the backend working directory by default; set AETHER_ENV_PATH to point it at another env file.
 
 ## Checks
 
@@ -63,4 +63,4 @@ python -m pytest aether/tests/gateway
 4. Send a message and confirm assistant deltas stream into one response.
 5. Trigger a permission or plan approval and confirm the modal can approve/reject.
 6. Reload the page and confirm transcript messages plus historical tool/diff blocks still render.
-7. Visit Models, Tools, Skills, Diagnostics, Logs, and Settings.
+7. Visit Models, Environment, Tools, Skills, Diagnostics, Logs, and Settings.

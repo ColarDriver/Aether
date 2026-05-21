@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from aether.services.environment import EnvironmentService
 from aether.services.providers import ModelSelectionService, ProviderService
 from aether.services.runs import AgentRunService
 from aether.services.sessions import SessionService
@@ -30,6 +31,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         provider_service=ProviderService(environ={}),
         model_selection_service=ModelSelectionService(environ={}),
         skill_service=skill_service,
+        environment_service=EnvironmentService(env_path=tmp_path / ".env", environ={}),
         run_service=AgentRunService(session_service=sessions),
     )
     return TestClient(app)
@@ -92,6 +94,27 @@ def test_config_prefs_and_diagnostics_routes(client: TestClient) -> None:
     diagnostics = client.get("/api/diagnostics")
     assert diagnostics.status_code == 200
     assert "enabled" in diagnostics.json()
+
+
+def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:
+    listed = client.get("/api/env")
+    assert listed.status_code == 200
+    assert listed.json()["env_path"].endswith(".env")
+    assert any(item["key"] == "OPENAI_API_KEY" for item in listed.json()["variables"])
+
+    saved = client.put("/api/env", json={"key": "OPENAI_API_KEY", "value": "sk-test-secret"})
+    assert saved.status_code == 200
+    assert saved.json()["key"] == "OPENAI_API_KEY"
+
+    reveal = client.post("/api/env/reveal", json={"key": "OPENAI_API_KEY"})
+    assert reveal.status_code == 200
+    assert reveal.json()["value"] == "sk-test-secret"
+
+    deleted = client.request("DELETE", "/api/env", json={"key": "OPENAI_API_KEY"})
+    assert deleted.status_code == 200
+
+    missing = client.post("/api/env/reveal", json={"key": "OPENAI_API_KEY"})
+    assert missing.status_code == 404
 
 
 def test_provider_model_and_auxiliary_routes(client: TestClient) -> None:

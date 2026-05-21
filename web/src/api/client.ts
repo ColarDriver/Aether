@@ -1,6 +1,9 @@
 import type {
   ConfigPaths,
   EffectiveConfig,
+  EnvCatalog,
+  EnvMutationResult,
+  EnvRevealResult,
   HealthStatus,
   LogFileSummary,
   LogReadResult,
@@ -132,4 +135,8 @@ export const api = {
   config: () => request<EffectiveConfig>('GET', '/api/config'),
   configPaths: () => request<ConfigPaths>('GET', '/api/config/paths'),
   prefs: () => request<Record<string, unknown>>('GET', '/api/prefs'),
+  env: () => request<EnvCatalog>('GET', '/api/env'),
+  setEnvVar: (body: { key: string; value: string }) => request<EnvMutationResult>('PUT', '/api/env', body),
+  deleteEnvVar: (key: string) => request<EnvMutationResult>('DELETE', '/api/env', { key }),
+  revealEnvVar: (key: string) => request<EnvRevealResult>('POST', '/api/env/reveal', { key }),
 }

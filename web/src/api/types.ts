@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'settings'
+export type ConsoleView = 'chat' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'environment' | 'settings'
 
 export type SessionInfo = {
   session_id: string
@@ -167,4 +167,34 @@ export type LogReadResult = {
   exists: boolean
   lines: string[]
   available_files: LogFileSummary[]
+}
+
+
+export type EnvVarSummary = {
+  key: string
+  is_set: boolean
+  source: 'file' | 'process' | 'missing'
+  redacted_value?: string | null
+  description: string
+  category: string
+  is_secret: boolean
+  advanced: boolean
+  url?: string | null
+}
+
+export type EnvCatalog = {
+  env_path: string
+  variables: EnvVarSummary[]
+}
+
+export type EnvMutationResult = {
+  ok: boolean
+  key: string
+  env_path: string
+}
+
+export type EnvRevealResult = {
+  key: string
+  value: string
+  source: 'file' | 'process' | 'missing'
 }

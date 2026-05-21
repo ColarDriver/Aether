@@ -889,3 +889,121 @@ button {
     grid-column: span 1;
   }
 }
+
+
+.env-group {
+  padding: 0;
+}
+
+.env-group > .catalog-card-header {
+  padding: 12px 13px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.env-list {
+  display: grid;
+}
+
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(180px, 0.8fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.env-row:last-child {
+  border-bottom: 0;
+}
+
+.env-row-main p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.env-key-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.env-key-line strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.env-source {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 2px 5px;
+  font-size: 11px;
+}
+
+.env-source-file {
+  color: var(--ok);
+}
+
+.env-value-panel code,
+.env-value-panel input {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 9px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.env-value-panel input {
+  outline: 0;
+}
+
+.env-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.env-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.env-actions button:hover {
+  background: var(--panel-2);
+}
+
+.env-actions button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.env-actions .danger-action {
+  color: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .env-row {
+    grid-template-columns: 1fr;
+  }
+
+  .env-actions {
+    justify-content: flex-start;
+  }
+}

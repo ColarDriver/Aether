@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from aether.services.config import ConfigService, PrefsService
 from aether.services.diagnostics import DiagnosticsService
+from aether.services.environment import EnvironmentService
 from aether.services.health import HealthService
 from aether.services.logs import LogService
 from aether.services.providers import ModelSelectionService, ProviderService
@@ -19,6 +20,7 @@ from aether.services.tools import ToolService
 from aether.web.errors import install_error_handlers
 from aether.web.routes.config import router as config_router
 from aether.web.routes.diagnostics import router as diagnostics_router
+from aether.web.routes.environment import router as environment_router
 from aether.web.routes.health import router as health_router
 from aether.web.routes.logs import router as logs_router
 from aether.web.routes.providers import router as providers_router
@@ -42,6 +44,7 @@ class WebServices:
     tools: ToolService
     skills: SkillService
     diagnostics: DiagnosticsService
+    environment: EnvironmentService
     runs: AgentRunService
     logs: LogService
 
@@ -61,6 +64,7 @@ def create_app(
     tool_service: ToolService | None = None,
     skill_service: SkillService | None = None,
     diagnostics_service: DiagnosticsService | None = None,
+    environment_service: EnvironmentService | None = None,
     run_service: AgentRunService | None = None,
     log_service: LogService | None = None,
 ) -> FastAPI:
@@ -87,6 +91,7 @@ def create_app(
         tools=tool_service or ToolService(),
         skills=skill_service or SkillService(),
         diagnostics=diagnostics_service or DiagnosticsService(),
+        environment=environment_service or EnvironmentService(),
         runs=run_service or AgentRunService(session_service=sessions),
         logs=log_service or LogService(),
     )
@@ -106,6 +111,7 @@ def create_app(
     app.include_router(tools_router)
     app.include_router(skills_router)
     app.include_router(diagnostics_router)
+    app.include_router(environment_router)
     app.include_router(logs_router)
     app.include_router(runs_router)
     app.include_router(run_ws_router)

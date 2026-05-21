@@ -1,4 +1,4 @@
-import { Activity, Boxes, Brain, CircleAlert, FileText, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Boxes, Brain, CircleAlert, FileText, KeyRound, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useProviderStore } from './stores/providerStore'
@@ -12,6 +12,7 @@ import { ProviderSettings } from './components/settings/ProviderSettings'
 import { SettingsView } from './components/settings/SettingsView'
 import { SkillsView } from './components/settings/SkillsView'
 import { LogsView } from './components/settings/LogsView'
+import { EnvironmentView } from './components/settings/EnvironmentView'
 import { ToolsView } from './components/settings/ToolsView'
 import { Spinner } from './components/shared/Spinner'
 
@@ -66,6 +67,7 @@ export function App() {
           {activeView === 'skills' ? <SkillsView /> : null}
           {activeView === 'diagnostics' ? <DiagnosticsView health={health} /> : null}
           {activeView === 'logs' ? <LogsView /> : null}
+          {activeView === 'environment' ? <EnvironmentView /> : null}
           {activeView === 'settings' ? <SettingsView /> : null}
         </section>
         <StatusBar
@@ -87,6 +89,7 @@ function viewTitle(view: string) {
     skills: 'Skills',
     diagnostics: 'Diagnostics',
     logs: 'Logs',
+    environment: 'Environment',
     settings: 'Settings',
   }
   return titles[view] || 'Aether'
@@ -99,5 +102,6 @@ export const navItems = [
   { id: 'skills', label: 'Skills', icon: Brain },
   { id: 'diagnostics', label: 'Diagnostics', icon: ShieldCheck },
   { id: 'logs', label: 'Logs', icon: FileText },
+  { id: 'environment', label: 'Environment', icon: KeyRound },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const

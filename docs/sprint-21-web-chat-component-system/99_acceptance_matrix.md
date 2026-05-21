@@ -70,10 +70,14 @@ Implemented on branch `web-console-migration`:
   `messagesBySession/toolsBySession` were removed.
 - PR21.6 scroll behavior: `ChatView.tsx` follows output only while near the
   bottom and exposes a jump-to-latest button when the user scrolls away.
+- Shared chat actions: `CopyButton`, `MessageActionBar`, and `CodeBlock` header
+  actions provide Aether-owned copy affordances for user prompts, assistant
+  replies, fenced code, tool input, and tool output without adding renderer
+  dependencies.
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (29 files / 70 tests after legacy test deletion)
+- `cd web && npm test` (32 files / 76 tests after copy/action coverage)
 - `cd web && npm run build`
 - `python -m pytest aether/tests/web` (22 passed)
 - `uv run pyright aether/web` (0 errors)

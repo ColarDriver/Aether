@@ -558,6 +558,11 @@ button {
   padding: 11px;
 }
 
+.chat-message-group {
+  display: grid;
+  gap: 8px;
+}
+
 .chat-block-user {
   background: var(--accent-soft);
 }
@@ -598,6 +603,60 @@ button {
 
 .chat-message-document {
   width: 100%;
+}
+
+.message-action-bar {
+  display: flex;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message-action-bar-start {
+  justify-content: flex-start;
+}
+
+.message-action-bar-end {
+  justify-content: flex-end;
+}
+
+.chat-message-group:hover .message-action-bar,
+.chat-message-group:focus-within .message-action-bar {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .message-action-bar {
+    opacity: 1;
+  }
+}
+
+.copy-button {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 8px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.copy-button:hover:not(:disabled),
+.copy-button:focus-visible {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.copy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.copy-button-copied {
+  color: var(--ok);
 }
 
 .chat-block-thinking {
@@ -1166,11 +1225,35 @@ button {
   min-height: 28px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-  padding: 0 10px;
+  padding: 0 6px 0 10px;
   color: #9fb1cc;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.code-block-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-block-copy {
+  min-height: 22px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #9fb1cc;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.code-block-copy:hover:not(:disabled),
+.code-block-copy:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  color: #eef4ff;
 }
 
 .markdown-renderer .code-block {

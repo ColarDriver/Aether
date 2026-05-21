@@ -1,5 +1,6 @@
 import type { AssistantMessageBlock as AssistantMessage } from '../../../chat-rendering'
 import { MarkdownRenderer } from '../MarkdownRenderer'
+import { MessageActionBar } from '../MessageActionBar'
 
 type Props = {
   block: AssistantMessage
@@ -9,12 +10,13 @@ export function AssistantMessageBlock({ block }: Props) {
   if (!block.content.trim()) return null
   const documentLayout = shouldUseDocumentLayout(block.content)
   return (
-    <article className={'chat-block chat-block-assistant' + (block.isError ? ' chat-block-error' : '')}>
+    <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
       <div className="chat-block-label">assistant</div>
       <div className={documentLayout ? 'chat-message-document' : 'chat-message-shell'}>
         <MarkdownRenderer text={block.content} />
         {block.isStreaming ? <span className="streaming-caret" /> : null}
       </div>
+      <MessageActionBar copyText={block.isStreaming ? undefined : block.content} copyLabel="Copy reply" />
     </article>
   )
 }

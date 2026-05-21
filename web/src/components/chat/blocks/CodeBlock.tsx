@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { CopyButton } from '../../shared/CopyButton'
 
 type Props = {
   code: string
@@ -8,10 +9,13 @@ type Props = {
 }
 
 export function CodeBlock({ code, language = '', title, wrap = false }: Props) {
-  const label = title || language || ''
+  const label = title || language || 'code'
   return (
     <div className="code-block">
-      {label ? <div className="code-block-header">{label}</div> : null}
+      <div className="code-block-header">
+        <span>{label}</span>
+        <CopyButton text={code} label={'Copy ' + label} className="code-block-copy" />
+      </div>
       <pre className={wrap ? 'code-block-body code-block-wrap' : 'code-block-body'}>
         <code>{highlightCode(code, language ?? '')}</code>
       </pre>

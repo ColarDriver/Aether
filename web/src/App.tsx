@@ -1,4 +1,4 @@
-import { Activity, Bot, Boxes, Brain, CircleAlert, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Boxes, Brain, CircleAlert, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useProviderStore } from './stores/providerStore'
@@ -6,6 +6,7 @@ import { useSessionStore } from './stores/sessionStore'
 import { Sidebar } from './components/layout/Sidebar'
 import { StatusBar } from './components/layout/StatusBar'
 import { TopBar } from './components/layout/TopBar'
+import { ChatView } from './components/chat/ChatView'
 import { EmptyState } from './components/shared/EmptyState'
 import { Spinner } from './components/shared/Spinner'
 
@@ -55,7 +56,7 @@ export function App() {
             </div>
           ) : null}
           {activeView === 'chat' ? (
-            <ChatPlaceholder sessionTitle={activeSession?.summary || activeSession?.session_id || null} />
+            <ChatView session={activeSession} />
           ) : null}
           {activeView === 'models' ? (
             <InfoGrid
@@ -87,30 +88,6 @@ export function App() {
           activeSession={activeSession?.session_id ?? null}
         />
       </main>
-    </div>
-  )
-}
-
-function ChatPlaceholder({ sessionTitle }: { sessionTitle: string | null }) {
-  if (!sessionTitle) {
-    return (
-      <EmptyState
-        icon={<Bot />}
-        title="No session selected"
-        description="Create or select a session to start using the browser console."
-      />
-    )
-  }
-  return (
-    <div className="chat-surface">
-      <div className="chat-header">
-        <Bot size={18} />
-        <div>
-          <div className="chat-title">{sessionTitle}</div>
-          <div className="muted">Transcript and streaming run UI lands in PR20.5.</div>
-        </div>
-      </div>
-      <div className="composer-placeholder">Message composer reserved for chat implementation</div>
     </div>
   )
 }

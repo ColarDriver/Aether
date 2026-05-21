@@ -87,6 +87,8 @@ export const api = {
     request<SessionInfo>('POST', '/api/sessions', body),
   resumeSession: (sessionId: string) =>
     request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/resume`),
+  sessionMessages: (sessionId: string) =>
+    request<{ session_id: string; messages: TranscriptMessage[] }>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/messages`),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
 }

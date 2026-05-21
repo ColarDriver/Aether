@@ -269,10 +269,118 @@ button {
   font-weight: 600;
 }
 
-.composer-placeholder {
-  border-top: 1px solid var(--line);
+.chat-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
+.message-list {
+  display: grid;
+  gap: 12px;
+}
+
+.message {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 11px;
+}
+
+.message-user {
+  background: var(--accent-soft);
+}
+
+.message-error {
+  border-color: #f3b5af;
+}
+
+.message-role {
   color: var(--muted);
-  padding: 13px 14px;
+  font-size: 12px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.message pre,
+.tool-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--accent);
+  margin-top: 8px;
+  animation: blink 1s steps(1) infinite;
+}
+
+.empty-chat {
+  color: var(--muted);
+  padding: 18px;
+  text-align: center;
+}
+
+.tool-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.tool-block {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 11px;
+}
+
+.tool-block-error {
+  border-color: #f3b5af;
+}
+
+.tool-block-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.tool-block-header span,
+.token-pill {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-result {
+  border-top: 1px solid var(--line);
+  margin-top: 8px !important;
+  padding-top: 8px;
+}
+
+.token-pill {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+}
+
+.composer {
+  border-top: 1px solid var(--line);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.composer textarea {
+  min-height: 44px;
+  max-height: 160px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 10px;
+  font: inherit;
 }
 
 .info-grid {
@@ -340,6 +448,12 @@ button {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
   }
 }
 

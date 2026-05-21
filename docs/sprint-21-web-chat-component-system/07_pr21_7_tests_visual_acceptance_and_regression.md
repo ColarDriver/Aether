@@ -87,6 +87,7 @@ Current indirect coverage:
 
 - shell command preview,
 - read/write/edit/file_edit summaries,
+- todo_write checklist preview,
 - write diff from content,
 - edit diff from old/new strings,
 - unified diff from metadata,

@@ -74,6 +74,10 @@ Implemented on branch `web-console-migration`:
   actions provide Aether-owned copy affordances for user prompts, assistant
   replies, fenced code, tool input, and tool output without adding renderer
   dependencies.
+- Structured tool previews: `todo_write` tool-call arguments render as a
+  checklist with pending / in-progress / completed / cancelled states instead
+  of exposing only raw JSON. The raw `ToolResultBlock` remains available for
+  the tool's textual confirmation.
 - User attachment rendering: session transcripts now expose structured
   `attachments`, `normalizeTranscript` preserves them on user blocks, and
   `AttachmentGallery` renders file chips plus image previews in the timeline.

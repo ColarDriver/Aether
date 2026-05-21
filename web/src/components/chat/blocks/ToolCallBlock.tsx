@@ -4,6 +4,7 @@ import type { DiffBlock as DiffChatBlock, ToolCallBlock as ToolCall, ToolResultB
 import { DiffBlock } from './DiffBlock'
 import { ToolResultBlock } from './ToolResultBlock'
 import { CodeBlock } from './CodeBlock'
+import { TodoListPreview, todosFromToolArguments } from './TodoListPreview'
 
 type Props = {
   block: ToolCall
@@ -13,6 +14,7 @@ type Props = {
 
 export function ToolCallBlock({ block, result, diffs = [] }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const todos = block.toolName === 'todo_write' ? todosFromToolArguments(block.arguments) : []
   const hasDetails = Object.keys(block.arguments).length > 0 || Boolean(result) || diffs.length > 0
   const summary = toolSummary(block)
   return (
@@ -25,7 +27,8 @@ export function ToolCallBlock({ block, result, diffs = [] }: Props) {
       </button>
       {expanded || result || diffs.length > 0 ? (
         <div className="tool-call-body">
-          {Object.keys(block.arguments).length > 0 ? (
+          {todos.length > 0 ? <TodoListPreview todos={todos} /> : null}
+          {Object.keys(block.arguments).length > 0 && todos.length === 0 ? (
             <CodeBlock code={JSON.stringify(block.arguments, null, 2)} language="json" title="Input" />
           ) : null}
           {diffs.map((diff) => <DiffBlock block={diff} key={diff.id} />)}

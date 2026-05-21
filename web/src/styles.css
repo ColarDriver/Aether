@@ -977,6 +977,72 @@ button {
   border-color: #f3b5af;
 }
 
+.todo-preview {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.todo-preview header {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 10px;
+}
+
+.todo-preview header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.todo-preview ol {
+  display: grid;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.todo-preview-item {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 10px;
+}
+
+.todo-preview-item:last-child {
+  border-bottom: 0;
+}
+
+.todo-preview-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.todo-preview-item em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.todo-preview-completed svg {
+  color: var(--ok);
+}
+
+.todo-preview-in_progress svg {
+  color: var(--accent);
+}
+
+.todo-preview-cancelled {
+  color: var(--muted);
+}
+
 .chat-block-diff {
   padding: 0;
   overflow: hidden;

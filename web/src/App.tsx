@@ -1,4 +1,4 @@
-import { Activity, Boxes, Brain, CircleAlert, FileText, KeyRound, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, Boxes, Brain, CircleAlert, FileText, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useProviderStore } from './stores/providerStore'
@@ -13,6 +13,7 @@ import { SettingsView } from './components/settings/SettingsView'
 import { SkillsView } from './components/settings/SkillsView'
 import { LogsView } from './components/settings/LogsView'
 import { EnvironmentView } from './components/settings/EnvironmentView'
+import { SessionsView } from './components/settings/SessionsView'
 import { ToolsView } from './components/settings/ToolsView'
 import { Spinner } from './components/shared/Spinner'
 import { ToastViewport } from './components/shared/ToastViewport'
@@ -64,6 +65,7 @@ export function App() {
           ) : null}
           {activeView === 'chat' ? <ChatView session={activeSession} /> : null}
           {activeView === 'models' ? <ProviderSettings /> : null}
+          {activeView === 'sessions' ? <SessionsView /> : null}
           {activeView === 'tools' ? <ToolsView /> : null}
           {activeView === 'skills' ? <SkillsView /> : null}
           {activeView === 'diagnostics' ? <DiagnosticsView health={health} /> : null}
@@ -87,6 +89,7 @@ function viewTitle(view: string) {
   const titles: Record<string, string> = {
     chat: 'Chat',
     models: 'Models',
+    sessions: 'Sessions',
     tools: 'Tools',
     skills: 'Skills',
     diagnostics: 'Diagnostics',
@@ -99,6 +102,7 @@ function viewTitle(view: string) {
 
 export const navItems = [
   { id: 'chat', label: 'Chat', icon: Activity },
+  { id: 'sessions', label: 'Sessions', icon: MessagesSquare },
   { id: 'models', label: 'Models', icon: Boxes },
   { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'skills', label: 'Skills', icon: Brain },

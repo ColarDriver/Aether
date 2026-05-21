@@ -114,6 +114,7 @@ export const api = {
     request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/resume'),
   sessionMessages: (sessionId: string) =>
     request<{ session_id: string; messages: TranscriptMessage[] }>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/messages'),
+  deleteSession: (sessionId: string) => request<void>("DELETE", "/api/sessions/" + encodeURIComponent(sessionId)),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
   providerModels: (provider: string) => request<ProviderModelList>('GET', '/api/providers/' + encodeURIComponent(provider) + '/models'),

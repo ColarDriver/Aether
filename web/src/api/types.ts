@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'environment' | 'settings'
+export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'environment' | 'settings'
 
 export type SessionInfo = {
   session_id: string

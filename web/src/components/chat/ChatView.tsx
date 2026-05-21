@@ -1,6 +1,7 @@
 import { ArrowDown, Bot } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SessionInfo } from '../../api/types'
+import type { SessionInfo, TaskSummary } from '../../api/types'
+import type { ChatBlock } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -19,11 +20,13 @@ type Props = {
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
+const EMPTY_CHAT_BLOCKS: ChatBlock[] = []
+const EMPTY_TASKS: TaskSummary[] = []
 
 export function ChatView({ session }: Props) {
   const sessionId = session?.session_id ?? null
   const loadTranscript = useChatStore((state) => state.loadTranscript)
-  const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? [] : []))
+  const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? EMPTY_CHAT_BLOCKS : EMPTY_CHAT_BLOCKS))
   const tokenUsageByRun = useChatStore((state) => state.tokenUsageByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
@@ -34,7 +37,7 @@ export function ChatView({ session }: Props) {
   const pendingApproval = useChatStore((state) => state.pendingApproval)
   const respondPermission = useChatStore((state) => state.respondPermission)
   const respondApproval = useChatStore((state) => state.respondApproval)
-  const tasks = useTaskStore((state) => (sessionId ? state.tasksBySession[sessionId] ?? [] : []))
+  const tasks = useTaskStore((state) => (sessionId ? state.tasksBySession[sessionId] ?? EMPTY_TASKS : EMPTY_TASKS))
   const loadSessionTasks = useTaskStore((state) => state.loadSessionTasks)
   const setActiveView = useAppStore((state) => state.setActiveView)
   const createSession = useSessionStore((state) => state.createSession)
@@ -52,7 +55,9 @@ export function ChatView({ session }: Props) {
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     shouldAutoScrollRef.current = true
     programmaticScrollRef.current = true
-    bottomRef.current?.scrollIntoView({ behavior, block: 'end' })
+    if (typeof bottomRef.current?.scrollIntoView === 'function') {
+      bottomRef.current.scrollIntoView({ behavior, block: 'end' })
+    }
     setShowJumpToLatest(false)
     requestAnimationFrame(() => {
       programmaticScrollRef.current = false

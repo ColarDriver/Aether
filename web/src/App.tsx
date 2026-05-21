@@ -61,7 +61,7 @@ export function App() {
           provider={current?.provider_name}
           model={current?.model}
         />
-        <section className="content-pane">
+        <section className={activeView === 'chat' ? 'content-pane content-pane-chat' : 'content-pane'}>
           {isLoading || sessionsLoading ? <Spinner label="Loading console" /> : null}
           {error ? (
             <div className="notice notice-error">

@@ -136,7 +136,7 @@ export function ChatView({ session }: Props) {
       <Composer
         disabled={!session}
         running={Boolean(activeRunId)}
-        onSend={(message) => startRun(session.session_id, message)}
+        onSend={(message, attachments) => startRun(session.session_id, message, attachments)}
         onSlashCommand={handleSlashCommand}
         onCancel={() => cancelRun(session.session_id)}
       />

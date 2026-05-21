@@ -171,9 +171,10 @@ async def _start_run(
     run_tasks: set[asyncio.Task[Any]],
 ) -> None:
     session_id = _required_str(payload, "session_id")
-    user_message = _required_str(payload, "user_message")
-    if not session_id or not user_message:
-        await outbound.send_async(_error_frame("invalid_run_start", "run.start requires session_id and user_message."))
+    user_message = _optional_str(payload, "user_message") or ""
+    attachments = _run_attachments(payload.get("attachments"))
+    if not session_id or (not user_message and not attachments):
+        await outbound.send_async(_error_frame("invalid_run_start", "run.start requires session_id and user_message or attachments."))
         return
     run_id = str(payload.get("run_id") or client_id or uuid.uuid4())
     options = _run_options(payload.get("options"))
@@ -191,6 +192,7 @@ async def _start_run(
             AgentRunRequest(
                 session_id=session_id,
                 user_message=user_message,
+                attachments=attachments,
                 run_id=run_id,
                 options=options,
                 approval_prompter=WebApprovalPrompter(
@@ -300,6 +302,74 @@ def _run_options(raw: Any) -> AgentRunOptions:
         disable_builtin_tools=_optional_bool(raw, "disable_builtin_tools"),
         system_override=_optional_str(raw, "system_override"),
     )
+
+
+def _run_attachments(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    attachments: list[dict[str, Any]] = []
+    for item in raw[:20]:
+        attachment = _run_attachment(item)
+        if attachment:
+            attachments.append(attachment)
+    return attachments
+
+
+def _run_attachment(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    attachment_type = _attachment_type(raw.get("type") or raw.get("kind"))
+    attachment: dict[str, Any] = {"type": attachment_type}
+    for target, keys in {
+        "name": ("name", "filename"),
+        "path": ("path", "file_path", "filePath"),
+        "url": ("url", "previewUrl", "preview_url"),
+        "mimeType": ("mimeType", "mime_type", "media_type"),
+        "note": ("note",),
+        "quote": ("quote",),
+    }.items():
+        value = _first_optional_str(raw, keys)
+        if value:
+            attachment[target] = value
+    data = _raw_optional_str(raw, "data")
+    if data:
+        attachment["data"] = data
+    if isinstance(raw.get("isDirectory"), bool):
+        attachment["isDirectory"] = raw["isDirectory"]
+    elif isinstance(raw.get("is_directory"), bool):
+        attachment["isDirectory"] = raw["is_directory"]
+    line_start = _first_optional_int(raw, ("lineStart", "line_start"))
+    line_end = _first_optional_int(raw, ("lineEnd", "line_end"))
+    if line_start is not None:
+        attachment["lineStart"] = line_start
+    if line_end is not None:
+        attachment["lineEnd"] = line_end
+    return attachment if len(attachment) > 1 else None
+
+
+def _attachment_type(value: Any) -> str:
+    return value if value in {"file", "image", "text"} else "file"
+
+
+def _first_optional_str(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _optional_str(payload, key)
+        if value:
+            return value
+    return None
+
+
+def _first_optional_int(payload: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = _optional_int(payload, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _raw_optional_str(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _prompt_resolution_payload(payload: dict[str, Any]) -> dict[str, Any]:

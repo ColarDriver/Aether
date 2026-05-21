@@ -35,3 +35,32 @@ complete source.
 - Image paste produces an image attachment preview.
 - Sent attachments are present in optimistic user block.
 - Resumed transcript renders the same attachments.
+
+## Current Implementation Evidence
+
+Implemented on branch `web-console-migration`:
+
+- Composer attachment input:
+  - `web/src/components/chat/Composer.tsx`
+  - `web/src/components/chat/composerAttachments.ts`
+  - `web/src/components/chat/AttachmentGallery.tsx`
+  - `web/src/styles.css`
+- Run payload and optimistic timeline attachments:
+  - `web/src/api/runSocket.ts`
+  - `web/src/api/types.ts`
+  - `web/src/stores/chatStore.ts`
+  - `web/src/components/chat/ChatView.tsx`
+- Backend display persistence:
+  - `aether/web/ws/runs.py`
+  - `aether/services/runs/contracts.py`
+  - `aether/services/runs/builder.py`
+  - `aether/runtime/core/contracts.py`
+  - `aether/agents/core/agent.py`
+
+Notes:
+
+- Attachments are persisted as user-message `metadata.displayAttachments`.
+- The first implementation keeps provider-bound prompt content textual and
+  stores attachments for display/resume. Provider-native multimodal dispatch is
+  intentionally left to the provider transport layer so web metadata does not
+  silently change model payload semantics.

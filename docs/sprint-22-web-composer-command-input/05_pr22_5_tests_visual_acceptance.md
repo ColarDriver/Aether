@@ -55,17 +55,26 @@ Implemented on branch `web-console-migration`:
   - `web/src/components/chat/slashExecute.ts`
   - `web/src/stores/chatStore.ts`
   - `web/src/components/chat/blocks/SystemNoticeBlock.tsx`
+- PR22.4 composer attachments and run payload persistence:
+  - `web/src/components/chat/Composer.tsx`
+  - `web/src/components/chat/composerAttachments.ts`
+  - `web/src/components/chat/AttachmentGallery.tsx`
+  - `web/src/api/runSocket.ts`
+  - `web/src/stores/chatStore.ts`
+  - `aether/web/ws/runs.py`
+  - `aether/services/runs/builder.py`
+  - `aether/agents/core/agent.py`
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (38 files / 93 tests after slash execution coverage)
+- `cd web && npm test` (38 files / 97 tests after attachment coverage)
 - `cd web && npm run build`
-- `python -m pytest aether/tests/web aether/tests/gateway/test_commands_methods.py` (30 passed)
-- `uv run pyright aether/web aether/gateway/handlers/commands_methods.py`
+- `python -m pytest aether/tests/web/test_web_run_ws.py aether/tests/services/test_agent_run_service.py` (10 passed)
+- `uv run pyright aether/web/ws/runs.py aether/services/runs aether/runtime/core/contracts.py aether/agents/core/agent.py`
 
 Remaining before Sprint 22 completion:
 
 - Expand PR22.3 beyond `/help`, `/session`, `/sessions`, `/tools`, and `/model`
   once web-native plan/model/session mutation APIs are in place.
-- PR22.4 composer attachments, file references, paste, and drag/drop.
-- Full manual browser acceptance after PR22.3 and PR22.4.
+- Workspace file reference search/browser insertion for path refs.
+- Full manual browser acceptance after PR22.4.

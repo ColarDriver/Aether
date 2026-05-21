@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { api } from '../api/client'
 import { runSocket } from '../api/runSocket'
 import type { RunSocketFrame } from '../api/types'
-import type { ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
+import type { ChatAttachment, ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
 import { normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
 
 export type PermissionPrompt = {
@@ -49,7 +49,7 @@ type ChatState = {
   pendingApproval: ApprovalPrompt | null
   loadTranscript: (sessionId: string) => Promise<void>
   connect: () => void
-  startRun: (sessionId: string, message: string) => string
+  startRun: (sessionId: string, message: string, attachments?: ChatAttachment[]) => string
   cancelRun: (sessionId: string) => void
   appendLocalNotice: (sessionId: string, content: string) => void
   appendLocalError: (sessionId: string, message: string) => void
@@ -95,9 +95,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       applyPromptFrame(frame, set)
     })
   },
-  startRun: (sessionId, message) => {
+  startRun: (sessionId, message, attachments = []) => {
     get().connect()
-    const runId = runSocket.startRun(sessionId, message)
+    const runId = runSocket.startRun(sessionId, message, attachments)
     const timestamp = Date.now()
     const userBlock: ChatBlock = {
       id: 'user-' + timestamp,
@@ -107,6 +107,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       source: 'optimistic',
       kind: 'user_message',
       content: message,
+      ...(attachments.length > 0 ? { attachments } : {}),
     }
     set((state) => ({
       blocksBySession: {

@@ -5,6 +5,7 @@ import type { ChatAttachment } from '../../chat-rendering'
 type Props = {
   attachments?: ChatAttachment[]
   align?: 'start' | 'end'
+  onRemove?: (index: number) => void
 }
 
 type GalleryImage = {
@@ -12,7 +13,7 @@ type GalleryImage = {
   name: string
 }
 
-export function AttachmentGallery({ attachments = [], align = 'start' }: Props) {
+export function AttachmentGallery({ attachments = [], align = 'start', onRemove }: Props) {
   const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null)
   const images = useMemo(
     () => attachments.flatMap((attachment) => {
@@ -33,18 +34,25 @@ export function AttachmentGallery({ attachments = [], align = 'start' }: Props) 
           if (attachment.type === 'image' && src) {
             const imageIndex = images.findIndex((image) => image.src === src)
             return (
-              <button
-                type="button"
-                className="attachment-image"
-                key={key}
-                onClick={() => setActiveImageIndex(imageIndex >= 0 ? imageIndex : null)}
-              >
-                <img src={src} alt={attachmentLabel(attachment, 'image')} loading="lazy" />
-                <span>{attachmentLabel(attachment, 'image')}</span>
-              </button>
+              <div className="attachment-item" key={key}>
+                <button
+                  type="button"
+                  className="attachment-image"
+                  onClick={() => setActiveImageIndex(imageIndex >= 0 ? imageIndex : null)}
+                >
+                  <img src={src} alt={attachmentLabel(attachment, 'image')} loading="lazy" />
+                  <span>{attachmentLabel(attachment, 'image')}</span>
+                </button>
+                {onRemove ? <AttachmentRemoveButton index={index} name={attachmentLabel(attachment, 'image')} onRemove={onRemove} /> : null}
+              </div>
             )
           }
-          return <AttachmentChip attachment={attachment} key={key} />
+          return (
+            <div className="attachment-item" key={key}>
+              <AttachmentChip attachment={attachment} />
+              {onRemove ? <AttachmentRemoveButton index={index} name={attachmentLabel(attachment, attachment.type)} onRemove={onRemove} /> : null}
+            </div>
+          )
         })}
       </div>
       {activeImageIndex !== null ? (
@@ -56,6 +64,27 @@ export function AttachmentGallery({ attachments = [], align = 'start' }: Props) 
         />
       ) : null}
     </>
+  )
+}
+
+function AttachmentRemoveButton({
+  index,
+  name,
+  onRemove,
+}: {
+  index: number
+  name: string
+  onRemove: (index: number) => void
+}) {
+  return (
+    <button
+      type="button"
+      className="attachment-remove"
+      aria-label={'Remove ' + name}
+      onClick={() => onRemove(index)}
+    >
+      <X aria-hidden="true" size={12} />
+    </button>
   )
 }
 

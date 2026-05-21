@@ -79,7 +79,18 @@ def test_run_websocket_streams_service_events() -> None:
             {
                 "type": "run.start",
                 "id": "run-1",
-                "payload": {"session_id": "ses", "user_message": "hello"},
+                "payload": {
+                    "session_id": "ses",
+                    "user_message": "hello",
+                    "attachments": [
+                        {
+                            "type": "image",
+                            "name": "plot.png",
+                            "mimeType": "image/png",
+                            "data": "data:image/png;base64,abc",
+                        }
+                    ],
+                },
             }
         )
         assert ws.receive_json()["type"] == "run.accepted"
@@ -96,6 +107,14 @@ def test_run_websocket_streams_service_events() -> None:
         "run.result",
     ]
     assert service.requests[0].session_id == "ses"
+    assert service.requests[0].attachments == [
+        {
+            "type": "image",
+            "name": "plot.png",
+            "mimeType": "image/png",
+            "data": "data:image/png;base64,abc",
+        }
+    ]
 
 
 def test_run_websocket_cancel_and_ping() -> None:

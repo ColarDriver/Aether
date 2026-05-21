@@ -674,6 +674,12 @@ button {
   justify-content: flex-end;
 }
 
+.attachment-item {
+  position: relative;
+  display: inline-flex;
+  max-width: min(100%, 360px);
+}
+
 .attachment-chip {
   max-width: min(100%, 280px);
   min-height: 32px;
@@ -685,6 +691,11 @@ button {
   color: var(--text);
   padding: 5px 9px;
   font-size: 12px;
+}
+
+.attachment-item .attachment-chip,
+.attachment-item .attachment-image {
+  max-width: 100%;
 }
 
 .attachment-chip span,
@@ -734,6 +745,28 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.attachment-remove:hover,
+.attachment-remove:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .image-gallery-backdrop {
@@ -1089,6 +1122,17 @@ button {
   gap: 10px;
 }
 
+.composer-drag-active {
+  background: var(--accent-soft);
+  outline: 1px dashed var(--accent);
+  outline-offset: -5px;
+}
+
+.composer-attachments {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
 .composer textarea {
   min-height: 44px;
   max-height: 160px;
@@ -1098,6 +1142,16 @@ button {
   color: var(--text);
   padding: 10px;
   font: inherit;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.composer-file-input {
+  display: none;
 }
 
 .slash-popover {

@@ -155,6 +155,7 @@ class TurnContext:
 class EngineRequest:
     session_id: str
     user_message: str | None = None
+    user_message_metadata: Dict[str, Any] = field(default_factory=dict)
     system_message: str | None = None
     stream_callback: StreamDeltaCallback | None = None
     # Optional count-only sibling of ``stream_callback`` — providers

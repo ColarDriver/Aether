@@ -134,4 +134,28 @@ describe('run socket client', () => {
 
     client.disconnect()
   })
+
+  it('sends run attachments in the run.start payload', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RunSocketClient()
+
+    client.connect()
+    fakeSockets[0].open()
+    client.startRun('session-1', 'look at this', [
+      { type: 'image', name: 'plot.png', mimeType: 'image/png', data: 'data:image/png;base64,abc' },
+    ])
+
+    expect(JSON.parse(fakeSockets[0].sent.at(-1) ?? '{}')).toMatchObject({
+      type: 'run.start',
+      payload: {
+        session_id: 'session-1',
+        user_message: 'look at this',
+        attachments: [
+          { type: 'image', name: 'plot.png', mimeType: 'image/png', data: 'data:image/png;base64,abc' },
+        ],
+      },
+    })
+
+    client.disconnect()
+  })
 })

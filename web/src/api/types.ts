@@ -178,6 +178,20 @@ export type RunSocketFrame = {
   payload?: Record<string, unknown>
 }
 
+export type RunAttachment = {
+  type: 'file' | 'image' | 'text'
+  name?: string
+  path?: string
+  url?: string
+  mimeType?: string
+  data?: string
+  isDirectory?: boolean
+  lineStart?: number
+  lineEnd?: number
+  note?: string
+  quote?: string
+}
+
 export type SlashCommandInfo = {
   name: string
   description: string

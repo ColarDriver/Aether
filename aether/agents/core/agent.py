@@ -767,7 +767,10 @@ class AgentEngine:
         messages = self._sanitize_messages(copy.deepcopy(request.messages))
 
         if request.user_message is not None:
-            messages.append({"role": "user", "content": self._sanitize_text(request.user_message)})
+            user_entry: Dict[str, Any] = {"role": "user", "content": self._sanitize_text(request.user_message)}
+            if request.user_message_metadata:
+                user_entry["metadata"] = self._sanitize_structure(copy.deepcopy(request.user_message_metadata))
+            messages.append(user_entry)
 
         task_id = self._sanitize_text(str(request.metadata.get("task_id", "")).strip()) if request.metadata else ""
         if not task_id:

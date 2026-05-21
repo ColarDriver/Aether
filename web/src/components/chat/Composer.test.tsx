@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from './Composer'
 
@@ -79,5 +79,39 @@ describe('Composer', () => {
 
     expect(onSend).toHaveBeenCalledWith('/workspace/Aether')
     expect(onSlashCommand).not.toHaveBeenCalled()
+  })
+
+  it('previews selected files and sends them with the prompt', async () => {
+    const onSend = vi.fn()
+    const { container } = render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['notes'], 'notes.md', { type: 'text/markdown' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => expect(screen.getByText('notes.md')).toBeTruthy())
+    fireEvent.change(textbox, { target: { value: 'summarize', selectionStart: 9 } })
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(onSend).toHaveBeenCalledWith('summarize', [
+      expect.objectContaining({ type: 'text', name: 'notes.md', mimeType: 'text/markdown' }),
+    ])
+  })
+
+  it('accepts pasted files as attachments', async () => {
+    const onSend = vi.fn()
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+    const file = new File(['plain'], 'clip.txt', { type: 'text/plain' })
+
+    fireEvent.paste(textbox, {
+      clipboardData: {
+        files: [file],
+        items: [],
+      },
+    })
+
+    await waitFor(() => expect(screen.getByText('clip.txt')).toBeTruthy())
   })
 })

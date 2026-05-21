@@ -96,6 +96,40 @@ def test_agent_run_service_runs_provider_emits_events_and_persists_result(tmp_pa
     assert service.status("ses_run") is not None
 
 
+def test_agent_run_service_persists_user_display_attachments(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _save_session(tmp_path)
+    service, _sessions, sink = _service(tmp_path, monkeypatch, _StreamingProvider(["ok"]))
+
+    service.start(
+        AgentRunRequest(
+            session_id="ses_run",
+            user_message="inspect this",
+            attachments=[
+                {
+                    "type": "image",
+                    "name": "plot.png",
+                    "mimeType": "image/png",
+                    "data": "data:image/png;base64,abc",
+                }
+            ],
+            run_id="run-attachments",
+        ),
+        sink=sink,
+    )
+
+    saved = load_session("ses_run", base=tmp_path / "sessions")
+    assert saved is not None
+    user_message = next(message for message in saved.messages if message["role"] == "user")
+    assert user_message["metadata"]["displayAttachments"] == [
+        {
+            "type": "image",
+            "name": "plot.png",
+            "mimeType": "image/png",
+            "data": "data:image/png;base64,abc",
+        }
+    ]
+
+
 def test_agent_run_service_missing_and_invalid_session_errors(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _sessions, sink = _service(tmp_path, monkeypatch, _StreamingProvider(["x"]))
 

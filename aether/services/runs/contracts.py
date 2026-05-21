@@ -30,6 +30,7 @@ class AgentRunOptions:
 class AgentRunRequest:
     session_id: str
     user_message: str
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     run_id: str | None = None
     options: AgentRunOptions = field(default_factory=AgentRunOptions)
     approval_prompter: Any = field(default=None, repr=False, compare=False)

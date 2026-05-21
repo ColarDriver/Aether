@@ -104,9 +104,13 @@ class RunDependencyBuilder:
         loop_state_callback: Callable[[Any], None],
     ) -> EngineRequest:
         options = request.options
+        user_message_metadata: dict[str, Any] = {}
+        if request.attachments:
+            user_message_metadata["displayAttachments"] = list(request.attachments)
         return EngineRequest(
             session_id=record.session_id,
             user_message=request.user_message,
+            user_message_metadata=user_message_metadata,
             system_message=(
                 options.system_override
                 if options.system_override is not None

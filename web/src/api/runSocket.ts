@@ -1,5 +1,5 @@
 import { getBaseUrl, getSessionToken } from './client'
-import type { RunSocketFrame } from './types'
+import type { RunAttachment, RunSocketFrame } from './types'
 
 type FrameHandler = (frame: RunSocketFrame) => void
 
@@ -64,9 +64,17 @@ export class RunSocketClient {
     return () => this.handlers.delete(handler)
   }
 
-  startRun(sessionId: string, userMessage: string) {
+  startRun(sessionId: string, userMessage: string, attachments: RunAttachment[] = []) {
     const id = crypto.randomUUID()
-    this.send({ type: 'run.start', id, payload: { session_id: sessionId, user_message: userMessage } })
+    this.send({
+      type: 'run.start',
+      id,
+      payload: {
+        session_id: sessionId,
+        user_message: userMessage,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      },
+    })
     return id
   }
 

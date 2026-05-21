@@ -29,6 +29,7 @@ from aether.web.routes.docs import router as docs_router
 from aether.web.routes.environment import router as environment_router
 from aether.web.routes.health import router as health_router
 from aether.web.routes.logs import router as logs_router
+from aether.web.routes.plan import router as plan_router
 from aether.web.routes.providers import router as providers_router
 from aether.web.routes.runs import router as runs_router
 from aether.web.routes.sessions import router as sessions_router
@@ -126,6 +127,7 @@ def create_app(
     app.include_router(docs_router)
     app.include_router(workspace_router)
     app.include_router(sessions_router)
+    app.include_router(plan_router)
     app.include_router(config_router)
     app.include_router(providers_router)
     app.include_router(tools_router)

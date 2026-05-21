@@ -44,13 +44,56 @@ describe('slashExecute', () => {
   })
 
   it('returns clear errors for unsupported or unknown commands', async () => {
-    expect(await executeWebSlashCommand('/plan', { session, commands })).toEqual({
-      type: 'error',
-      message: '/plan is not implemented in the web console yet.',
-    })
     expect(await executeWebSlashCommand('/missing', { session, commands })).toEqual({
       type: 'error',
       message: 'Unknown slash command /missing. Type /help for available commands.',
     })
+  })
+
+  it('enables plan mode and sends plan descriptions as agent prompts', async () => {
+    const setPlanMode = vi.fn().mockResolvedValue({
+      session_id: session.session_id,
+      mode: 'plan',
+      has_plan: false,
+      plan_path: '/tmp/plan.md',
+      plan_content: null,
+    })
+    const onSessionMode = vi.fn()
+
+    const result = await executeWebSlashCommand('/plan add auth flow', {
+      session,
+      commands,
+      loadPlanCurrent: vi.fn().mockResolvedValue({
+        session_id: session.session_id,
+        mode: 'agent',
+        has_plan: false,
+        plan_path: '/tmp/plan.md',
+        plan_content: null,
+      }),
+      setPlanMode,
+      onSessionMode,
+    })
+
+    expect(result).toEqual({ type: 'send', message: 'add auth flow' })
+    expect(setPlanMode).toHaveBeenCalledWith(session.session_id, 'plan')
+    expect(onSessionMode).toHaveBeenCalledWith(session.session_id, 'plan')
+  })
+
+  it('shows current plan content when already in plan mode', async () => {
+    const result = await executeWebSlashCommand('/plan', {
+      session: { ...session, mode: 'plan' },
+      commands,
+      loadPlanCurrent: vi.fn().mockResolvedValue({
+        session_id: session.session_id,
+        mode: 'plan',
+        has_plan: true,
+        plan_path: '/tmp/plan.md',
+        plan_content: '# Plan\n\n- Inspect',
+      }),
+    })
+
+    expect(result.type).toBe('notice')
+    expect(result.message).toContain('# Plan')
+    expect(result.message).toContain('Inspect')
   })
 })

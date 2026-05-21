@@ -15,6 +15,7 @@ type SessionState = {
   loadSessions: () => Promise<void>
   createSession: (input: CreateSessionInput) => Promise<void>
   setActiveSession: (sessionId: string | null) => void
+  setSessionMode: (sessionId: string, mode: 'agent' | 'plan') => void
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -44,4 +45,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void get().loadSessions()
   },
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
+  setSessionMode: (sessionId, mode) => set((state) => ({
+    sessions: state.sessions.map((session) => (
+      session.session_id === sessionId ? { ...session, mode } : session
+    )),
+  })),
 }))

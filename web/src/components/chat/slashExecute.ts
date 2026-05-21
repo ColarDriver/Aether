@@ -1,5 +1,5 @@
 import { api } from '../../api/client'
-import type { CommandCatalog, SessionInfo, SlashCommandInfo, ToolGroup } from '../../api/types'
+import type { CommandCatalog, PlanCurrent, SessionInfo, SlashCommandInfo, ToolGroup } from '../../api/types'
 
 export type ParsedSlashCommand = {
   name: string
@@ -17,6 +17,9 @@ type SlashExecutionContext = {
   loadCommands?: () => Promise<CommandCatalog>
   loadSessions?: () => Promise<{ sessions: SessionInfo[] }>
   loadToolGroups?: () => Promise<{ groups: ToolGroup[] }>
+  loadPlanCurrent?: (sessionId: string) => Promise<PlanCurrent>
+  setPlanMode?: (sessionId: string, mode: 'agent' | 'plan') => Promise<PlanCurrent>
+  onSessionMode?: (sessionId: string, mode: 'agent' | 'plan') => void
 }
 
 export function isSlashCommandInput(value: string): boolean {
@@ -52,6 +55,8 @@ export async function executeWebSlashCommand(
       return { type: 'notice', message: formatTools((await loadToolGroups(context)).groups) }
     case 'model':
       return { type: 'notice', message: formatModel(context.session) }
+    case 'plan':
+      return executePlanCommand(parsed.arg, context)
     default: {
       const catalog = await loadCommandCatalog(context)
       const known = catalog.some((item) => item.name === '/' + parsed.name)
@@ -76,6 +81,45 @@ async function loadSessions(context: SlashExecutionContext): Promise<{ sessions:
 
 async function loadToolGroups(context: SlashExecutionContext): Promise<{ groups: ToolGroup[] }> {
   return (context.loadToolGroups ?? api.toolGroups)()
+}
+
+async function loadPlanCurrent(context: SlashExecutionContext): Promise<PlanCurrent> {
+  return (context.loadPlanCurrent ?? api.planCurrent)(context.session.session_id)
+}
+
+async function setPlanMode(context: SlashExecutionContext, mode: 'agent' | 'plan'): Promise<PlanCurrent> {
+  const result = await (context.setPlanMode ?? api.setPlanMode)(context.session.session_id, mode)
+  context.onSessionMode?.(context.session.session_id, result.mode)
+  return result
+}
+
+async function executePlanCommand(arg: string, context: SlashExecutionContext): Promise<WebSlashResult> {
+  const normalizedArg = arg.trim()
+  const current = await loadPlanCurrent(context)
+
+  if (normalizedArg.toLowerCase() === 'open') {
+    return { type: 'notice', message: formatPlanCurrent(current) }
+  }
+
+  if (normalizedArg) {
+    if (current.mode !== 'plan') {
+      await setPlanMode(context, 'plan')
+    } else {
+      context.onSessionMode?.(context.session.session_id, 'plan')
+    }
+    return { type: 'send', message: normalizedArg }
+  }
+
+  if (current.mode !== 'plan') {
+    const updated = await setPlanMode(context, 'plan')
+    return {
+      type: 'notice',
+      message: 'Enabled plan mode.\n\n' + formatPlanCurrent(updated),
+    }
+  }
+
+  context.onSessionMode?.(context.session.session_id, 'plan')
+  return { type: 'notice', message: formatPlanCurrent(current) }
 }
 
 function formatHelp(commands: SlashCommandInfo[]): string {
@@ -141,6 +185,25 @@ function formatModel(session: SessionInfo): string {
     '- Provider: `' + session.provider + '`',
     '- Model: `' + session.model + '`',
     session.base_url ? '- Base URL: `' + session.base_url + '`' : '',
+  ].filter(Boolean).join('\n')
+}
+
+function formatPlanCurrent(plan: PlanCurrent): string {
+  if (plan.has_plan && plan.plan_content?.trim()) {
+    return [
+      '# Current plan',
+      '',
+      plan.plan_path ? '_Artifact: `' + cell(plan.plan_path) + '`_' : '',
+      '',
+      plan.plan_content,
+    ].filter(Boolean).join('\n')
+  }
+  return [
+    '# Current plan',
+    '',
+    '- Mode: `' + plan.mode + '`',
+    plan.plan_path ? '- Artifact: `' + cell(plan.plan_path) + '`' : '',
+    '- No plan written yet.',
   ].filter(Boolean).join('\n')
 }
 

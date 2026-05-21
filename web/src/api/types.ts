@@ -192,6 +192,15 @@ export type RunAttachment = {
   quote?: string
 }
 
+export type PlanCurrent = {
+  session_id: string
+  mode: 'agent' | 'plan'
+  plan_path?: string | null
+  has_plan: boolean
+  plan_content?: string | null
+  info?: SessionInfo
+}
+
 export type SlashCommandInfo = {
   name: string
   description: string

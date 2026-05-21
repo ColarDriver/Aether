@@ -2,6 +2,7 @@ import { ArrowDown, Bot } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionInfo } from '../../api/types'
 import { useChatStore } from '../../stores/chatStore'
+import { useSessionStore } from '../../stores/sessionStore'
 import { EmptyState } from '../shared/EmptyState'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
@@ -28,6 +29,7 @@ export function ChatView({ session }: Props) {
   const pendingApproval = useChatStore((state) => state.pendingApproval)
   const respondPermission = useChatStore((state) => state.respondPermission)
   const respondApproval = useChatStore((state) => state.respondApproval)
+  const setSessionMode = useSessionStore((state) => state.setSessionMode)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
@@ -90,7 +92,7 @@ export function ChatView({ session }: Props) {
   const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
 
   const handleSlashCommand = (command: string) => {
-    void executeWebSlashCommand(command, { session })
+    void executeWebSlashCommand(command, { session, onSessionMode: setSessionMode })
       .then((result) => {
         if (result.type === 'notice') {
           appendLocalNotice(session.session_id, result.message)

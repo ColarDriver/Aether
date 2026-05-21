@@ -159,6 +159,32 @@ def test_commands_route_exposes_slash_catalog(client: TestClient) -> None:
     assert by_name["/help"]["description"]
 
 
+def test_plan_routes_read_and_update_session_mode(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "plan_web"},
+    )
+    assert created.status_code == 200
+
+    current = client.get("/api/plan/plan_web")
+    assert current.status_code == 200
+    assert current.json()["mode"] == "agent"
+    assert current.json()["has_plan"] is False
+    assert current.json()["plan_path"].endswith("plan_web.md")
+
+    updated = client.put("/api/plan/plan_web/mode", json={"mode": "plan"})
+    assert updated.status_code == 200
+    assert updated.json()["mode"] == "plan"
+    assert updated.json()["info"]["mode"] == "plan"
+
+    listed = client.get("/api/sessions")
+    assert listed.status_code == 200
+    assert listed.json()["sessions"][0]["mode"] == "plan"
+
+    invalid = client.put("/api/plan/plan_web/mode", json={"mode": "invalid"})
+    assert invalid.status_code == 400
+
+
 def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None:
     tree = client.get("/api/workspace/tree")
     assert tree.status_code == 200

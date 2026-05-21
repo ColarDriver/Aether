@@ -12,6 +12,7 @@ import type {
   HealthStatus,
   LogFileSummary,
   LogReadResult,
+  PlanCurrent,
   PrefMutationResult,
   ProviderModelList,
   ProviderRuntimeStatus,
@@ -141,6 +142,10 @@ export const api = {
   sessionMessages: (sessionId: string) =>
     request<{ session_id: string; messages: TranscriptMessage[] }>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/messages'),
   deleteSession: (sessionId: string) => request<void>("DELETE", "/api/sessions/" + encodeURIComponent(sessionId)),
+  planCurrent: (sessionId: string) =>
+    request<PlanCurrent>('GET', '/api/plan/' + encodeURIComponent(sessionId)),
+  setPlanMode: (sessionId: string, mode: 'agent' | 'plan') =>
+    request<PlanCurrent>('PUT', '/api/plan/' + encodeURIComponent(sessionId) + '/mode', { mode }),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
   providerModels: (provider: string) => request<ProviderModelList>('GET', '/api/providers/' + encodeURIComponent(provider) + '/models'),

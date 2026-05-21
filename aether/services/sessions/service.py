@@ -19,7 +19,7 @@ from aether.cli.sessions import (
     update_session_from_state,
 )
 from aether.runtime.session.plan_artifact import clear_plan
-from aether.runtime.session.session_state import clear_mode, get_mode, set_mode
+from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
 from aether.services.common import (
     ServiceConflictError,
     ServiceNotFoundError,
@@ -161,6 +161,14 @@ class SessionService:
         if deleted and self._current_getter() == session_id:
             self._current_setter(None)
         return deleted
+
+    def set_session_mode(self, session_id_or_prefix: str, mode: str) -> SessionInfo:
+        session_mode = _require_session_mode(mode)
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        set_mode(record.session_id, session_mode)
+        record.mode = session_mode
+        save_session(record, base=self._session_dir)
+        return self.info(record)
 
     def rename(self, request: SessionRenameRequest) -> SessionInfo:
         session_id = _require_non_empty(request.session_id, "session_id")
@@ -513,6 +521,17 @@ def _require_non_empty(value: str | None, field: str) -> str:
             details={"field": field},
         )
     return value.strip()
+
+
+def _require_session_mode(value: str | None) -> str:
+    text = _require_non_empty(value, "mode")
+    allowed = {mode.value for mode in SessionMode}
+    if text not in allowed:
+        raise ServiceValidationError(
+            f"unsupported session mode: {text!r}",
+            details={"mode": text, "allowed": sorted(allowed)},
+        )
+    return text
 
 
 __all__ = [

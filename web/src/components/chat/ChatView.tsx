@@ -132,11 +132,20 @@ export function ChatView({ session }: Props) {
     return (
       <div className="chat-surface chat-surface-empty">
         <div className="chat-scroll">
-          <EmptyState
-            icon={<Bot />}
-            title="Start a session"
-            description="Type a message below to create a browser session and run Aether."
-          />
+          <div className="chat-start">
+            <EmptyState
+              icon={<Bot />}
+              title="Start a session"
+              description="Type a message below to create a browser session and run Aether."
+            />
+            <div className="chat-start-actions" aria-label="Starter prompts">
+              {starterPrompts.map((prompt) => (
+                <button key={prompt} type="button" onClick={() => createSessionAndRun(prompt)}>
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         <Composer
           disabled={false}
@@ -244,3 +253,9 @@ export function ChatView({ session }: Props) {
 export function isNearChatBottom(element: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX
 }
+
+const starterPrompts = [
+  'Inspect this project and summarize the architecture',
+  'Find the highest-risk UI issues in the web app',
+  'Plan the next implementation step before editing files',
+]

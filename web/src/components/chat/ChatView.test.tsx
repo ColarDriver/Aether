@@ -61,6 +61,8 @@ describe('ChatView', () => {
     render(<ChatView session={null} />)
 
     expect(screen.getByText('Start a session')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Inspect this project and summarize the architecture' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Find the highest-risk UI issues in the web app' })).toBeTruthy()
     expect(screen.getByRole('textbox')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
   })

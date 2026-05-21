@@ -54,6 +54,26 @@ describe('ChatTimeline', () => {
     expect(onApproval).toHaveBeenCalledWith({ confirmed: true })
   })
 
+  it('groups multiple consecutive tool calls behind an activity summary', () => {
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'tc1', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: { path: 'README.md' }, status: 'finished' },
+      { ...base, id: 'tc2', kind: 'tool_call', toolCallId: 'call-2', toolName: 'grep', arguments: { pattern: 'TODO' }, status: 'finished' },
+      { ...base, id: 'tr1', kind: 'tool_result', toolCallId: 'call-1', toolName: 'read_file', content: 'contents', isError: false, metadata: {} },
+      { ...base, id: 'tr2', kind: 'tool_result', toolCallId: 'call-2', toolName: 'grep', content: 'matches', isError: false, metadata: {} },
+    ]
+
+    render(<ChatTimeline blocks={blocks} />)
+
+    expect(screen.getByRole('button', { name: /Activity/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('read_file')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Activity/ }))
+
+    expect(screen.getByText('read_file')).toBeTruthy()
+    expect(screen.getByText('grep')).toBeTruthy()
+    expect(screen.getByText('contents')).toBeTruthy()
+  })
+
   it('only renders allow-session when the permission block allows it', () => {
     render(
       <ChatTimeline

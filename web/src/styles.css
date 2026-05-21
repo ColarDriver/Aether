@@ -1442,32 +1442,105 @@ button {
 
 .tool-call-group {
   display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.tool-activity-header {
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+  color: var(--muted);
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-activity-header:hover {
+  background: var(--panel-2);
+}
+
+.tool-activity-header strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tool-activity-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tool-activity-header em {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.tool-activity-running .tool-activity-header em {
+  color: var(--accent);
+}
+
+.tool-activity-running .tool-activity-header em svg {
+  animation: spin 1s linear infinite;
+}
+
+.tool-activity-failed .tool-activity-header em {
+  color: var(--danger);
+}
+
+.tool-activity-body {
+  display: grid;
+  gap: 0;
 }
 
 .tool-call-block {
   overflow: hidden;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border-top: 1px solid var(--line);
+  background: transparent;
+}
+
+.tool-call-block:first-child {
+  border-top: 0;
 }
 
 .tool-call-failed {
-  border-color: #f3b5af;
+  background: color-mix(in srgb, var(--danger) 4%, transparent);
 }
 
 .tool-call-header {
-  min-height: 38px;
+  min-height: 34px;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
   border: 0;
-  background: var(--panel-2);
+  background: transparent;
   color: var(--text);
-  padding: 8px 10px;
+  padding: 7px 10px;
   text-align: left;
   cursor: pointer;
+}
+
+.tool-call-header:hover {
+  background: color-mix(in srgb, var(--panel-2) 64%, transparent);
+}
+
+.tool-call-header strong {
+  font-size: 12px;
 }
 
 .tool-call-header span {
@@ -1489,13 +1562,15 @@ button {
 .tool-call-body {
   display: grid;
   gap: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   padding: 10px;
 }
 
 .tool-result-block {
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
   overflow: auto;
+  padding: 8px;
 }
 
 .tool-result-header {

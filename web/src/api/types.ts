@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'environment' | 'settings'
+export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'analytics' | 'environment' | 'settings'
 
 export type SessionInfo = {
   session_id: string
@@ -210,4 +210,58 @@ export type EnvRevealAuditEntry = {
   key: string
   source: "file" | "process" | "missing"
   revealed_at: number
+}
+
+
+export type TokenUsageSummary = {
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+}
+
+export type AnalyticsSummary = {
+  session_count: number
+  message_count: number
+  assistant_message_count: number
+  tool_call_count: number
+  usage: TokenUsageSummary
+}
+
+export type AnalyticsDailyEntry = {
+  day: string
+  sessions: number
+  messages: number
+  tool_calls: number
+  usage: TokenUsageSummary
+}
+
+export type AnalyticsModelEntry = {
+  provider: string
+  model: string
+  sessions: number
+  messages: number
+  tool_calls: number
+  usage: TokenUsageSummary
+}
+
+export type AnalyticsSessionEntry = {
+  session_id: string
+  summary?: string | null
+  provider: string
+  model: string
+  updated_at: number
+  messages: number
+  tool_calls: number
+  usage: TokenUsageSummary
+}
+
+export type AnalyticsReport = {
+  days: number
+  summary: AnalyticsSummary
+  daily: AnalyticsDailyEntry[]
+  models: AnalyticsModelEntry[]
+  top_sessions: AnalyticsSessionEntry[]
 }

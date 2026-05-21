@@ -1,4 +1,5 @@
 import type {
+  AnalyticsReport,
   ConfigPaths,
   EffectiveConfig,
   EnvCatalog,
@@ -103,6 +104,13 @@ function normalizeBaseUrl(value: string) {
 export const api = {
   status: () => request<StatusResponse>('GET', '/api/status'),
   health: () => request<HealthStatus>('GET', '/api/health'),
+  analytics: (params: { days?: number; limit?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.days) query.set('days', String(params.days))
+    if (params.limit) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? '?' + query.toString() : ''
+    return request<AnalyticsReport>('GET', '/api/analytics' + suffix)
+  },
   sessions: () => request<{ sessions: SessionInfo[] }>('GET', '/api/sessions'),
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),

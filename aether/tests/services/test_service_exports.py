@@ -14,6 +14,7 @@ from aether.services.common import (
 
 SERVICE_PACKAGES = (
     "aether.services.common",
+    "aether.services.analytics",
     "aether.services.compact",
     "aether.services.sessions",
     "aether.services.config",

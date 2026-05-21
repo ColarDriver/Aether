@@ -111,6 +111,21 @@ def test_config_prefs_and_diagnostics_routes(client: TestClient) -> None:
     assert "enabled" in diagnostics.json()
 
 
+def test_analytics_route_reports_sessions(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "analytics_web"},
+    )
+    assert created.status_code == 200
+
+    report = client.get("/api/analytics?days=30&limit=5")
+    assert report.status_code == 200
+    body = report.json()
+    assert body["days"] == 30
+    assert body["summary"]["session_count"] == 1
+    assert body["models"][0]["provider"] == "openai"
+
+
 def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:
     listed = client.get("/api/env")
     assert listed.status_code == 200

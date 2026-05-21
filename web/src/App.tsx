@@ -1,4 +1,4 @@
-import { Activity, Boxes, Brain, CircleAlert, FileText, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, BarChart3, Boxes, Brain, CircleAlert, FileText, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useAppearanceStore } from "./stores/appearanceStore"
@@ -14,6 +14,7 @@ import { SettingsView } from './components/settings/SettingsView'
 import { SkillsView } from './components/settings/SkillsView'
 import { LogsView } from './components/settings/LogsView'
 import { EnvironmentView } from './components/settings/EnvironmentView'
+import { AnalyticsView } from './components/settings/AnalyticsView'
 import { SessionsView } from './components/settings/SessionsView'
 import { ToolsView } from './components/settings/ToolsView'
 import { Spinner } from './components/shared/Spinner'
@@ -73,6 +74,7 @@ export function App() {
           {activeView === 'skills' ? <SkillsView /> : null}
           {activeView === 'diagnostics' ? <DiagnosticsView health={health} /> : null}
           {activeView === 'logs' ? <LogsView /> : null}
+          {activeView === 'analytics' ? <AnalyticsView /> : null}
           {activeView === 'environment' ? <EnvironmentView /> : null}
           {activeView === 'settings' ? <SettingsView /> : null}
         </section>
@@ -97,6 +99,7 @@ function viewTitle(view: string) {
     skills: 'Skills',
     diagnostics: 'Diagnostics',
     logs: 'Logs',
+    analytics: 'Analytics',
     environment: 'Environment',
     settings: 'Settings',
   }
@@ -111,6 +114,7 @@ export const navItems = [
   { id: 'skills', label: 'Skills', icon: Brain },
   { id: 'diagnostics', label: 'Diagnostics', icon: ShieldCheck },
   { id: 'logs', label: 'Logs', icon: FileText },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'environment', label: 'Environment', icon: KeyRound },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const

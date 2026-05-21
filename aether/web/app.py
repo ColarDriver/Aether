@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from aether.services.analytics import AnalyticsService
 from aether.services.config import ConfigService, PrefsService
 from aether.services.diagnostics import DiagnosticsService
 from aether.services.environment import EnvironmentService
@@ -18,6 +19,7 @@ from aether.services.sessions import SessionService
 from aether.services.skills import SkillService
 from aether.services.tools import ToolService
 from aether.web.errors import install_error_handlers
+from aether.web.routes.analytics import router as analytics_router
 from aether.web.routes.config import router as config_router
 from aether.web.routes.diagnostics import router as diagnostics_router
 from aether.web.routes.environment import router as environment_router
@@ -47,6 +49,7 @@ class WebServices:
     environment: EnvironmentService
     runs: AgentRunService
     logs: LogService
+    analytics: AnalyticsService
 
 
 def create_app(
@@ -67,6 +70,7 @@ def create_app(
     environment_service: EnvironmentService | None = None,
     run_service: AgentRunService | None = None,
     log_service: LogService | None = None,
+    analytics_service: AnalyticsService | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI app.
 
@@ -94,6 +98,7 @@ def create_app(
         environment=environment_service or EnvironmentService(),
         runs=run_service or AgentRunService(session_service=sessions),
         logs=log_service or LogService(),
+        analytics=analytics_service or AnalyticsService(session_service=sessions),
     )
 
     install_security(
@@ -105,6 +110,7 @@ def create_app(
     install_error_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(analytics_router)
     app.include_router(sessions_router)
     app.include_router(config_router)
     app.include_router(providers_router)

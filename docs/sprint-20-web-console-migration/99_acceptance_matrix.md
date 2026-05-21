@@ -43,6 +43,7 @@ Required before Sprint 20 completion:
 - `aether/web/serializers.py`
 - `aether/web/static.py`
 - `aether/web/routes/health.py`
+- `aether/web/routes/analytics.py`
 - `aether/web/routes/sessions.py`
 - `aether/web/routes/config.py`
 - `aether/web/routes/providers.py`
@@ -53,6 +54,7 @@ Required before Sprint 20 completion:
 - `aether/web/ws/runs.py`
 - `aether/web/ws/prompts.py`
 - `aether/web/ws/events.py`
+- `aether/services/analytics/*`
 - `aether/tests/web/*`
 
 ## Frontend Implementation Evidence
@@ -118,19 +120,19 @@ Implemented on branch `web-console-migration`:
 - PR20.3 run WebSocket: structured `/api/runs/ws` protocol, event mapping, cancellation, web prompt broker, approval and permission responders.
 - PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, searchable sidebar, sessions manager, status bar, toast notifications, error boundary, service-backed theme/language preferences, and console shell.
 - PR20.5 chat surface: transcript loading, persisted tool/diff reconstruction, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
-- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, appearance controls, tools, skills, diagnostics, logs, and settings views.
+- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, appearance controls, tools, skills, diagnostics, logs, local session analytics, and settings views.
 
 Latest verification performed during implementation:
 
-- `python -m pytest aether/tests/web` (18 passed)
-- `python -m pytest aether/tests/services` (47 passed)
+- `python -m pytest aether/tests/web` (19 passed)
+- `python -m pytest aether/tests/services` (49 passed)
 - `python -m pytest aether/tests/gateway` (241 passed)
 - `uv run pyright aether/web aether/services aether/gateway/handlers` (0 errors)
-- `cd web && npm test` (19 files / 29 tests, including layout, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (20 files / 30 tests, including layout, analytics, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:
 
 - Add browser E2E/screenshot coverage for the full chat and settings workflows.
 - Consider replacing the local lightweight markdown renderer with a full GFM/highlight pipeline if web output needs task lists, nested tables, or language-grade syntax highlighting.
-- Decide whether Hermes-only dashboard domains such as plugins, analytics, logs, profiles, cron, and PTY should stay out of Aether or receive their own future service-backed sprints.
+- Decide whether Hermes-only dashboard domains such as plugins, profiles, cron, and PTY should stay out of Aether or receive their own future service-backed sprints.

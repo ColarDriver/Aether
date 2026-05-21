@@ -1,3 +1,4 @@
+import { CheckCircle2, CircleAlert, ShieldQuestion, XCircle } from 'lucide-react'
 import type { PermissionRequestBlock as PermissionRequest } from '../../../chat-rendering'
 import { PermissionPreviewContent } from '../PromptContent'
 
@@ -7,16 +8,21 @@ type Props = {
 }
 
 export function PermissionRequestBlock({ block, onRespond }: Props) {
+  const Icon = promptStateIcon(block.state)
   return (
-    <article className="chat-block prompt-inline-block">
+    <article className={'chat-block prompt-inline-block prompt-inline-' + block.state}>
       <header>
-        <strong>{block.preview?.title || block.toolName}</strong>
+        <span className="prompt-inline-icon"><Icon size={16} /></span>
+        <div>
+          <strong>{block.preview?.title || block.toolName}</strong>
+          {block.reason ? <small>{block.reason}</small> : null}
+        </div>
         <span>{block.state}</span>
       </header>
       <PermissionPreviewContent
         args={block.arguments}
         preview={block.preview}
-        reason={block.reason}
+        reason={null}
       />
       {block.state === 'pending' && onRespond ? (
         <footer>
@@ -29,4 +35,11 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
       ) : null}
     </article>
   )
+}
+
+function promptStateIcon(state: string) {
+  if (state === 'allowed') return CheckCircle2
+  if (state === 'denied' || state === 'aborted') return XCircle
+  if (state === 'expired') return CircleAlert
+  return ShieldQuestion
 }

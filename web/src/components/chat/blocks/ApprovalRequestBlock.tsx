@@ -1,3 +1,4 @@
+import { CheckCircle2, ClipboardCheck, HelpCircle, XCircle } from 'lucide-react'
 import type { ApprovalRequestBlock as ApprovalRequest } from '../../../chat-rendering'
 import { ApprovalContent } from '../PromptContent'
 
@@ -8,10 +9,15 @@ type Props = {
 
 export function ApprovalRequestBlock({ block, onRespond }: Props) {
   const isQuestionApproval = block.approvalKind === 'questions' || block.questions.length > 0
+  const Icon = approvalIcon(block.state, isQuestionApproval)
   return (
-    <article className="chat-block prompt-inline-block">
+    <article className={'chat-block prompt-inline-block prompt-inline-' + block.state}>
       <header>
-        <strong>{block.approvalKind === 'plan' ? 'Plan approval' : isQuestionApproval ? 'Answer questions' : 'Approval request'}</strong>
+        <span className="prompt-inline-icon"><Icon size={16} /></span>
+        <div>
+          <strong>{block.approvalKind === 'plan' ? 'Plan approval' : isQuestionApproval ? 'Answer questions' : 'Approval request'}</strong>
+          {block.planPath ? <small>{block.planPath}</small> : null}
+        </div>
         <span>{block.state}</span>
       </header>
       <ApprovalContent
@@ -30,4 +36,11 @@ export function ApprovalRequestBlock({ block, onRespond }: Props) {
       ) : null}
     </article>
   )
+}
+
+function approvalIcon(state: string, isQuestionApproval: boolean) {
+  if (state === 'approved' || state === 'answered') return CheckCircle2
+  if (state === 'rejected') return XCircle
+  if (isQuestionApproval) return HelpCircle
+  return ClipboardCheck
 }

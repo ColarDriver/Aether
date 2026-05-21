@@ -1,3 +1,4 @@
+import { HelpCircle } from 'lucide-react'
 import type { AskUserQuestionBlock as AskUserQuestion } from '../../../chat-rendering'
 
 type Props = {
@@ -6,9 +7,13 @@ type Props = {
 
 export function AskUserQuestionBlock({ block }: Props) {
   return (
-    <article className="chat-block prompt-inline-block">
+    <article className={'chat-block prompt-inline-block prompt-inline-' + block.state}>
       <header>
-        <strong>Input requested</strong>
+        <span className="prompt-inline-icon"><HelpCircle size={16} /></span>
+        <div>
+          <strong>Input requested</strong>
+          <small>{block.questions.length} question{block.questions.length === 1 ? '' : 's'}</small>
+        </div>
         <span>{block.state}</span>
       </header>
       {block.questions.map((question, index) => (

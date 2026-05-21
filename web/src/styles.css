@@ -1667,14 +1667,45 @@ button {
 .prompt-inline-block {
   display: grid;
   gap: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  padding: 10px;
 }
 
 .prompt-inline-block header,
 .prompt-inline-block footer {
-  display: flex;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.prompt-inline-block header {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.prompt-inline-block header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.prompt-inline-block header strong,
+.prompt-inline-block header small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-inline-block header strong {
+  font-size: 13px;
+}
+
+.prompt-inline-block header small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .prompt-inline-block header span {
@@ -1682,11 +1713,44 @@ button {
   font-size: 12px;
 }
 
-.prompt-inline-block footer {
-  justify-content: flex-end;
+.prompt-inline-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--accent);
 }
 
-.prompt-inline-block button {
+.prompt-inline-pending {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+}
+
+.prompt-inline-allowed .prompt-inline-icon,
+.prompt-inline-approved .prompt-inline-icon,
+.prompt-inline-answered .prompt-inline-icon {
+  color: var(--ok);
+}
+
+.prompt-inline-denied .prompt-inline-icon,
+.prompt-inline-rejected .prompt-inline-icon,
+.prompt-inline-aborted .prompt-inline-icon {
+  color: var(--danger);
+}
+
+.prompt-inline-expired .prompt-inline-icon {
+  color: #b9812d;
+}
+
+.prompt-inline-block footer {
+  grid-template-columns: repeat(3, auto);
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.prompt-inline-block > footer button {
   min-height: 30px;
   border: 1px solid var(--line);
   background: var(--panel);

@@ -180,8 +180,8 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 68px;
-  padding: 14px 16px;
+  min-height: 62px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -209,6 +209,32 @@ button {
   display: block;
   color: var(--muted);
   font-size: 12px;
+}
+
+.sidebar-primary-actions {
+  padding: 10px 10px 0;
+}
+
+.new-chat-button {
+  width: 100%;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.new-chat-button:hover,
+.new-chat-button:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 76%, var(--panel));
+  outline: 0;
 }
 
 .nav-list,
@@ -264,7 +290,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 10px 6px 16px;
+  padding: 10px 10px 6px 16px;
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
@@ -296,14 +322,46 @@ button {
 .session-list {
   overflow: auto;
   min-height: 0;
+  padding-top: 2px;
+  overscroll-behavior: contain;
+}
+
+.session-group {
+  display: grid;
+  gap: 4px;
+}
+
+.session-group + .session-group {
+  margin-top: 8px;
+}
+
+.session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 5px 3px 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-group-header small {
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .session-item {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
   border: 1px solid transparent;
   background: transparent;
+  padding: 8px;
 }
 
 .session-item-active {
@@ -312,11 +370,51 @@ button {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.session-row-leading {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.session-item-active .session-row-leading {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.session-row-body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.session-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .session-item-title {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text);
+  font-weight: 550;
+}
+
+.session-title-row time {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .session-item-meta {
@@ -331,7 +429,7 @@ button {
 .session-item small,
 .session-item em {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .session-item-meta small {

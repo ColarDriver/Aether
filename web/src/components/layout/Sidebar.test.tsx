@@ -12,6 +12,7 @@ const session = {
   model: 'gpt-5.4',
   message_count: 3,
   summary: 'Plan auth flow',
+  mode: 'plan',
 }
 
 afterEach(cleanup)
@@ -38,6 +39,9 @@ describe('Sidebar', () => {
     expect(screen.getByLabelText('Aether control center')).toBeTruthy()
     expect(screen.getAllByRole('button', { name: 'Settings' }).length).toBeGreaterThan(0)
     expect(screen.getByText('Plan auth flow')).toBeTruthy()
+    expect(screen.getByText('Older')).toBeTruthy()
+    expect(screen.getByText('plan')).toBeTruthy()
+    expect(screen.getByText('3 msgs')).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'auth' } })
     expect(screen.getByText('Plan auth flow')).toBeTruthy()

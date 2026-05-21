@@ -438,6 +438,24 @@ button {
   min-height: 0;
   overflow: auto;
   padding: 14px;
+  position: relative;
+}
+
+.chat-jump-latest {
+  position: sticky;
+  bottom: 8px;
+  z-index: 1;
+  margin: 12px 8px 0 auto;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  cursor: pointer;
 }
 
 .message-list {

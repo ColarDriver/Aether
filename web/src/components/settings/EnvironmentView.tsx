@@ -1,6 +1,7 @@
 import { Eye, EyeOff, KeyRound, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
+import { useToastStore } from '../../stores/toastStore'
 import type { EnvVarSummary } from '../../api/types'
 import { Spinner } from '../shared/Spinner'
 
@@ -12,6 +13,7 @@ export function EnvironmentView() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const notify = useToastStore((state) => state.notify)
 
   const load = () => {
     setLoading(true)
@@ -21,7 +23,11 @@ export function EnvironmentView() {
         setEnvPath(catalog.env_path)
         setVariables(catalog.variables)
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        notify(message, 'error')
+      })
       .finally(() => setLoading(false))
   }
 
@@ -45,9 +51,14 @@ export function EnvironmentView() {
       .then(() => {
         setEdits((state) => withoutKey(state, key))
         setRevealed((state) => withoutKey(state, key))
+        notify('Saved ' + key, 'success')
         load()
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        notify(message, 'error')
+      })
       .finally(() => setSaving(null))
   }
 
@@ -58,9 +69,14 @@ export function EnvironmentView() {
       .then(() => {
         setEdits((state) => withoutKey(state, key))
         setRevealed((state) => withoutKey(state, key))
+        notify('Deleted ' + key, 'success')
         load()
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        notify(message, 'error')
+      })
       .finally(() => setSaving(null))
   }
 
@@ -72,8 +88,15 @@ export function EnvironmentView() {
     setSaving(key)
     setError(null)
     api.revealEnvVar(key)
-      .then((result) => setRevealed((state) => ({ ...state, [key]: result.value })))
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .then((result) => {
+        setRevealed((state) => ({ ...state, [key]: result.value }))
+        notify('Revealed ' + key, 'info')
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        notify(message, 'error')
+      })
       .finally(() => setSaving(null))
   }
 

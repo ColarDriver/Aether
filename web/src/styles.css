@@ -447,6 +447,114 @@ button {
   color: var(--danger);
 }
 
+
+.toast-viewport {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  width: min(360px, calc(100vw - 36px));
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  padding: 9px 10px 9px 12px;
+  pointer-events: auto;
+}
+
+.toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.toast button:hover {
+  border-color: var(--line);
+  background: var(--panel-2);
+}
+
+.toast-success {
+  border-left: 3px solid var(--ok);
+}
+
+.toast-error {
+  border-left: 3px solid var(--danger);
+}
+
+.toast-info {
+  border-left: 3px solid var(--accent);
+}
+
+.error-boundary {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.error-boundary section {
+  width: min(620px, 100%);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 20px;
+}
+
+.error-boundary h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.error-boundary p {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+.error-boundary pre {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #101828;
+  color: #eef4ff;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-boundary button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.error-boundary button:hover {
+  background: var(--panel-2);
+}
+
 .spinner-row {
   display: inline-flex;
   align-items: center;

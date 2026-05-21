@@ -15,6 +15,7 @@ import { LogsView } from './components/settings/LogsView'
 import { EnvironmentView } from './components/settings/EnvironmentView'
 import { ToolsView } from './components/settings/ToolsView'
 import { Spinner } from './components/shared/Spinner'
+import { ToastViewport } from './components/shared/ToastViewport'
 
 export function App() {
   const { status, health, activeView, isLoading, error, bootstrap, setActiveView } = useAppStore()
@@ -77,6 +78,7 @@ export function App() {
           activeSession={activeSession?.session_id ?? null}
         />
       </main>
+      <ToastViewport />
     </div>
   )
 }

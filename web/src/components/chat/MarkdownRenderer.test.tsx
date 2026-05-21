@@ -31,4 +31,19 @@ describe('MarkdownRenderer', () => {
     expect(screen.getByText('agent.run').className).toContain('markdown-inline-code')
     expect(screen.getByText('care').tagName).toBe('STRONG')
   })
+
+  it('renders partial streaming tables before the separator row arrives', () => {
+    render(<MarkdownRenderer text={'| Tool | Status |\n| shell | running |'} />)
+
+    expect(screen.getByRole('table')).toBeTruthy()
+    expect(screen.getByRole('cell', { name: 'running' })).toBeTruthy()
+  })
+
+  it('renders blockquotes and safe links', () => {
+    render(<MarkdownRenderer text={'> Read [docs](https://example.com).\n> Avoid [bad](javascript:alert(1)).'} />)
+
+    expect(document.querySelector('blockquote')?.textContent).toContain('Read docs.')
+    expect(screen.getByRole('link', { name: 'docs' }).getAttribute('href')).toBe('https://example.com')
+    expect(screen.getByRole('link', { name: 'bad' }).getAttribute('href')).toBe('#')
+  })
 })

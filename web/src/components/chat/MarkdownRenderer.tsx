@@ -30,6 +30,13 @@ function renderBlock(block: string, index: number) {
   if (isMarkdownTable(block)) {
     return <MarkdownTable block={block} key={index} />
   }
+  if (block.split('\n').every((line) => line.trim().startsWith('>'))) {
+    return (
+      <blockquote key={index}>
+        {renderInline(block.split('\n').map((line) => line.replace(/^\s*>\s?/, '')).join('\n'))}
+      </blockquote>
+    )
+  }
   if (block.includes('\n- ') || block.startsWith('- ')) {
     return (
       <ul key={index}>
@@ -93,12 +100,21 @@ function parseFence(block: string): { language: string; code: string } {
 
 function isMarkdownTable(block: string): boolean {
   const lines = block.split('\n').map((line) => line.trim())
-  return lines.length >= 2 && lines[0].startsWith('|') && /^\|?[\s:-]+\|[\s|:-]+$/.test(lines[1])
+  return (
+    lines.length >= 2 &&
+    lines[0].startsWith('|') &&
+    (
+      /^\|?[\s:-]+\|[\s|:-]+$/.test(lines[1] ?? '') ||
+      lines.every((line) => line.startsWith('|') && line.includes('|'))
+    )
+  )
 }
 
 function MarkdownTable({ block }: { block: string }) {
   const lines = block.split('\n').map((line) => splitTableRow(line))
-  const [headers, , ...rows] = lines
+  const [headers, maybeSeparator, ...rest] = lines
+  const hasSeparator = isSeparatorRow(maybeSeparator ?? [])
+  const rows = hasSeparator ? rest : [maybeSeparator, ...rest].filter((row): row is string[] => Boolean(row))
   return (
     <div className="markdown-table-wrap">
       <table className="markdown-table">
@@ -121,10 +137,14 @@ function splitTableRow(line: string): string[] {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
 }
 
+function isSeparatorRow(row: string[]): boolean {
+  return row.length > 0 && row.every((cell) => /^:?-{2,}:?$/.test(cell) || cell === '')
+}
+
 function renderInline(text: string): ReactNode[] {
   const parts: ReactNode[] = []
   const tick = String.fromCharCode(96)
-  const pattern = new RegExp('(' + tick + '[^' + tick + ']+' + tick + '|\\*\\*[^*]+\\*\\*)', 'g')
+  const pattern = new RegExp('(\\[[^\\]]+\\]\\([^)]+\\)|' + tick + '[^' + tick + ']+' + tick + '|\\*\\*[^*]+\\*\\*)', 'g')
   let lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = pattern.exec(text)) !== null) {
@@ -132,6 +152,13 @@ function renderInline(text: string): ReactNode[] {
     const value = match[0]
     if (value.startsWith(tick)) {
       parts.push(<code className="markdown-inline-code" key={parts.length}>{value.slice(1, -1)}</code>)
+    } else if (value.startsWith('[')) {
+      const link = parseLink(value)
+      parts.push(
+        <a href={safeHref(link.href)} key={parts.length} rel="noreferrer" target="_blank">
+          {link.label}
+        </a>,
+      )
     } else {
       parts.push(<strong key={parts.length}>{value.slice(2, -2)}</strong>)
     }
@@ -139,6 +166,17 @@ function renderInline(text: string): ReactNode[] {
   }
   if (lastIndex < text.length) parts.push(text.slice(lastIndex))
   return parts
+}
+
+function parseLink(value: string): { label: string; href: string } {
+  const match = value.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+  return { label: match?.[1] ?? value, href: match?.[2] ?? '#' }
+}
+
+function safeHref(href: string): string {
+  const trimmed = href.trim()
+  if (/^(https?:|mailto:|#|\/(?!\/)|\.\/|\.\.\/)/i.test(trimmed)) return trimmed
+  return '#'
 }
 
 function highlightCode(code: string, language: string): ReactNode {

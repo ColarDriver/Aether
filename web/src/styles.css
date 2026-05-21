@@ -776,11 +776,57 @@ button {
   gap: 6px;
 }
 
-.question-options span {
+.question-preview .question-options > span,
+.question-preview code {
   border: 1px solid var(--line);
   background: var(--panel-2);
   padding: 3px 7px;
   font-size: 12px;
+}
+
+.question-form,
+.question-form-item {
+  display: grid;
+  gap: 10px;
+}
+
+.question-form-item {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 10px;
+}
+
+.question-form-item p {
+  margin: 0;
+}
+
+.question-form-item input {
+  min-height: 34px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+.question-option {
+  display: grid;
+  gap: 3px;
+  min-height: 0 !important;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 10px !important;
+  text-align: left;
+}
+
+.question-option small {
+  color: var(--muted);
+}
+
+.question-option-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .composer {

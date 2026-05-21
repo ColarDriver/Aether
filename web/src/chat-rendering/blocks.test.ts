@@ -102,18 +102,20 @@ describe('chat rendering content helpers', () => {
     expect(parseAskUserQuestions({
       questions: [
         {
+          id: 'mode',
           header: 'Mode',
-          question: 'Which mode?',
-          options: [{ label: 'Fast', description: 'Less detail' }, 'Careful'],
+          prompt: 'Which mode?',
+          options: [{ id: 'fast', label: 'Fast', description: 'Less detail' }, 'Careful'],
           multi_select: true,
         },
       ],
     })).toEqual([
       {
+        id: 'mode',
         header: 'Mode',
         question: 'Which mode?',
         options: [
-          { label: 'Fast', description: 'Less detail' },
+          { id: 'fast', label: 'Fast', description: 'Less detail' },
           { label: 'Careful' },
         ],
         multiSelect: true,

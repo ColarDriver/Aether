@@ -38,15 +38,18 @@ export type PermissionPreview = {
 }
 
 export type AskUserQuestionOption = {
+  id?: string
   label: string
   description?: string
 }
 
 export type AskUserQuestion = {
+  id?: string
   question: string
   header?: string
   options?: AskUserQuestionOption[]
   multiSelect?: boolean
+  freeText?: boolean
 }
 
 export type PromptResolution = {

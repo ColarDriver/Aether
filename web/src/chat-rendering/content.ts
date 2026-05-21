@@ -71,16 +71,20 @@ export function parseAskUserQuestions(value: unknown): AskUserQuestion[] {
 
 function questionFromUnknown(value: unknown): AskUserQuestion | null {
   const input = recordFromUnknown(value)
-  const question = stringOrNull(input.question)
+  const question = stringOrNull(input.question) ?? stringOrNull(input.prompt)
   if (!question) return null
+  const id = stringOrUndefined(input.id)
   const header = stringOrUndefined(input.header)
   const options = parseOptions(input.options)
-  const multiSelect = Boolean(input.multiSelect ?? input.multi_select)
+  const multiSelect = Boolean(input.multiSelect ?? input.multi_select ?? input.allow_multiple)
+  const freeText = Boolean(input.freeText ?? input.free_text)
   return {
+    ...(id ? { id } : {}),
     question,
     ...(header ? { header } : {}),
     ...(options.length > 0 ? { options } : {}),
     ...(multiSelect ? { multiSelect } : {}),
+    ...(freeText ? { freeText } : {}),
   }
 }
 
@@ -91,8 +95,10 @@ function parseOptions(value: unknown): AskUserQuestionOption[] {
     const record = recordFromUnknown(option)
     const label = stringOrNull(record.label)
     if (!label) return []
+    const id = stringOrUndefined(record.id)
     const description = stringOrUndefined(record.description)
     return [{
+      ...(id ? { id } : {}),
       label,
       ...(description ? { description } : {}),
     }]

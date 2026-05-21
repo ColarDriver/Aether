@@ -15,6 +15,7 @@ export function AskUserQuestionBlock({ block }: Props) {
         <div className="question-preview" key={index}>
           {question.header ? <div className="muted">{question.header}</div> : null}
           <p>{question.question}</p>
+          {question.id ? <code>{question.id}</code> : null}
           {question.options?.length ? (
             <div className="question-options">
               {question.options.map((option) => <span key={option.label}>{option.label}</span>)}

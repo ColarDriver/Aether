@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from aether.services.docs import DocsService
 from aether.services.environment import EnvironmentService
 from aether.services.providers import ModelSelectionService, ProviderService
 from aether.services.runs import AgentRunService
@@ -17,6 +18,9 @@ from aether.web.app import create_app
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("AETHER_HOME", str(tmp_path))
     sessions = SessionService(session_dir=tmp_path / "sessions")
+    docs_root = tmp_path / "docs"
+    docs_root.mkdir()
+    (docs_root / "README.md").write_text("# Test Docs\n\nHello docs.\n", encoding="utf-8")
     skills_root = tmp_path / "skills"
     skill_dir = skills_root / "python"
     skill_dir.mkdir(parents=True)
@@ -32,6 +36,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         model_selection_service=ModelSelectionService(environ={}),
         skill_service=skill_service,
         environment_service=EnvironmentService(env_path=tmp_path / ".env", environ={}),
+        docs_service=DocsService(docs_root=docs_root),
         run_service=AgentRunService(session_service=sessions),
     )
     return TestClient(app)
@@ -124,6 +129,20 @@ def test_analytics_route_reports_sessions(client: TestClient) -> None:
     assert body["days"] == 30
     assert body["summary"]["session_count"] == 1
     assert body["models"][0]["provider"] == "openai"
+
+
+def test_docs_routes_list_and_read_project_markdown(client: TestClient) -> None:
+    listed = client.get("/api/docs")
+    assert listed.status_code == 200
+    assert listed.json()["default_path"] == "README.md"
+    assert listed.json()["documents"][0]["title"] == "Test Docs"
+
+    content = client.get("/api/docs/README.md")
+    assert content.status_code == 200
+    assert content.json()["content"].startswith("# Test Docs")
+
+    missing = client.get("/api/docs/missing.md")
+    assert missing.status_code == 404
 
 
 def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:

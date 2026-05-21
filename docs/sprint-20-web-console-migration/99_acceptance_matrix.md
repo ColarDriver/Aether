@@ -50,11 +50,13 @@ Required before Sprint 20 completion:
 - `aether/web/routes/tools.py`
 - `aether/web/routes/skills.py`
 - `aether/web/routes/diagnostics.py`
+- `aether/web/routes/docs.py`
 - `aether/web/routes/runs.py`
 - `aether/web/ws/runs.py`
 - `aether/web/ws/prompts.py`
 - `aether/web/ws/events.py`
 - `aether/services/analytics/*`
+- `aether/services/docs/*`
 - `aether/tests/web/*`
 
 ## Frontend Implementation Evidence
@@ -107,6 +109,7 @@ Required before Sprint 20 completion:
 - Inspect provider/model settings.
 - Inspect tools and skills.
 - Inspect diagnostics and health.
+- Browse local docs and analytics.
 - Build the SPA and serve it from `aether-web`.
 - Start the existing TUI and verify it still works.
 
@@ -120,15 +123,15 @@ Implemented on branch `web-console-migration`:
 - PR20.3 run WebSocket: structured `/api/runs/ws` protocol, event mapping, cancellation, web prompt broker, approval and permission responders.
 - PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, searchable sidebar, sessions manager, status bar, toast notifications, error boundary, service-backed theme/language preferences, and console shell.
 - PR20.5 chat surface: transcript loading, persisted tool/diff reconstruction, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
-- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, appearance controls, tools, skills, diagnostics, logs, local session analytics, and settings views.
+- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, appearance controls, tools, skills, diagnostics, logs, local session analytics, local markdown docs, and settings views.
 
 Latest verification performed during implementation:
 
-- `python -m pytest aether/tests/web` (19 passed)
-- `python -m pytest aether/tests/services` (49 passed)
+- `python -m pytest aether/tests/web` (20 passed after docs slice)
+- `python -m pytest aether/tests/services` (51 passed after docs slice)
 - `python -m pytest aether/tests/gateway` (241 passed)
 - `uv run pyright aether/web aether/services aether/gateway/handlers` (0 errors)
-- `cd web && npm test` (20 files / 30 tests, including layout, analytics, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (21 files / 31 tests, including layout, docs, analytics, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:

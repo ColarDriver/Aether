@@ -1,6 +1,8 @@
 import type {
   AnalyticsReport,
   ConfigPaths,
+  DocContent,
+  DocIndex,
   EffectiveConfig,
   EnvCatalog,
   EnvMutationResult,
@@ -111,6 +113,8 @@ export const api = {
     const suffix = query.toString() ? '?' + query.toString() : ''
     return request<AnalyticsReport>('GET', '/api/analytics' + suffix)
   },
+  docs: () => request<DocIndex>('GET', '/api/docs'),
+  doc: (path: string) => request<DocContent>('GET', '/api/docs/' + encodePathSegments(path)),
   sessions: () => request<{ sessions: SessionInfo[] }>('GET', '/api/sessions'),
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),
@@ -154,4 +158,8 @@ export const api = {
   deleteEnvVar: (key: string) => request<EnvMutationResult>('DELETE', '/api/env', { key }),
   revealEnvVar: (key: string) => request<EnvRevealResult>("POST", "/api/env/reveal", { key }),
   revealEnvAudit: () => request<{ events: EnvRevealAuditEntry[] }>("GET", "/api/env/reveal-audit"),
+}
+
+function encodePathSegments(path: string) {
+  return path.split('/').map((part) => encodeURIComponent(part)).join('/')
 }

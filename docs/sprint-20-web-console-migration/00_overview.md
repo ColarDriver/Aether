@@ -37,7 +37,7 @@ Hermes has the closest Python web backend reference:
 - `web/src/lib/api.ts` and `web/src/lib/gatewayClient.ts` show browser clients
   for REST and JSON-RPC WebSocket surfaces.
 
-Hermes is valuable for server shape, local-dashboard security, SPA mounting, and
+Hermes is valuable for server shape, local-dashboard security, SPA mounting, documentation browsing, and
 browser API ergonomics. It is not a good direct copy target because its server is
 monolithic and includes Hermes-specific plugins, cron jobs, profile management,
 OAuth flows, analytics, and PTY embedding that Aether does not currently own.
@@ -85,7 +85,7 @@ Aether already has the runtime foundations that a web console should reuse:
 - Add a standalone TypeScript browser app under `web/`.
 - Reuse `aether/services/*` for all business behavior.
 - Provide REST endpoints for status, sessions, config/prefs, providers/models,
-  tools, skills, diagnostics, and run snapshots.
+  tools, skills, diagnostics, docs, analytics, and run snapshots.
 - Provide a browser run stream over WebSocket, with text/reasoning deltas, tool
   events, token usage, status updates, final results, errors, and cancellation.
 - Provide web-native approval and tool-permission prompts so agent runs can ask
@@ -139,12 +139,14 @@ aether/web/
   routes/
     __init__.py
     health.py
+    analytics.py
     sessions.py
     config.py
     providers.py
     tools.py
     skills.py
     diagnostics.py
+    docs.py
     runs.py
   ws/
     __init__.py
@@ -200,6 +202,9 @@ Initial REST endpoints:
 - `GET /api/tools/groups`
 - `GET /api/skills`
 - `GET /api/diagnostics`
+- `GET /api/analytics`
+- `GET /api/docs`
+- `GET /api/docs/{doc_path}`
 - `GET /api/runs/{run_or_session_id}`
 - `POST /api/runs/{session_id}/cancel`
 
@@ -227,7 +232,7 @@ The web app starts as a real console, not a landing page:
   permission/approval surfaces.
 - Bottom composer: model-aware input, run/stop controls, lightweight mode
   indicator.
-- Right/secondary panels: tools, skills, provider/model settings, diagnostics.
+- Right/secondary panels: tools, skills, provider/model settings, diagnostics, docs, and analytics.
 
 The visual direction should be quiet and operational:
 

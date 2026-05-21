@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'analytics' | 'environment' | 'settings'
+export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'analytics' | 'docs' | 'environment' | 'settings'
 
 export type SessionInfo = {
   session_id: string
@@ -264,4 +264,26 @@ export type AnalyticsReport = {
   daily: AnalyticsDailyEntry[]
   models: AnalyticsModelEntry[]
   top_sessions: AnalyticsSessionEntry[]
+}
+
+
+export type DocSummary = {
+  path: string
+  title: string
+  size_bytes: number
+  updated_at: number
+}
+
+export type DocIndex = {
+  root: string
+  default_path?: string | null
+  documents: DocSummary[]
+}
+
+export type DocContent = {
+  path: string
+  title: string
+  content: string
+  size_bytes: number
+  updated_at: number
 }

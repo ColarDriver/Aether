@@ -26,7 +26,7 @@ Backend test coverage should include:
 - health/status routes
 - sessions REST
 - providers/models REST
-- tools/skills/diagnostics REST
+- tools/skills/diagnostics/docs REST
 - run status/cancel REST
 - run WebSocket ready/start/cancel
 - prompt request/response bridge
@@ -55,7 +55,7 @@ Frontend tests should cover:
 - diff viewer
 - permission dialog
 - approval dialog
-- provider/model/settings views
+- provider/model/settings/docs/analytics views
 
 ## Static Serving
 
@@ -99,7 +99,7 @@ Document two local modes:
 13. Confirm token usage and run status update during the run.
 14. Cancel an active run and verify final state is coherent.
 15. Resume a previous session and verify transcript renders.
-16. Open Models, Tools, Skills, Diagnostics, Settings views.
+16. Open Models, Tools, Skills, Diagnostics, Logs, Docs, Analytics, Environment, and Settings views.
 17. Confirm existing TUI still starts and can run a turn.
 
 ## Regression Rules

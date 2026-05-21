@@ -3,13 +3,13 @@
 ## Goal
 
 Build the browser console views around chat: provider/model selection, auxiliary
-slots, tool catalog, skill catalog, config/preferences, diagnostics, and health.
+slots, tool catalog, skill catalog, config/preferences, diagnostics, docs, analytics, and health.
 
 ## Current Problem
 
 The web console must be more than a chat surface. A user needs to understand the
 runtime state that affects agent behavior: provider readiness, selected model,
-auxiliary model slots, enabled tools, skills, diagnostics, and configuration.
+auxiliary model slots, enabled tools, skills, diagnostics, local documentation, analytics, and configuration.
 
 Hermes has many dashboard pages. Aether should implement the subset backed by
 existing services and defer Hermes-only product areas until Aether has matching
@@ -99,6 +99,32 @@ Behavior:
   service availability.
 - Avoid stack traces and raw secret values.
 
+### Docs View
+
+Components:
+
+- `DocsView.tsx`
+- shared `MarkdownRenderer.tsx`
+
+Behavior:
+
+- Load `GET /api/docs` for the markdown index.
+- Read selected files through `GET /api/docs/{doc_path}`.
+- Render local markdown content without iframe or remote documentation coupling.
+- Keep path display visible so implementation plans can be referenced precisely.
+
+### Analytics View
+
+Components:
+
+- `AnalyticsView.tsx`
+
+Behavior:
+
+- Load `GET /api/analytics`.
+- Show session, message, tool-call, model, daily token, and top-session summaries.
+- Aggregate only local session metadata exposed by Aether services.
+
 ## Navigation
 
 Add app-level navigation:
@@ -109,6 +135,10 @@ Add app-level navigation:
 - Tools
 - Skills
 - Diagnostics
+- Logs
+- Analytics
+- Docs
+- Environment
 - Settings
 
 Use tabs or sidebar items; avoid nested card-heavy layouts. The active route
@@ -124,6 +154,8 @@ Frontend tests:
 - Tools view groups tools.
 - Skills view renders details and missing state.
 - Diagnostics view renders service statuses.
+- Docs view renders markdown index and selected content.
+- Analytics view renders usage summary and model/session tables.
 - Settings view does not show secret values.
 
 Backend tests from PR20.2 should already cover the data routes.
@@ -131,13 +163,12 @@ Backend tests from PR20.2 should already cover the data routes.
 ## Non-Goals
 
 - Do not implement secret editing in this PR.
-- Do not implement Hermes plugin hub, dashboard themes, cron, profiles, logs, or
-  analytics.
+- Do not implement Hermes plugin hub, dashboard themes, cron, profiles, or PTY.
 - Do not add model benchmark dashboards.
 
 ## Acceptance
 
 - User can inspect and change the active model/provider from the browser.
-- User can inspect tools, skills, health, and diagnostics.
+- User can inspect tools, skills, health, diagnostics, logs, docs, and analytics.
 - No browser view exposes raw credentials.
 - Web UI stays operational and compact across desktop and narrow widths.

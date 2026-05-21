@@ -126,7 +126,7 @@ export function Composer({
 
   return (
     <div
-      className={'composer' + (dragActive ? ' composer-drag-active' : '')}
+      className={'composer' + (dragActive ? ' composer-drag-active' : '') + (running ? ' composer-running' : '')}
       onDragEnter={(event) => {
         if (disabled || running) return
         if (filesFromDataTransfer(event.dataTransfer).length > 0) setDragActive(true)
@@ -161,6 +161,10 @@ export function Composer({
         ref={workspaceReferencePopoverRef}
         value={value}
       />
+      <div className="composer-drop-hint" aria-hidden={!dragActive}>
+        <Paperclip size={18} />
+        <span>Drop files to attach</span>
+      </div>
       {attachments.length > 0 ? (
         <div className="composer-attachments">
           <AttachmentGallery
@@ -220,19 +224,28 @@ export function Composer({
           </Button>
           <span className="composer-chip" title="Workspace references use @path search">
             <Folder size={14} />
-            <span>Workspace</span>
+            <span>
+              <strong>Workspace</strong>
+              <small>@path context</small>
+            </span>
           </span>
           {mode ? (
             <span className={mode === 'plan' ? 'composer-chip composer-chip-plan' : 'composer-chip'} title="Current session mode">
               <Route size={14} />
-              <span>{mode}</span>
+              <span>
+                <strong>{mode}</strong>
+                <small>mode</small>
+              </span>
             </span>
           ) : null}
         </div>
         <div className="composer-runbar">
           <span className="composer-chip composer-chip-model" title={modelTitle}>
             <Boxes size={14} />
-            <span>{modelLabel}</span>
+            <span>
+              <strong>{modelLabel}</strong>
+              {provider ? <small>{provider}</small> : null}
+            </span>
           </span>
           <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
           <div className="composer-actions">
@@ -289,6 +302,10 @@ function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | nul
           />
         </svg>
         <span className="ctx-ring-center">{percent > 0 ? percent : '-'}</span>
+      </span>
+      <span className="composer-context-ring-copy">
+        <strong>{total > 0 ? total.toLocaleString() : '-'}</strong>
+        <small>tokens</small>
       </span>
     </span>
   )

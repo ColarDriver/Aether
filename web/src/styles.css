@@ -2492,7 +2492,7 @@ button {
 
 .composer {
   position: relative;
-  width: min(880px, calc(100% - 48px));
+  width: min(900px, calc(100% - 48px));
   margin: 0 auto 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -2513,6 +2513,30 @@ button {
   background: var(--accent-soft);
   outline: 1px dashed var(--accent);
   outline-offset: -5px;
+}
+
+.composer-running {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+}
+
+.composer-drop-hint {
+  position: absolute;
+  inset: 6px;
+  z-index: 24;
+  display: none;
+  place-items: center;
+  gap: 8px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 82%, var(--accent-soft));
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.composer-drag-active .composer-drop-hint {
+  display: flex;
 }
 
 .composer-attachments {
@@ -2543,10 +2567,11 @@ button {
 
 .composer-footer {
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  justify-content: space-between;
   border-top: 1px solid var(--line-soft);
   padding: 4px 10px 10px;
 }
@@ -2560,6 +2585,7 @@ button {
 }
 
 .composer-tools {
+  flex: 1 1 260px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -2569,12 +2595,13 @@ button {
 }
 
 .composer-runbar {
+  flex: 0 1 auto;
   justify-content: flex-end;
 }
 
 .composer-chip,
 .composer-context-ring {
-  min-height: 30px;
+  min-height: 34px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2588,10 +2615,35 @@ button {
 }
 
 .composer-chip span {
+  min-width: 0;
   max-width: 170px;
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.composer-chip strong,
+.composer-chip small,
+.composer-context-ring-copy strong,
+.composer-context-ring-copy small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.15;
+}
+
+.composer-chip strong,
+.composer-context-ring-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.composer-chip small,
+.composer-context-ring-copy small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .composer-chip-model,
@@ -2602,7 +2654,7 @@ button {
 }
 
 .composer-context-ring {
-  padding: 0 7px;
+  padding: 0 9px 0 7px;
 }
 
 .composer-context-ring-icon {
@@ -2657,6 +2709,12 @@ button {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+.composer-context-ring-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
 }
 
 .composer-actions {
@@ -5116,7 +5174,6 @@ button {
   }
 
   .composer-footer {
-    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }
 
@@ -5127,6 +5184,7 @@ button {
 
   .composer-runbar {
     justify-content: space-between;
+    flex: 1 1 100%;
   }
 
   .composer-actions {

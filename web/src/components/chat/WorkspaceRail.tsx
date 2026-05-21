@@ -21,6 +21,7 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
 
   const visibleEntries = searchResults ?? tree?.entries ?? []
   const title = tree?.path ? tree.path : 'Project root'
+  const browserTitle = searchResults ? 'Search results' : title
   const rootLabel = useMemo(() => shortenPath(tree?.root ?? ''), [tree?.root])
 
   const openFile = useCallback((path: string) => {
@@ -94,7 +95,10 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
 
       <div className="workspace-rail-browser">
         <div className="workspace-rail-path">
-          <strong>{title}</strong>
+          <div>
+            <strong>{browserTitle}</strong>
+            <span>{visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}</span>
+          </div>
           {tree?.parent_path !== null && tree?.parent_path !== undefined ? (
             <button type="button" onClick={() => loadTree(tree.parent_path ?? '')}>
               <ChevronLeft size={14} /> Parent
@@ -126,6 +130,7 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
             >
               {entry.kind === 'directory' ? <Folder size={15} /> : <File size={15} />}
               <span>{entry.name}</span>
+              <em>{entry.kind === 'directory' ? 'dir' : fileLabel(entry.name)}</em>
               <small>{entry.path || '.'}</small>
             </button>
           ))}
@@ -138,7 +143,10 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
           <>
             <div className="workspace-rail-preview-header">
               <strong>{activeFile.path}</strong>
-              <span>{activeFile.language} · {formatBytes(activeFile.size_bytes)}</span>
+              <span>
+                <em>{activeFile.language}</em>
+                <em>{formatBytes(activeFile.size_bytes)}</em>
+              </span>
             </div>
             {activeFile.binary ? (
               <div className="empty-chat">Binary file preview is disabled.</div>
@@ -155,6 +163,11 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
       </section>
     </aside>
   )
+}
+
+function fileLabel(name: string): string {
+  const extension = name.includes('.') ? name.split('.').pop() : ''
+  return extension ? extension.toLowerCase() : 'file'
 }
 
 function formatBytes(value: number): string {

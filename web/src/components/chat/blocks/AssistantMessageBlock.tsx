@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react'
 import type { AssistantMessageBlock as AssistantMessage } from '../../../chat-rendering'
 import { MarkdownRenderer } from '../MarkdownRenderer'
 import { MessageActionBar } from '../MessageActionBar'
@@ -11,7 +12,10 @@ export function AssistantMessageBlock({ block }: Props) {
   const documentLayout = shouldUseDocumentLayout(block.content)
   return (
     <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
-      <div className="chat-block-label">assistant</div>
+      <div className="chat-block-label">
+        <span className="chat-role-icon" aria-hidden="true"><Bot size={13} /></span>
+        <span>assistant</span>
+      </div>
       <div className={documentLayout ? 'chat-message-document' : 'chat-message-shell'}>
         <MarkdownRenderer text={block.content} streaming={Boolean(block.isStreaming)} />
       </div>

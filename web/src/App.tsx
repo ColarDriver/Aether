@@ -7,6 +7,7 @@ import { useSessionStore } from './stores/sessionStore'
 import { Sidebar } from './components/layout/Sidebar'
 import { StatusBar } from './components/layout/StatusBar'
 import { TopBar } from './components/layout/TopBar'
+import { ChatWorkbenchHeader } from './components/chat/ChatWorkbenchHeader'
 import { ChatView } from './components/chat/ChatView'
 import { WorkspaceRail } from './components/chat/WorkspaceRail'
 import { DiagnosticsView } from './components/settings/DiagnosticsView'
@@ -38,8 +39,6 @@ export function App() {
   }, [bootstrap, bootstrapAppearance, loadProviders])
 
   const activeSession = sessions.find((session) => session.session_id === activeSessionId) ?? null
-  const topBarProvider = activeView === 'chat' ? activeSession?.provider ?? current?.provider_name : current?.provider_name
-  const topBarModel = activeView === 'chat' ? activeSession?.model ?? current?.model : current?.model
 
   return (
     <div className="app-shell">
@@ -59,12 +58,23 @@ export function App() {
         }}
       />
       <main className={activeView === 'chat' ? 'workspace workspace-chat' : 'workspace'}>
-        <TopBar
-          title={activeView === 'chat' ? activeSession?.summary || activeSession?.session_id.slice(0, 8) || 'Chat' : viewTitle(activeView)}
-          status={status?.ok ? 'online' : 'offline'}
-          provider={topBarProvider}
-          model={topBarModel}
-        />
+        {activeView === 'chat' ? (
+          <ChatWorkbenchHeader
+            session={activeSession}
+            online={Boolean(status?.ok)}
+            provider={current?.provider_name}
+            model={current?.model}
+            workspaceRailOpen={workspaceRailOpen}
+            onToggleWorkspaceRail={() => setWorkspaceRailOpen((value) => !value)}
+          />
+        ) : (
+          <TopBar
+            title={viewTitle(activeView)}
+            status={status?.ok ? 'online' : 'offline'}
+            provider={current?.provider_name}
+            model={current?.model}
+          />
+        )}
         <section className={activeView === 'chat' ? 'content-pane content-pane-chat' : 'content-pane'}>
           {isLoading || sessionsLoading ? <Spinner label="Loading console" /> : null}
           {error ? (
@@ -81,15 +91,7 @@ export function App() {
                   onClose={() => setWorkspaceRailOpen(false)}
                   onOpenWorkspace={() => setActiveView('workspace')}
                 />
-              ) : (
-                <button
-                  type="button"
-                  className="workspace-rail-edge"
-                  onClick={() => setWorkspaceRailOpen(true)}
-                >
-                  Files
-                </button>
-              )}
+              ) : null}
             </div>
           ) : null}
           {activeView === 'models' ? <ProviderSettings /> : null}

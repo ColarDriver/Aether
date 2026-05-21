@@ -1,4 +1,4 @@
-import { ChevronLeft, ExternalLink, File, Folder, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink, File, FileSearch, Folder, FolderTree, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import type { WorkspaceEntry, WorkspaceFile, WorkspaceTree } from '../../api/types'
@@ -23,6 +23,9 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
   const title = tree?.path ? tree.path : 'Project root'
   const browserTitle = searchResults ? 'Search results' : title
   const rootLabel = useMemo(() => shortenPath(tree?.root ?? ''), [tree?.root])
+  const breadcrumbs = useMemo(() => buildBreadcrumbs(tree?.path ?? ''), [tree?.path])
+  const directoryCount = visibleEntries.filter((entry) => entry.kind === 'directory').length
+  const fileCount = visibleEntries.length - directoryCount
 
   const openFile = useCallback((path: string) => {
     setLoading(true)
@@ -72,9 +75,14 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
   return (
     <aside className="workspace-rail" aria-label="Workspace files">
       <header className="workspace-rail-header">
-        <div>
-          <strong>Workspace</strong>
-          <span title={tree?.root ?? ''}>{rootLabel || 'Loading root'}</span>
+        <div className="workspace-rail-title">
+          <span className="workspace-rail-icon" aria-hidden="true">
+            <FolderTree size={15} />
+          </span>
+          <div>
+            <strong>Workspace</strong>
+            <span title={tree?.root ?? ''}>{rootLabel || 'Loading root'}</span>
+          </div>
         </div>
         <div className="workspace-rail-actions">
           <Button title="Refresh workspace" aria-label="Refresh workspace" onClick={() => loadTree(tree?.path ?? '')} disabled={loading}>
@@ -93,11 +101,40 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
         </div>
       </header>
 
+      <nav className="workspace-rail-breadcrumb" aria-label="Workspace path">
+        {searchResults ? (
+          <span className="workspace-rail-search-crumb">
+            <Search size={13} />
+            Search "{query.trim()}"
+          </span>
+        ) : (
+          <>
+            <button type="button" onClick={() => loadTree('')} title={tree?.root ?? 'Workspace root'}>
+              root
+            </button>
+            {breadcrumbs.map((crumb) => (
+              <span key={crumb.path} className="workspace-rail-crumb-segment">
+                <ChevronRight size={12} />
+                <button type="button" onClick={() => loadTree(crumb.path)} title={crumb.path}>
+                  {crumb.name}
+                </button>
+              </span>
+            ))}
+          </>
+        )}
+      </nav>
+
       <div className="workspace-rail-browser">
         <div className="workspace-rail-path">
           <div>
             <strong>{browserTitle}</strong>
-            <span>{visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}</span>
+            <span>
+              {visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}
+              {' · '}
+              {directoryCount} dir{directoryCount === 1 ? '' : 's'}
+              {' · '}
+              {fileCount} file{fileCount === 1 ? '' : 's'}
+            </span>
           </div>
           {tree?.parent_path !== null && tree?.parent_path !== undefined ? (
             <button type="button" onClick={() => loadTree(tree.parent_path ?? '')}>
@@ -131,7 +168,7 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
               {entry.kind === 'directory' ? <Folder size={15} /> : <File size={15} />}
               <span>{entry.name}</span>
               <em>{entry.kind === 'directory' ? 'dir' : fileLabel(entry.name)}</em>
-              <small>{entry.path || '.'}</small>
+              <small>{entry.kind === 'file' && entry.size_bytes != null ? formatBytes(entry.size_bytes) + ' · ' : ''}{entry.path || '.'}</small>
             </button>
           ))}
         </div>
@@ -142,10 +179,14 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
         {activeFile ? (
           <>
             <div className="workspace-rail-preview-header">
-              <strong>{activeFile.path}</strong>
+              <div>
+                <File size={15} />
+                <strong>{activeFile.path}</strong>
+              </div>
               <span>
                 <em>{activeFile.language}</em>
                 <em>{formatBytes(activeFile.size_bytes)}</em>
+                {activeFile.truncated ? <em>truncated</em> : null}
               </span>
             </div>
             {activeFile.binary ? (
@@ -158,7 +199,11 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
             {activeFile.truncated ? <div className="workspace-rail-note">Preview truncated.</div> : null}
           </>
         ) : (
-          <div className="empty-chat">Select a file to preview.</div>
+          <div className="workspace-rail-empty-preview">
+            <FileSearch size={20} />
+            <strong>Select a file</strong>
+            <span>Preview source, markdown, and attached context without leaving the chat.</span>
+          </div>
         )}
       </section>
     </aside>
@@ -180,4 +225,14 @@ function shortenPath(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean)
   if (parts.length <= 2) return path
   return parts.slice(-2).join('/')
+}
+
+function buildBreadcrumbs(path: string): Array<{ name: string; path: string }> {
+  return path
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .map((name, index, parts) => ({
+      name,
+      path: parts.slice(0, index + 1).join('/'),
+    }))
 }

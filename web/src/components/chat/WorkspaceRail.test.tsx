@@ -62,6 +62,9 @@ describe('WorkspaceRail', () => {
     render(<WorkspaceRail />)
 
     expect(await screen.findByTitle('README.md')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'root' })).toBeTruthy()
+    expect(screen.getByText('Select a file')).toBeTruthy()
+    expect(screen.getByText(/2 items.*1 dir.*1 file/)).toBeTruthy()
 
     fireEvent.click(screen.getByTitle('README.md'))
     expect(await screen.findByText('Hello.')).toBeTruthy()
@@ -73,6 +76,7 @@ describe('WorkspaceRail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
     await waitFor(() => expect(search).toHaveBeenCalledWith('app', 80))
+    expect(screen.getByText('Search "app"')).toBeTruthy()
     fireEvent.click(screen.getByTitle('aether/app.py'))
     expect(await screen.findByText(/print/)).toBeTruthy()
   })

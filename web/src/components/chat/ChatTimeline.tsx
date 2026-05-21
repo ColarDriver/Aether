@@ -1,5 +1,5 @@
-import type { ChatBlock } from '../../chat-rendering'
-import { buildChatRenderModel } from '../../chat-rendering/renderModel'
+import type { ChatBlock, DiffBlock as DiffChatBlock, ToolResultBlock as ToolResultChatBlock } from '../../chat-rendering'
+import { buildChatRenderModel, type ChatRenderItem } from '../../chat-rendering/renderModel'
 import {
   ApprovalRequestBlock,
   AskUserQuestionBlock,
@@ -28,31 +28,86 @@ export function ChatTimeline({ blocks, onRespondPermission, onRespondApproval, o
     return <div className="empty-chat">No messages in this session yet.</div>
   }
   const model = buildChatRenderModel(blocks)
+  const turns = groupRenderItemsIntoTurns(model.items)
   return (
     <div className="chat-timeline">
-      {model.items.map((item) => {
-        if (item.kind === 'tool_group') {
-          return (
-            <ToolCallGroup
-              key={item.id}
-              toolCalls={item.toolCalls}
+      {turns.map((turn) => (
+        <section className={turn.hasUser ? 'chat-turn' : 'chat-turn chat-turn-orphan'} key={turn.id}>
+          {turn.items.map((item) => (
+            <ChatRenderItemView
+              item={item}
+              key={item.kind === 'tool_group' ? item.id : item.block.id}
+              onRespondPermission={onRespondPermission}
+              onRespondApproval={onRespondApproval}
+              onOpenTask={onOpenTask}
               results={model.toolResultsByCallId}
               diffs={model.diffsByToolCallId}
             />
-          )
-        }
-        return (
-          <ChatBlockView
-            block={item.block}
-            key={item.block.id}
-            onRespondPermission={onRespondPermission}
-            onRespondApproval={onRespondApproval}
-            onOpenTask={onOpenTask}
-          />
-        )
-      })}
+          ))}
+        </section>
+      ))}
     </div>
   )
+}
+
+function ChatRenderItemView({
+  item,
+  onRespondPermission,
+  onRespondApproval,
+  onOpenTask,
+  results,
+  diffs,
+}: {
+  item: ChatRenderItem
+  onRespondPermission?: (decision: Record<string, unknown>) => void
+  onRespondApproval?: (result: Record<string, unknown>) => void
+  onOpenTask?: (taskId: string) => void
+  results: Map<string, ToolResultChatBlock>
+  diffs: Map<string, DiffChatBlock[]>
+}) {
+  if (item.kind === 'tool_group') {
+    return (
+      <ToolCallGroup
+        toolCalls={item.toolCalls}
+        results={results}
+        diffs={diffs}
+      />
+    )
+  }
+  return (
+    <ChatBlockView
+      block={item.block}
+      onRespondPermission={onRespondPermission}
+      onRespondApproval={onRespondApproval}
+      onOpenTask={onOpenTask}
+    />
+  )
+}
+
+type ChatTurn = {
+  id: string
+  hasUser: boolean
+  items: ChatRenderItem[]
+}
+
+function groupRenderItemsIntoTurns(items: ChatRenderItem[]): ChatTurn[] {
+  const turns: ChatTurn[] = []
+  let current: ChatTurn | null = null
+
+  for (const item of items) {
+    const startsTurn = item.kind === 'block' && item.block.kind === 'user_message'
+    if (startsTurn || !current) {
+      current = {
+        id: startsTurn ? 'turn-' + item.block.id : 'turn-orphan-' + turns.length,
+        hasUser: startsTurn,
+        items: [],
+      }
+      turns.push(current)
+    }
+    current.items.push(item)
+  }
+
+  return turns
 }
 
 function ChatBlockView({

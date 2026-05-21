@@ -79,4 +79,35 @@ describe("SessionsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete session" }))
     await waitFor(() => expect(deleteSession).toHaveBeenCalledWith("session-two"))
   })
+
+  it("renders persisted tool and diff blocks through the chat timeline", async () => {
+    vi.spyOn(api, "sessions").mockResolvedValue({ sessions: [] })
+    vi.spyOn(api, "sessionDetail").mockResolvedValue({
+      session_id: "session-one",
+      info: sessionOne,
+      messages: [
+        { role: "user", text: "edit file" },
+        {
+          role: "assistant",
+          text: "I will edit it.",
+          tool_calls: [
+            { id: "call-1", name: "file_edit", arguments: { path: "app.py" } },
+          ],
+        },
+        {
+          role: "tool",
+          name: "file_edit",
+          tool_call_id: "call-1",
+          text: "updated",
+          metadata: { diff: "@@ -1 +1 @@\n-old\n+new", path: "app.py" },
+        },
+      ],
+    })
+
+    render(<SessionsView />)
+
+    expect(await screen.findByText("file_edit")).toBeTruthy()
+    expect(screen.getByRole("table", { name: "Code diff" })).toBeTruthy()
+    expect(screen.getByText("new")).toBeTruthy()
+  })
 })

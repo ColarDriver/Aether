@@ -2,11 +2,11 @@ import { RefreshCw, Search, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../../api/client"
 import type { SessionInfo, TranscriptMessage } from "../../api/types"
+import { normalizeTranscript } from "../../chat-rendering"
 import { useAppStore } from "../../stores/appStore"
-import { transcriptToChatState } from "../../stores/chatStore"
 import { useSessionStore } from "../../stores/sessionStore"
 import { useToastStore } from "../../stores/toastStore"
-import { MessageList } from "../chat/MessageList"
+import { ChatTimeline } from "../chat/ChatTimeline"
 import { Spinner } from "../shared/Spinner"
 
 type SessionDetail = {
@@ -91,9 +91,9 @@ export function SessionsView() {
     }
   }, [notify, selectedId])
 
-  const messages = useMemo(() => {
+  const transcriptBlocks = useMemo(() => {
     if (!detail) return []
-    return transcriptToChatState(detail.session_id, detail.messages).messages
+    return normalizeTranscript(detail.session_id, detail.messages)
   }, [detail])
 
   const resumeSelected = () => {
@@ -199,7 +199,7 @@ export function SessionsView() {
                 <div className="info-row"><span>Updated</span><strong>{formatTimestamp(detail.info.updated_at)}</strong></div>
               </div>
               <div className="transcript-preview">
-                <MessageList messages={messages} />
+                <ChatTimeline blocks={transcriptBlocks} />
               </div>
             </>
           ) : null}

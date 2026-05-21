@@ -49,6 +49,8 @@ export function Composer({
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
   const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
   const commands = slashCommands ?? loadedCommands
+  const modelTitle = provider && model ? provider + ' / ' + model : 'Provider not loaded'
+  const modelLabel = provider && model ? model : 'Model'
 
   useEffect(() => {
     if (slashCommands || disabled) return
@@ -196,24 +198,7 @@ export function Composer({
         onKeyUp={updateCursorPosition}
       />
       <div className="composer-footer">
-        <div className="composer-context">
-          <span className="composer-chip composer-chip-model" title={provider && model ? provider + ' / ' + model : 'Provider not loaded'}>
-            <Boxes size={14} />
-            <span>{provider && model ? model : 'Model'}</span>
-          </span>
-          <span className="composer-chip" title="Workspace references use @path search">
-            <Folder size={14} />
-            <span>Workspace</span>
-          </span>
-          {mode ? (
-            <span className={mode === 'plan' ? 'composer-chip composer-chip-plan' : 'composer-chip'} title="Current session mode">
-              <Route size={14} />
-              <span>{mode}</span>
-            </span>
-          ) : null}
-          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
-        </div>
-        <div className="composer-actions">
+        <div className="composer-tools">
           <input
             ref={fileInputRef}
             className="composer-file-input"
@@ -227,20 +212,45 @@ export function Composer({
           />
           <Button
             aria-label="Attach files"
+            title="Attach files"
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled || running}
           >
             <Paperclip size={16} />
           </Button>
-          {running ? (
-            <Button aria-label="Stop run" onClick={onCancel}>
-              <Square size={16} />
-            </Button>
-          ) : (
-            <Button aria-label="Send message" onClick={submit} disabled={disabled || (!value.trim() && attachments.length === 0)}>
-              <Send size={16} />
-            </Button>
-          )}
+          <span className="composer-chip" title="Workspace references use @path search">
+            <Folder size={14} />
+            <span>Workspace</span>
+          </span>
+          {mode ? (
+            <span className={mode === 'plan' ? 'composer-chip composer-chip-plan' : 'composer-chip'} title="Current session mode">
+              <Route size={14} />
+              <span>{mode}</span>
+            </span>
+          ) : null}
+        </div>
+        <div className="composer-runbar">
+          <span className="composer-chip composer-chip-model" title={modelTitle}>
+            <Boxes size={14} />
+            <span>{modelLabel}</span>
+          </span>
+          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
+          <div className="composer-actions">
+            {running ? (
+              <Button aria-label="Stop run" title="Stop run" onClick={onCancel}>
+                <Square size={16} />
+              </Button>
+            ) : (
+              <Button
+                aria-label="Send message"
+                title="Send message"
+                onClick={submit}
+                disabled={disabled || (!value.trim() && attachments.length === 0)}
+              >
+                <Send size={16} />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -88,8 +88,12 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
               className={session.session_id === activeSessionId ? 'session-item session-item-active' : 'session-item'}
               onClick={() => onSelectSession(session.session_id)}
             >
-              <span>{session.summary || session.session_id.slice(0, 8)}</span>
-              <small>{session.model}</small>
+              <span className="session-item-title">{session.summary || session.session_id.slice(0, 8)}</span>
+              <span className="session-item-meta">
+                <small>{session.model}</small>
+                {session.mode === 'plan' ? <em>plan</em> : null}
+                {session.message_count > 0 ? <small>{session.message_count} msgs</small> : null}
+              </span>
             </button>
           ))}
         </div>

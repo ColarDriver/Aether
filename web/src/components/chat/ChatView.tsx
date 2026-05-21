@@ -208,17 +208,8 @@ export function ChatView({ session }: Props) {
   }
 
   return (
-    <div className="chat-surface">
-      <div className="chat-header">
-        <Bot size={18} />
-        <div>
-          <div className="chat-title">{session.summary || session.session_id}</div>
-          <div className="muted">{session.provider} / {session.model}</div>
-        </div>
-        {usage ? (
-          <div className="token-pill">{usage.input_tokens ?? 0} in / {usage.output_tokens ?? 0} out</div>
-        ) : null}
-      </div>
+    <div className="chat-surface" aria-label={'Chat session ' + (session.summary || session.session_id)}>
+      <span className="sr-only">{session.summary || session.session_id}</span>
       <SessionTaskBar tasks={tasks} onOpenTask={(task) => setSelectedTaskId(task.task_id)} />
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline

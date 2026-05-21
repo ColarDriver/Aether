@@ -38,6 +38,8 @@ export function App() {
   }, [bootstrap, bootstrapAppearance, loadProviders])
 
   const activeSession = sessions.find((session) => session.session_id === activeSessionId) ?? null
+  const topBarProvider = activeView === 'chat' ? activeSession?.provider ?? current?.provider_name : current?.provider_name
+  const topBarModel = activeView === 'chat' ? activeSession?.model ?? current?.model : current?.model
 
   return (
     <div className="app-shell">
@@ -58,10 +60,10 @@ export function App() {
       />
       <main className={activeView === 'chat' ? 'workspace workspace-chat' : 'workspace'}>
         <TopBar
-          title={activeView === 'chat' ? activeSession?.summary || 'Chat' : viewTitle(activeView)}
+          title={activeView === 'chat' ? activeSession?.summary || activeSession?.session_id.slice(0, 8) || 'Chat' : viewTitle(activeView)}
           status={status?.ok ? 'online' : 'offline'}
-          provider={current?.provider_name}
-          model={current?.model}
+          provider={topBarProvider}
+          model={topBarModel}
         />
         <section className={activeView === 'chat' ? 'content-pane content-pane-chat' : 'content-pane'}>
           {isLoading || sessionsLoading ? <Spinner label="Loading console" /> : null}

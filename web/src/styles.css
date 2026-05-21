@@ -312,16 +312,43 @@ button {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.session-item span {
+.session-item-title {
   width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-item small {
+.session-item-meta {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.session-item small,
+.session-item em {
   color: var(--muted);
   font-size: 12px;
+}
+
+.session-item-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item em {
+  flex: 0 0 auto;
+  border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 1px 5px;
+  font-style: normal;
+  line-height: 1.35;
 }
 
 .sidebar-control-center {
@@ -703,7 +730,7 @@ button {
 
 .chat-surface {
   display: grid;
-  grid-template-rows: auto auto minmax(220px, 1fr) auto;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
   min-height: 0;
   height: 100%;
   width: 100%;
@@ -716,25 +743,24 @@ button {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
-.chat-header {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  padding: 10px 18px;
-  background: var(--panel);
+.chat-surface > .session-task-bar {
+  grid-row: 1;
 }
 
-.chat-header > div {
-  min-width: 0;
+.chat-surface > .chat-scroll {
+  grid-row: 2;
 }
 
-.chat-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-strong);
-  font-weight: 600;
+.chat-surface > .composer {
+  grid-row: 3;
+}
+
+.chat-surface-empty > .chat-scroll {
+  grid-row: 1;
+}
+
+.chat-surface-empty > .composer {
+  grid-row: 2;
 }
 
 .chat-scroll {
@@ -2007,24 +2033,32 @@ button {
 
 .composer-footer {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 4px 10px 10px;
 }
 
-.composer-context {
+.composer-tools,
+.composer-runbar {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.composer-tools {
   overflow-x: auto;
   scrollbar-width: none;
 }
 
-.composer-context::-webkit-scrollbar {
+.composer-tools::-webkit-scrollbar {
   display: none;
+}
+
+.composer-runbar {
+  justify-content: flex-end;
 }
 
 .composer-chip,
@@ -2117,7 +2151,7 @@ button {
 .composer-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 0 0 auto;
 }
 
@@ -4335,8 +4369,12 @@ button {
   }
 
   .composer-footer {
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
-    flex-direction: column;
+  }
+
+  .composer-runbar {
+    justify-content: space-between;
   }
 
   .composer-actions {

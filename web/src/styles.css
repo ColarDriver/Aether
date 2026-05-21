@@ -2198,7 +2198,7 @@ button {
   background: transparent;
 }
 
-.chat-timeline > .tool-call-block {
+.chat-turn > .tool-call-block {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel) 90%, transparent);
@@ -2257,9 +2257,29 @@ button {
 }
 
 .tool-call-header em {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
   color: var(--muted);
+  padding: 2px 7px;
   font-size: 12px;
   font-style: normal;
+  line-height: 1.2;
+}
+
+.tool-call-running .tool-call-header em,
+.tool-call-pending .tool-call-header em {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tool-call-finished .tool-call-header em {
+  color: var(--ok);
+}
+
+.tool-call-failed .tool-call-header em {
+  color: var(--danger);
 }
 
 .tool-call-body {
@@ -2359,6 +2379,9 @@ button {
 .chat-block-diff {
   padding: 0;
   overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
 }
 
 .diff-path {
@@ -2368,6 +2391,12 @@ button {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.chat-block-diff .diff-viewer {
+  border: 0;
+  border-radius: 0;
+  margin-top: 0;
 }
 
 .prompt-inline-block {

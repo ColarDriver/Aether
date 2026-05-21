@@ -41,9 +41,17 @@ class EnvRevealResult:
     source: EnvValueSource
 
 
+@dataclass(frozen=True, slots=True)
+class EnvRevealAuditEntry:
+    key: str
+    source: EnvValueSource
+    revealed_at: float
+
+
 __all__ = [
     "EnvCatalog",
     "EnvMutationResult",
+    "EnvRevealAuditEntry",
     "EnvRevealResult",
     "EnvValueSource",
     "EnvVarSummary",

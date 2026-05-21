@@ -205,3 +205,9 @@ export type EnvRevealResult = {
   value: string
   source: 'file' | 'process' | 'missing'
 }
+
+export type EnvRevealAuditEntry = {
+  key: string
+  source: "file" | "process" | "missing"
+  revealed_at: number
+}

@@ -3,6 +3,7 @@ import type {
   EffectiveConfig,
   EnvCatalog,
   EnvMutationResult,
+  EnvRevealAuditEntry,
   EnvRevealResult,
   HealthStatus,
   LogFileSummary,
@@ -142,5 +143,6 @@ export const api = {
   env: () => request<EnvCatalog>('GET', '/api/env'),
   setEnvVar: (body: { key: string; value: string }) => request<EnvMutationResult>('PUT', '/api/env', body),
   deleteEnvVar: (key: string) => request<EnvMutationResult>('DELETE', '/api/env', { key }),
-  revealEnvVar: (key: string) => request<EnvRevealResult>('POST', '/api/env/reveal', { key }),
+  revealEnvVar: (key: string) => request<EnvRevealResult>("POST", "/api/env/reveal", { key }),
+  revealEnvAudit: () => request<{ events: EnvRevealAuditEntry[] }>("GET", "/api/env/reveal-audit"),
 }

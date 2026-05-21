@@ -125,6 +125,10 @@ def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> No
     assert reveal.status_code == 200
     assert reveal.json()["value"] == "sk-test-secret"
 
+    audit = client.get("/api/env/reveal-audit")
+    assert audit.status_code == 200
+    assert audit.json()["events"][0]["key"] == "OPENAI_API_KEY"
+
     deleted = client.request("DELETE", "/api/env", json={"key": "OPENAI_API_KEY"})
     assert deleted.status_code == 200
 

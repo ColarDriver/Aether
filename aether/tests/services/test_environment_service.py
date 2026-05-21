@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from aether.services.common import ServiceNotFoundError, ServiceValidationError
+from aether.services.common import ServiceConflictError, ServiceNotFoundError, ServiceValidationError
 from aether.services.environment import EnvironmentService
 
 
@@ -52,3 +52,34 @@ def test_environment_rejects_invalid_and_missing_keys(tmp_path) -> None:
         service.delete("OPENAI_API_KEY")
     with pytest.raises(ServiceNotFoundError):
         service.reveal("OPENAI_API_KEY")
+
+
+def test_environment_reveal_rate_limit_and_audit(tmp_path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-test-secret\n", encoding="utf-8")
+    current = 10.0
+
+    def monotonic() -> float:
+        return current
+
+    service = EnvironmentService(
+        env_path=env_path,
+        environ={},
+        reveal_limit=2,
+        reveal_window_seconds=60,
+        monotonic=monotonic,
+        wall_clock=lambda: 1000.0 + current,
+    )
+
+    assert service.reveal("OPENAI_API_KEY").value == "sk-test-secret"
+    assert service.reveal("OPENAI_API_KEY").value == "sk-test-secret"
+    with pytest.raises(ServiceConflictError) as exc_info:
+        service.reveal("OPENAI_API_KEY")
+    assert exc_info.value.details["limit"] == 2
+
+    audit = service.reveal_audit()
+    assert [entry.key for entry in audit] == ["OPENAI_API_KEY", "OPENAI_API_KEY"]
+    assert audit[0].source == "file"
+
+    current = 71.0
+    assert service.reveal("OPENAI_API_KEY").value == "sk-test-secret"

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 import os
+import time
 from pathlib import Path
 import re
 from typing import Any
 
-from aether.services.common import ServiceNotFoundError, ServiceValidationError
+from aether.services.common import ServiceConflictError, ServiceNotFoundError, ServiceValidationError
 from aether.services.environment.contracts import (
     EnvCatalog,
+    EnvRevealAuditEntry,
     EnvMutationResult,
     EnvRevealResult,
     EnvValueSource,
@@ -123,11 +125,21 @@ class EnvironmentService:
         env_path: Path | None = None,
         environ: Mapping[str, str] | None = None,
         definitions: Mapping[str, Mapping[str, Any]] | None = None,
+        reveal_limit: int = 5,
+        reveal_window_seconds: float = 60.0,
+        monotonic: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
     ) -> None:
         default_path = Path(os.getenv("AETHER_ENV_PATH") or (Path.cwd() / ".env"))
         self._env_path = env_path.expanduser() if env_path is not None else default_path.expanduser()
         self._environ = environ if environ is not None else os.environ
         self._definitions = dict(definitions or _ENV_DEFINITIONS)
+        self._reveal_limit = max(0, int(reveal_limit))
+        self._reveal_window_seconds = max(1.0, float(reveal_window_seconds))
+        self._monotonic = monotonic or time.monotonic
+        self._wall_clock = wall_clock or time.time
+        self._reveal_attempts: list[float] = []
+        self._reveal_audit: list[EnvRevealAuditEntry] = []
 
     @property
     def env_path(self) -> Path:
@@ -170,13 +182,42 @@ class EnvironmentService:
 
     def reveal(self, key: str) -> EnvRevealResult:
         normalized = _validate_key(key)
+        self._check_reveal_rate(normalized)
         file_values = self._read_values()
         if normalized in file_values:
-            return EnvRevealResult(key=normalized, value=file_values[normalized], source="file")
+            return self._record_reveal(normalized, file_values[normalized], "file")
         value = self._environ.get(normalized)
         if value is not None:
-            return EnvRevealResult(key=normalized, value=value, source="process")
+            return self._record_reveal(normalized, value, "process")
         raise ServiceNotFoundError(f"environment key not found: {normalized}", details={"key": normalized})
+
+    def reveal_audit(self) -> list[EnvRevealAuditEntry]:
+        return list(self._reveal_audit)
+
+    def _check_reveal_rate(self, key: str) -> None:
+        if self._reveal_limit <= 0:
+            return
+        now = self._monotonic()
+        window_start = now - self._reveal_window_seconds
+        self._reveal_attempts = [item for item in self._reveal_attempts if item > window_start]
+        if len(self._reveal_attempts) >= self._reveal_limit:
+            retry_after = max(1.0, self._reveal_window_seconds - (now - self._reveal_attempts[0]))
+            raise ServiceConflictError(
+                "environment reveal rate limit exceeded",
+                details={
+                    "key": key,
+                    "limit": self._reveal_limit,
+                    "window_seconds": self._reveal_window_seconds,
+                    "retry_after_seconds": round(retry_after, 3),
+                },
+            )
+        self._reveal_attempts.append(now)
+
+    def _record_reveal(self, key: str, value: str, source: EnvValueSource) -> EnvRevealResult:
+        self._reveal_audit.append(
+            EnvRevealAuditEntry(key=key, source=source, revealed_at=self._wall_clock())
+        )
+        return EnvRevealResult(key=key, value=value, source=source)
 
     def _set_process_value(self, key: str, value: str) -> None:
         if isinstance(self._environ, MutableMapping):

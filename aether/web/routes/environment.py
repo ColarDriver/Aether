@@ -37,6 +37,12 @@ async def delete_environment_variable(request: Request, body: EnvKeyBody) -> dic
     return to_jsonable(services.environment.delete(body.key))
 
 
+@router.get("/api/env/reveal-audit")
+async def reveal_environment_audit(request: Request) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return {"events": to_jsonable(services.environment.reveal_audit())}
+
+
 @router.post("/api/env/reveal")
 async def reveal_environment_variable(request: Request, body: EnvKeyBody) -> dict[str, object]:
     services = request.app.state.aether_services

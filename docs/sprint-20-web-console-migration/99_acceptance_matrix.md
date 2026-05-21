@@ -116,9 +116,9 @@ Implemented on branch `web-console-migration`:
 - PR20.1 backend foundation: FastAPI app factory, local auth/Host/CORS middleware, `aether-web` entrypoint, static SPA bootstrap hooks.
 - PR20.2 REST services: sessions list/search/detail/messages, config/prefs/env, providers/models, tools, skills, diagnostics, health, logs, and run status/cancel routes over `aether/services/*`.
 - PR20.3 run WebSocket: structured `/api/runs/ws` protocol, event mapping, cancellation, web prompt broker, approval and permission responders.
-- PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, searchable sidebar, sessions manager, status bar, toast notifications, error boundary, and console shell.
+- PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, searchable sidebar, sessions manager, status bar, toast notifications, error boundary, service-backed theme/language preferences, and console shell.
 - PR20.5 chat surface: transcript loading, persisted tool/diff reconstruction, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
-- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, tools, skills, diagnostics, logs, and settings views.
+- PR20.6 console views: provider/model selection, environment key management with reveal audit/rate limiting, editable preferences, appearance controls, tools, skills, diagnostics, logs, and settings views.
 
 Latest verification performed during implementation:
 
@@ -126,7 +126,7 @@ Latest verification performed during implementation:
 - `python -m pytest aether/tests/services` (47 passed)
 - `python -m pytest aether/tests/gateway` (241 passed)
 - `uv run pyright aether/web aether/services aether/gateway/handlers` (0 errors)
-- `cd web && npm test` (17 files / 25 tests, including layout, sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (19 files / 29 tests, including layout, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:

@@ -1,6 +1,7 @@
 import { Activity, Boxes, Brain, CircleAlert, FileText, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
+import { useAppearanceStore } from "./stores/appearanceStore"
 import { useProviderStore } from './stores/providerStore'
 import { useSessionStore } from './stores/sessionStore'
 import { Sidebar } from './components/layout/Sidebar'
@@ -22,12 +23,14 @@ export function App() {
   const { status, health, activeView, isLoading, error, bootstrap, setActiveView } = useAppStore()
   const { sessions, activeSessionId, isLoading: sessionsLoading, createSession, setActiveSession } = useSessionStore()
   const { current, providers, loadProviders } = useProviderStore()
+  const bootstrapAppearance = useAppearanceStore((state) => state.bootstrap)
 
   useEffect(() => {
+    void bootstrapAppearance()
     void bootstrap()
     void useSessionStore.getState().loadSessions()
     void loadProviders()
-  }, [bootstrap, loadProviders])
+  }, [bootstrap, bootstrapAppearance, loadProviders])
 
   const activeSession = sessions.find((session) => session.session_id === activeSessionId) ?? null
 

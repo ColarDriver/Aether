@@ -2,7 +2,9 @@ import { Plus, Save, Trash2 } from "lucide-react"
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import { api } from "../../api/client"
 import type { ConfigPaths, EffectiveConfig } from "../../api/types"
+import { APPEARANCE_THEMES, useAppearanceStore } from "../../stores/appearanceStore"
 import { useToastStore } from "../../stores/toastStore"
+import { AppearanceControls } from "../shared/AppearanceControls"
 import { Spinner } from "../shared/Spinner"
 
 export function SettingsView() {
@@ -16,6 +18,8 @@ export function SettingsView() {
   const [saving, setSaving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const notify = useToastStore((state) => state.notify)
+  const activeTheme = useAppearanceStore((state) => state.theme)
+  const activeLocale = useAppearanceStore((state) => state.locale)
 
   const load = () => {
     setLoading(true)
@@ -122,6 +126,25 @@ export function SettingsView() {
         <div className="info-row"><span>Prefs</span><strong>{paths?.prefs_file || "-"}</strong></div>
         <div className="info-row"><span>Prefs version</span><strong>{String(prefs?.version ?? "-")}</strong></div>
       </div>
+      <section className="catalog-card appearance-card">
+        <div className="catalog-card-header"><strong>Appearance</strong><span>{activeTheme} / {activeLocale}</span></div>
+        <div className="appearance-card-body">
+          <AppearanceControls />
+          <div className="theme-swatch-list" aria-label="Available themes">
+            {APPEARANCE_THEMES.map((theme) => (
+              <div className={theme.id === activeTheme ? "theme-swatch-row theme-swatch-row-active" : "theme-swatch-row"} key={theme.id}>
+                <div className="theme-swatch" aria-hidden>
+                  {theme.swatch.map((color) => <span key={color} style={{ background: color }} />)}
+                </div>
+                <div>
+                  <strong>{theme.label}</strong>
+                  <p>{theme.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
       <section className="catalog-card prefs-card">
         <div className="catalog-card-header"><strong>Preferences</strong><span>{prefEntries.length} fields</span></div>
         <div className="pref-list">

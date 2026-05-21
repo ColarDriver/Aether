@@ -2672,18 +2672,19 @@ button {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(18, 24, 38, 0.42);
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(4px);
   padding: 18px;
   z-index: 20;
 }
 
 .prompt-modal {
-  width: min(780px, 100%);
+  width: min(840px, 100%);
   max-height: min(720px, 90vh);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow-float);
   overflow: hidden;
@@ -2691,18 +2692,58 @@ button {
 
 .prompt-modal header,
 .prompt-modal footer {
-  display: flex;
+  display: grid;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
 }
 
+.prompt-modal header {
+  grid-template-columns: auto minmax(0, 1fr);
+  background: color-mix(in srgb, var(--panel-2) 72%, var(--panel));
+}
+
 .prompt-modal footer {
+  grid-template-columns: repeat(3, auto);
   border-top: 1px solid var(--line);
   border-bottom: 0;
   justify-content: flex-end;
+  background: color-mix(in srgb, var(--panel-2) 54%, var(--panel));
+}
+
+.prompt-modal-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.prompt-modal-title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.prompt-modal-title strong,
+.prompt-modal-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-modal-title strong {
+  color: var(--text-strong);
+}
+
+.prompt-modal-title span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .prompt-modal button {
@@ -2714,7 +2755,12 @@ button {
   cursor: pointer;
 }
 
-.prompt-modal .primary-action {
+.prompt-modal .prompt-action-danger {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  color: var(--danger);
+}
+
+.prompt-modal .prompt-action-primary {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff;
@@ -2724,6 +2770,7 @@ button {
   min-height: 0;
   overflow: auto;
   padding: 14px;
+  background: var(--panel);
 }
 
 .code-block {

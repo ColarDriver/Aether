@@ -1,3 +1,4 @@
+import { ShieldQuestion } from 'lucide-react'
 import type { PermissionPrompt } from '../../stores/chatStore'
 import { PermissionPreviewContent } from './PromptContent'
 
@@ -14,8 +15,11 @@ export function PermissionDialog({ prompt, onAllow, onAllowSession, onDeny }: Pr
     <div className="modal-backdrop" role="presentation">
       <section className="prompt-modal" role="dialog" aria-modal="true" aria-label="Tool permission request">
         <header>
-          <strong>{preview?.title || prompt.request.tool_name || 'Tool permission'}</strong>
-          <span>{prompt.request.risk || prompt.request.category}</span>
+          <span className="prompt-modal-icon" aria-hidden="true"><ShieldQuestion size={17} /></span>
+          <div className="prompt-modal-title">
+            <strong>{preview?.title || prompt.request.tool_name || 'Tool permission'}</strong>
+            <span>{prompt.request.risk || prompt.request.category || 'permission required'}</span>
+          </div>
         </header>
         <div className="prompt-body">
           <PermissionPreviewContent
@@ -25,9 +29,11 @@ export function PermissionDialog({ prompt, onAllow, onAllowSession, onDeny }: Pr
           />
         </div>
         <footer>
-          <button type="button" onClick={onDeny}>Deny</button>
-          {prompt.request.allow_session ? <button type="button" onClick={onAllowSession}>Allow session</button> : null}
-          <button type="button" className="primary-action" onClick={onAllow}>Allow once</button>
+          <button type="button" className="prompt-action prompt-action-danger" onClick={onDeny}>Deny</button>
+          {prompt.request.allow_session ? (
+            <button type="button" className="prompt-action" onClick={onAllowSession}>Allow session</button>
+          ) : null}
+          <button type="button" className="prompt-action prompt-action-primary" onClick={onAllow}>Allow once</button>
         </footer>
       </section>
     </div>

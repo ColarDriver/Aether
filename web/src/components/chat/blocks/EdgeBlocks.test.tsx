@@ -1,0 +1,80 @@
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
+import { AskUserQuestionBlock } from './AskUserQuestionBlock'
+import { ErrorBlock } from './ErrorBlock'
+import { SystemNoticeBlock } from './SystemNoticeBlock'
+
+const base = {
+  id: 'block-1',
+  sessionId: 'session-1',
+  runId: 'run-1',
+  timestamp: 1,
+  source: 'live' as const,
+}
+
+afterEach(cleanup)
+
+describe('edge timeline blocks', () => {
+  it('renders ask_user_question options, descriptions, and answers', () => {
+    render(
+      <AskUserQuestionBlock
+        block={{
+          ...base,
+          kind: 'ask_user_question',
+          state: 'answered',
+          questions: [
+            {
+              id: 'mode',
+              header: 'Mode',
+              question: 'Which mode should the agent use?',
+              options: [
+                { label: 'Fast', description: 'Less detail' },
+                { label: 'Careful', description: 'More verification' },
+              ],
+            },
+          ],
+          answers: { mode: 'Careful' },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Input requested')).toBeTruthy()
+    expect(screen.getByText('Which mode should the agent use?')).toBeTruthy()
+    expect(screen.getByText('More verification')).toBeTruthy()
+    expect(screen.getAllByText('Careful')).toHaveLength(2)
+  })
+
+  it('renders rich system notices with a stable header', () => {
+    render(
+      <SystemNoticeBlock
+        block={{
+          ...base,
+          kind: 'system_notice',
+          content: '# Session updated\n\nPlan mode enabled.',
+        }}
+      />,
+    )
+
+    expect(screen.getByText('System notice')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Session updated' })).toBeTruthy()
+  })
+
+  it('renders error metadata and message', () => {
+    render(
+      <ErrorBlock
+        block={{
+          ...base,
+          kind: 'error',
+          code: 'web_slash_command',
+          message: 'Command failed',
+        }}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByText('web_slash_command')).toBeTruthy()
+    expect(screen.getByText('Command failed')).toBeTruthy()
+  })
+})

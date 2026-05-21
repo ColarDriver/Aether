@@ -1,4 +1,4 @@
-import { HelpCircle } from 'lucide-react'
+import { HelpCircle, MessageCircleQuestion } from 'lucide-react'
 import type { AskUserQuestionBlock as AskUserQuestion } from '../../../chat-rendering'
 
 type Props = {
@@ -18,12 +18,22 @@ export function AskUserQuestionBlock({ block }: Props) {
       </header>
       {block.questions.map((question, index) => (
         <div className="question-preview" key={index}>
-          {question.header ? <div className="muted">{question.header}</div> : null}
+          {question.header ? (
+            <div className="question-preview-header">
+              <MessageCircleQuestion size={14} />
+              <span>{question.header}</span>
+            </div>
+          ) : null}
           <p>{question.question}</p>
           {question.id ? <code>{question.id}</code> : null}
           {question.options?.length ? (
             <div className="question-options">
-              {question.options.map((option) => <span key={option.label}>{option.label}</span>)}
+              {question.options.map((option) => (
+                <span key={option.label}>
+                  <strong>{option.label}</strong>
+                  {option.description ? <small>{option.description}</small> : null}
+                </span>
+              ))}
             </div>
           ) : null}
         </div>
@@ -33,7 +43,7 @@ export function AskUserQuestionBlock({ block }: Props) {
           <strong>User answered</strong>
           {Object.entries(block.answers).map(([label, value]) => (
             <div key={label}>
-              <span>{label}</span>
+              <code>{label}</code>
               <p>{value}</p>
             </div>
           ))}

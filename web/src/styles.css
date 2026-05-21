@@ -1263,7 +1263,7 @@ button {
 
 .chat-timeline {
   display: grid;
-  gap: 16px;
+  gap: 18px;
   width: min(100%, var(--chat-column-max));
   margin: 0 auto;
 }
@@ -1292,6 +1292,34 @@ button {
 .chat-block-assistant {
   width: min(100%, 860px);
   background: transparent;
+}
+
+.chat-block-assistant .chat-message-shell,
+.chat-block-assistant .chat-message-document,
+.chat-block-assistant .message-action-bar-start {
+  padding-left: 30px;
+}
+
+.chat-block-assistant .chat-message-shell,
+.chat-block-assistant .chat-message-document {
+  max-width: 820px;
+  line-height: 1.72;
+}
+
+.chat-timeline > .tool-call-block,
+.chat-timeline > .tool-call-group,
+.chat-timeline > .prompt-inline-block,
+.chat-timeline > .chat-block-diff,
+.chat-timeline > .task-notification,
+.chat-timeline > .chat-block-error,
+.chat-timeline > .chat-block-system-rich {
+  width: min(100%, 860px);
+  margin-left: 30px;
+}
+
+.chat-timeline > .chat-block-thinking,
+.chat-timeline > .chat-block-status {
+  margin-left: 30px;
 }
 
 .chat-block-label {
@@ -1663,7 +1691,7 @@ button {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
 }
 
 .tool-activity-header {
@@ -1731,6 +1759,12 @@ button {
   background: transparent;
 }
 
+.chat-timeline > .tool-call-block {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+}
+
 .tool-call-block:first-child {
   border-top: 0;
 }
@@ -1742,7 +1776,7 @@ button {
 .tool-call-header {
   min-height: 34px;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1762,7 +1796,18 @@ button {
   font-size: 12px;
 }
 
-.tool-call-header span {
+.tool-call-kind-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.tool-call-summary {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -1985,6 +2030,17 @@ button {
   cursor: pointer;
 }
 
+.prompt-inline-block > footer button:first-child {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  color: var(--danger);
+}
+
+.prompt-inline-block > footer button:last-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .question-preview {
   display: grid;
   gap: 6px;
@@ -2091,6 +2147,12 @@ button {
   background: var(--panel);
   overflow: hidden;
   box-shadow: var(--shadow-panel);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-panel);
 }
 
 .composer-drag-active {
@@ -2121,12 +2183,17 @@ button {
   outline: 0;
 }
 
+.composer textarea::placeholder {
+  color: var(--muted-2);
+}
+
 .composer-footer {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
+  border-top: 1px solid var(--line-soft);
   padding: 4px 10px 10px;
 }
 
@@ -2864,8 +2931,18 @@ button {
   background: color-mix(in srgb, var(--ok) 18%, var(--panel));
 }
 
+.diff-line-add .diff-line-number,
+.diff-line-add .diff-marker {
+  color: var(--ok);
+}
+
 .diff-line-remove {
   background: color-mix(in srgb, var(--danger) 18%, var(--panel));
+}
+
+.diff-line-remove .diff-line-number,
+.diff-line-remove .diff-marker {
+  color: var(--danger);
 }
 
 .diff-line-context {
@@ -4514,9 +4591,32 @@ button {
     justify-content: space-between;
   }
 
+  .chat-block-assistant .chat-message-shell,
+  .chat-block-assistant .chat-message-document,
+  .chat-block-assistant .message-action-bar-start {
+    padding-left: 0;
+  }
+
+  .chat-timeline > .tool-call-block,
+  .chat-timeline > .tool-call-group,
+  .chat-timeline > .prompt-inline-block,
+  .chat-timeline > .chat-block-diff,
+  .chat-timeline > .task-notification,
+  .chat-timeline > .chat-block-error,
+  .chat-timeline > .chat-block-system-rich,
+  .chat-timeline > .chat-block-thinking,
+  .chat-timeline > .chat-block-status {
+    margin-left: 0;
+  }
+
   .composer-footer {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
+  }
+
+  .composer {
+    width: min(100%, calc(100% - 24px));
+    margin-bottom: 12px;
   }
 
   .composer-runbar {

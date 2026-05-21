@@ -66,9 +66,10 @@ describe('ChatView', () => {
   it('keeps the composer visible when no session is selected', () => {
     render(<ChatView session={null} />)
 
-    expect(screen.getByText('Start a session')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Inspect this project and summarize the architecture' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Find the highest-risk UI issues in the web app' })).toBeTruthy()
+    expect(screen.getByText('Aether')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Inspect project/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Review UI/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Plan edit/ })).toBeTruthy()
     expect(screen.getByRole('textbox')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
   })

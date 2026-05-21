@@ -1,4 +1,4 @@
-import { ArrowDown, Bot } from 'lucide-react'
+import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionInfo, TaskSummary } from '../../api/types'
 import type { ChatBlock } from '../../chat-rendering'
@@ -7,7 +7,6 @@ import { useChatStore } from '../../stores/chatStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTaskStore } from '../../stores/taskStore'
-import { EmptyState } from '../shared/EmptyState'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
 import { Composer } from './Composer'
@@ -156,18 +155,29 @@ export function ChatView({ session }: Props) {
       <div className="chat-surface chat-surface-empty">
         <div className="chat-scroll">
           <div className="chat-start">
-            <EmptyState
-              icon={<Bot />}
-              title="Start a session"
-              description="Type a message below to create a browser session and run Aether."
-            />
-            <div className="chat-start-actions" aria-label="Starter prompts">
-              {starterPrompts.map((prompt) => (
-                <button key={prompt} type="button" onClick={() => createSessionAndRun(prompt)}>
-                  {prompt}
-                </button>
-              ))}
-            </div>
+            <section className="chat-start-panel" aria-label="Aether start">
+              <div className="chat-start-brand">
+                <span className="chat-start-icon" aria-hidden="true"><Bot size={18} /></span>
+                <div>
+                  <h2>Aether</h2>
+                  <p>Workspace session</p>
+                </div>
+              </div>
+              <div className="chat-start-actions" aria-label="Starter prompts">
+                {starterPrompts.map((prompt) => {
+                  const Icon = prompt.icon
+                  return (
+                    <button key={prompt.prompt} type="button" onClick={() => createSessionAndRun(prompt.prompt)}>
+                      <Icon size={16} />
+                      <span>
+                        <strong>{prompt.title}</strong>
+                        <small>{prompt.detail}</small>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
           </div>
         </div>
         <Composer
@@ -276,7 +286,22 @@ export function restoredChatScrollTop(
 }
 
 const starterPrompts = [
-  'Inspect this project and summarize the architecture',
-  'Find the highest-risk UI issues in the web app',
-  'Plan the next implementation step before editing files',
+  {
+    title: 'Inspect project',
+    detail: 'Architecture and entry points',
+    prompt: 'Inspect this project and summarize the architecture',
+    icon: FileSearch,
+  },
+  {
+    title: 'Review UI',
+    detail: 'Find high-risk interface issues',
+    prompt: 'Find the highest-risk UI issues in the web app',
+    icon: ShieldCheck,
+  },
+  {
+    title: 'Plan edit',
+    detail: 'Scope the next implementation step',
+    prompt: 'Plan the next implementation step before editing files',
+    icon: Route,
+  },
 ]

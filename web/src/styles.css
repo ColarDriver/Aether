@@ -892,18 +892,52 @@ button {
 }
 
 .chat-start {
-  width: min(100%, 760px);
-  margin: 42px auto;
+  width: min(100%, 720px);
+  margin: 44px auto;
   display: grid;
   gap: 12px;
 }
 
-.chat-start .empty-state {
-  max-width: none;
-  min-height: 168px;
+.chat-start-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow-panel);
+  padding: 16px;
+}
+
+.chat-start-brand {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-start-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.chat-start-brand h2 {
   margin: 0;
-  border: 0;
-  background: transparent;
+  color: var(--text-strong);
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.chat-start-brand p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .chat-start-actions {
@@ -914,6 +948,11 @@ button {
 
 .chat-start-actions button {
   min-height: 56px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
@@ -922,6 +961,34 @@ button {
   text-align: left;
   cursor: pointer;
   line-height: 1.35;
+}
+
+.chat-start-actions button > svg {
+  color: var(--accent);
+}
+
+.chat-start-actions button span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.chat-start-actions button strong,
+.chat-start-actions button small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-start-actions button strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.chat-start-actions button small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .chat-start-actions button:hover,

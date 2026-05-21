@@ -43,7 +43,9 @@ Implemented on branch `web-console-migration`:
 - Composer attachment input:
   - `web/src/components/chat/Composer.tsx`
   - `web/src/components/chat/composerAttachments.ts`
+  - `web/src/components/chat/workspaceReferences.ts`
   - `web/src/components/chat/AttachmentGallery.tsx`
+  - `web/src/components/chat/WorkspaceReferencePopover.tsx`
   - `web/src/styles.css`
 - Run payload and optimistic timeline attachments:
   - `web/src/api/runSocket.ts`
@@ -64,3 +66,7 @@ Notes:
   stores attachments for display/resume. Provider-native multimodal dispatch is
   intentionally left to the provider transport layer so web metadata does not
   silently change model payload semantics.
+- Workspace references use the existing Python workspace REST service:
+  typing `@` opens root workspace entries, typing `@query` searches files and
+  directories, and selecting a result inserts an `@path` token while adding a
+  display attachment chip.

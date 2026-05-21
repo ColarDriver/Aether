@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../../api/client'
 import { Composer } from './Composer'
 
 const slashCommands = [
@@ -9,7 +10,10 @@ const slashCommands = [
   { name: '/plan', description: 'Plan mode', category: 'session' },
 ]
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('Composer', () => {
   it('applies slash completion instead of sending while popover is open', () => {
@@ -113,5 +117,27 @@ describe('Composer', () => {
     })
 
     await waitFor(() => expect(screen.getByText('clip.txt')).toBeTruthy())
+  })
+
+  it('turns selected workspace references into path tokens and attachments', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
+      root: '/workspace/Aether',
+      query: 'app',
+      entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@app', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(textbox.value).toBe('@src/app.ts ')
+    expect(screen.getByText('src/app.ts')).toBeTruthy()
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('@src/app.ts', [
+      expect.objectContaining({ type: 'text', name: 'app.ts', path: 'src/app.ts' }),
+    ])
   })
 })

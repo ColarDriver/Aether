@@ -2,12 +2,15 @@ import { Paperclip, Send, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { SlashCommandInfo } from '../../api/types'
+import type { WorkspaceEntry } from '../../api/types'
 import type { ChatAttachment } from '../../chat-rendering'
 import { Button } from '../shared/Button'
 import { AttachmentGallery } from './AttachmentGallery'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
+import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
 import { isSlashCommandInput } from './slashExecute'
+import { mergeWorkspaceAttachment } from './workspaceReferences'
 
 type Props = {
   disabled: boolean
@@ -27,6 +30,7 @@ export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
+  const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
   const commands = slashCommands ?? loadedCommands
 
   useEffect(() => {
@@ -66,6 +70,16 @@ export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, 
   const applySlashCommand = (nextValue: string, nextCursorPosition: number) => {
     setValue(nextValue)
     setCursorPosition(nextCursorPosition)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }
+
+  const applyWorkspaceReference = (nextValue: string, nextCursorPosition: number, entry: WorkspaceEntry) => {
+    setValue(nextValue)
+    setCursorPosition(nextCursorPosition)
+    setAttachments((current) => mergeWorkspaceAttachment(current, entry))
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
@@ -121,6 +135,13 @@ export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, 
         ref={slashPopoverRef}
         value={value}
       />
+      <WorkspaceReferencePopover
+        cursorPosition={cursorPosition}
+        disabled={disabled || running}
+        onApply={applyWorkspaceReference}
+        ref={workspaceReferencePopoverRef}
+        value={value}
+      />
       {attachments.length > 0 ? (
         <div className="composer-attachments">
           <AttachmentGallery
@@ -148,6 +169,7 @@ export function Composer({ disabled, running, onSend, onCancel, onSlashCommand, 
             submit()
             return
           }
+          if (workspaceReferencePopoverRef.current?.handleKey(event)) return
           if (slashPopoverRef.current?.handleKey(event)) return
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()

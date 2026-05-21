@@ -1167,6 +1167,85 @@ button {
   box-shadow: 0 14px 40px rgba(15, 23, 42, 0.16);
 }
 
+.workspace-reference-popover {
+  position: absolute;
+  left: 10px;
+  right: 54px;
+  bottom: calc(100% - 1px);
+  z-index: 21;
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.16);
+}
+
+.workspace-reference-header {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.workspace-reference-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-reference-header em {
+  margin-left: auto;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.workspace-reference-option {
+  width: 100%;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto minmax(90px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-reference-option:hover,
+.workspace-reference-option-active {
+  background: var(--panel-2);
+}
+
+.workspace-reference-option span,
+.workspace-reference-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-reference-option small {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+.workspace-reference-empty {
+  padding: 18px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .slash-option {
   width: 100%;
   min-height: 38px;

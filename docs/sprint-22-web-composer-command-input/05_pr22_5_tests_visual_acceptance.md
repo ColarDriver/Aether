@@ -58,6 +58,8 @@ Implemented on branch `web-console-migration`:
 - PR22.4 composer attachments and run payload persistence:
   - `web/src/components/chat/Composer.tsx`
   - `web/src/components/chat/composerAttachments.ts`
+  - `web/src/components/chat/workspaceReferences.ts`
+  - `web/src/components/chat/WorkspaceReferencePopover.tsx`
   - `web/src/components/chat/AttachmentGallery.tsx`
   - `web/src/api/runSocket.ts`
   - `web/src/stores/chatStore.ts`
@@ -67,7 +69,7 @@ Implemented on branch `web-console-migration`:
 
 Latest verification performed during implementation:
 
-- `cd web && npm test` (38 files / 97 tests after attachment coverage)
+- `cd web && npm test` (39 files / 102 tests after workspace reference coverage)
 - `cd web && npm run build`
 - `python -m pytest aether/tests/web/test_web_run_ws.py aether/tests/services/test_agent_run_service.py` (10 passed)
 - `uv run pyright aether/web/ws/runs.py aether/services/runs aether/runtime/core/contracts.py aether/agents/core/agent.py`
@@ -76,5 +78,4 @@ Remaining before Sprint 22 completion:
 
 - Expand PR22.3 beyond `/help`, `/session`, `/sessions`, `/tools`, and `/model`
   once web-native plan/model/session mutation APIs are in place.
-- Workspace file reference search/browser insertion for path refs.
 - Full manual browser acceptance after PR22.4.

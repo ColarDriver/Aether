@@ -85,7 +85,7 @@ Aether already has the runtime foundations that a web console should reuse:
 - Add a standalone TypeScript browser app under `web/`.
 - Reuse `aether/services/*` for all business behavior.
 - Provide REST endpoints for status, sessions, config/prefs, providers/models,
-  tools, skills, diagnostics, docs, analytics, and run snapshots.
+  tools, skills, diagnostics, docs, workspace browsing, analytics, and run snapshots.
 - Provide a browser run stream over WebSocket, with text/reasoning deltas, tool
   events, token usage, status updates, final results, errors, and cancellation.
 - Provide web-native approval and tool-permission prompts so agent runs can ask
@@ -147,6 +147,7 @@ aether/web/
     skills.py
     diagnostics.py
     docs.py
+    workspace.py
     runs.py
   ws/
     __init__.py
@@ -205,6 +206,9 @@ Initial REST endpoints:
 - `GET /api/analytics`
 - `GET /api/docs`
 - `GET /api/docs/{doc_path}`
+- `GET /api/workspace/tree`
+- `GET /api/workspace/file`
+- `GET /api/workspace/search`
 - `GET /api/runs/{run_or_session_id}`
 - `POST /api/runs/{session_id}/cancel`
 
@@ -232,7 +236,7 @@ The web app starts as a real console, not a landing page:
   permission/approval surfaces.
 - Bottom composer: model-aware input, run/stop controls, lightweight mode
   indicator.
-- Right/secondary panels: tools, skills, provider/model settings, diagnostics, docs, and analytics.
+- Right/secondary panels: tools, skills, provider/model settings, diagnostics, docs, workspace, and analytics.
 
 The visual direction should be quiet and operational:
 

@@ -19,6 +19,7 @@ from aether.services.runs import AgentRunService
 from aether.services.sessions import SessionService
 from aether.services.skills import SkillService
 from aether.services.tools import ToolService
+from aether.services.workspace import WorkspaceService
 from aether.web.errors import install_error_handlers
 from aether.web.routes.analytics import router as analytics_router
 from aether.web.routes.config import router as config_router
@@ -32,6 +33,7 @@ from aether.web.routes.runs import router as runs_router
 from aether.web.routes.sessions import router as sessions_router
 from aether.web.routes.skills import router as skills_router
 from aether.web.routes.tools import router as tools_router
+from aether.web.routes.workspace import router as workspace_router
 from aether.web.security import create_session_token, install_security
 from aether.web.static import mount_spa
 from aether.web.ws.runs import router as run_ws_router
@@ -53,6 +55,7 @@ class WebServices:
     logs: LogService
     analytics: AnalyticsService
     docs: DocsService
+    workspace: WorkspaceService
 
 
 def create_app(
@@ -75,6 +78,7 @@ def create_app(
     log_service: LogService | None = None,
     analytics_service: AnalyticsService | None = None,
     docs_service: DocsService | None = None,
+    workspace_service: WorkspaceService | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI app.
 
@@ -104,6 +108,7 @@ def create_app(
         logs=log_service or LogService(),
         analytics=analytics_service or AnalyticsService(session_service=sessions),
         docs=docs_service or DocsService(),
+        workspace=workspace_service or WorkspaceService(),
     )
 
     install_security(
@@ -117,6 +122,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(analytics_router)
     app.include_router(docs_router)
+    app.include_router(workspace_router)
     app.include_router(sessions_router)
     app.include_router(config_router)
     app.include_router(providers_router)

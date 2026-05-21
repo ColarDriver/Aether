@@ -11,6 +11,7 @@ from aether.services.providers import ModelSelectionService, ProviderService
 from aether.services.runs import AgentRunService
 from aether.services.sessions import SessionService
 from aether.services.skills import SkillService
+from aether.services.workspace import WorkspaceService
 from aether.web.app import create_app
 
 
@@ -18,6 +19,9 @@ from aether.web.app import create_app
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("AETHER_HOME", str(tmp_path))
     sessions = SessionService(session_dir=tmp_path / "sessions")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print(\"hi\")\n", encoding="utf-8")
     docs_root = tmp_path / "docs"
     docs_root.mkdir()
     (docs_root / "README.md").write_text("# Test Docs\n\nHello docs.\n", encoding="utf-8")
@@ -37,6 +41,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         skill_service=skill_service,
         environment_service=EnvironmentService(env_path=tmp_path / ".env", environ={}),
         docs_service=DocsService(docs_root=docs_root),
+        workspace_service=WorkspaceService(root=workspace_root),
         run_service=AgentRunService(session_service=sessions),
     )
     return TestClient(app)
@@ -143,6 +148,24 @@ def test_docs_routes_list_and_read_project_markdown(client: TestClient) -> None:
 
     missing = client.get("/api/docs/missing.md")
     assert missing.status_code == 404
+
+
+def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None:
+    tree = client.get("/api/workspace/tree")
+    assert tree.status_code == 200
+    assert tree.json()["entries"][0]["path"] == "app.py"
+
+    file = client.get("/api/workspace/file?path=app.py")
+    assert file.status_code == 200
+    assert file.json()["content"] == 'print("hi")\n'
+    assert file.json()["language"] == "python"
+
+    search = client.get("/api/workspace/search?q=app")
+    assert search.status_code == 200
+    assert search.json()["entries"][0]["path"] == "app.py"
+
+    escaped = client.get("/api/workspace/file?path=../secret.py")
+    assert escaped.status_code == 400
 
 
 def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:

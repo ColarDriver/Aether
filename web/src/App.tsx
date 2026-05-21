@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookOpen, Boxes, Brain, CircleAlert, FileText, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { Activity, BarChart3, BookOpen, Boxes, Brain, CircleAlert, FileText, Folder, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useAppearanceStore } from "./stores/appearanceStore"
@@ -15,6 +15,7 @@ import { SkillsView } from './components/settings/SkillsView'
 import { LogsView } from './components/settings/LogsView'
 import { EnvironmentView } from './components/settings/EnvironmentView'
 import { DocsView } from './components/settings/DocsView'
+import { WorkspaceView } from './components/settings/WorkspaceView'
 import { AnalyticsView } from './components/settings/AnalyticsView'
 import { SessionsView } from './components/settings/SessionsView'
 import { ToolsView } from './components/settings/ToolsView'
@@ -77,6 +78,7 @@ export function App() {
           {activeView === 'logs' ? <LogsView /> : null}
           {activeView === 'analytics' ? <AnalyticsView /> : null}
           {activeView === 'docs' ? <DocsView /> : null}
+          {activeView === 'workspace' ? <WorkspaceView /> : null}
           {activeView === 'environment' ? <EnvironmentView /> : null}
           {activeView === 'settings' ? <SettingsView /> : null}
         </section>
@@ -103,6 +105,7 @@ function viewTitle(view: string) {
     logs: 'Logs',
     analytics: 'Analytics',
     docs: 'Docs',
+    workspace: 'Workspace',
     environment: 'Environment',
     settings: 'Settings',
   }
@@ -119,6 +122,7 @@ export const navItems = [
   { id: 'logs', label: 'Logs', icon: FileText },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'docs', label: 'Docs', icon: BookOpen },
+  { id: 'workspace', label: 'Workspace', icon: Folder },
   { id: 'environment', label: 'Environment', icon: KeyRound },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const

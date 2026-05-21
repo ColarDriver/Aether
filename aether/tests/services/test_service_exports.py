@@ -20,6 +20,7 @@ SERVICE_PACKAGES = (
     "aether.services.config",
     "aether.services.providers",
     "aether.services.tools",
+    "aether.services.workspace",
     "aether.services.skills",
     "aether.services.diagnostics",
     "aether.services.docs",

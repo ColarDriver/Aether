@@ -22,6 +22,9 @@ import type {
   ToolGroup,
   ToolSummary,
   TranscriptMessage,
+  WorkspaceFile,
+  WorkspaceSearchResult,
+  WorkspaceTree,
 } from './types'
 
 const DEFAULT_BASE_URL =
@@ -115,6 +118,15 @@ export const api = {
   },
   docs: () => request<DocIndex>('GET', '/api/docs'),
   doc: (path: string) => request<DocContent>('GET', '/api/docs/' + encodePathSegments(path)),
+  workspaceTree: (path = '') => {
+    const suffix = path ? '?path=' + encodeURIComponent(path) : ''
+    return request<WorkspaceTree>('GET', '/api/workspace/tree' + suffix)
+  },
+  workspaceFile: (path: string) => request<WorkspaceFile>('GET', '/api/workspace/file?path=' + encodeURIComponent(path)),
+  workspaceSearch: (q: string, limit = 100) => {
+    const query = new URLSearchParams({ q, limit: String(limit) })
+    return request<WorkspaceSearchResult>('GET', '/api/workspace/search?' + query.toString())
+  },
   sessions: () => request<{ sessions: SessionInfo[] }>('GET', '/api/sessions'),
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),

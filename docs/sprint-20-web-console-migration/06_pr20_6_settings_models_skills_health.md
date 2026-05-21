@@ -3,13 +3,13 @@
 ## Goal
 
 Build the browser console views around chat: provider/model selection, auxiliary
-slots, tool catalog, skill catalog, config/preferences, diagnostics, docs, analytics, and health.
+slots, tool catalog, skill catalog, config/preferences, diagnostics, docs, workspace, analytics, and health.
 
 ## Current Problem
 
 The web console must be more than a chat surface. A user needs to understand the
 runtime state that affects agent behavior: provider readiness, selected model,
-auxiliary model slots, enabled tools, skills, diagnostics, local documentation, analytics, and configuration.
+auxiliary model slots, enabled tools, skills, diagnostics, local documentation, workspace files, analytics, and configuration.
 
 Hermes has many dashboard pages. Aether should implement the subset backed by
 existing services and defer Hermes-only product areas until Aether has matching
@@ -113,6 +113,20 @@ Behavior:
 - Render local markdown content without iframe or remote documentation coupling.
 - Keep path display visible so implementation plans can be referenced precisely.
 
+### Workspace View
+
+Components:
+
+- `WorkspaceView.tsx`
+
+Behavior:
+
+- Load `GET /api/workspace/tree` for safe project-root directory browsing.
+- Read selected files through `GET /api/workspace/file`.
+- Search paths through `GET /api/workspace/search`.
+- Render markdown with the shared markdown renderer and text/code files in a stable preview pane.
+- Never expose excluded directories or raw `.env` secret files.
+
 ### Analytics View
 
 Components:
@@ -138,6 +152,7 @@ Add app-level navigation:
 - Logs
 - Analytics
 - Docs
+- Workspace
 - Environment
 - Settings
 
@@ -155,6 +170,7 @@ Frontend tests:
 - Skills view renders details and missing state.
 - Diagnostics view renders service statuses.
 - Docs view renders markdown index and selected content.
+- Workspace view browses directories, previews files, and searches paths.
 - Analytics view renders usage summary and model/session tables.
 - Settings view does not show secret values.
 
@@ -169,6 +185,6 @@ Backend tests from PR20.2 should already cover the data routes.
 ## Acceptance
 
 - User can inspect and change the active model/provider from the browser.
-- User can inspect tools, skills, health, diagnostics, logs, docs, and analytics.
+- User can inspect tools, skills, health, diagnostics, logs, docs, workspace files, and analytics.
 - No browser view exposes raw credentials.
 - Web UI stays operational and compact across desktop and narrow widths.

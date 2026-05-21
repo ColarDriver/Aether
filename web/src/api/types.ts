@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'analytics' | 'docs' | 'environment' | 'settings'
+export type ConsoleView = 'chat' | 'sessions' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'analytics' | 'docs' | 'workspace' | 'environment' | 'settings'
 
 export type SessionInfo = {
   session_id: string
@@ -286,4 +286,38 @@ export type DocContent = {
   content: string
   size_bytes: number
   updated_at: number
+}
+
+
+export type WorkspaceEntry = {
+  path: string
+  name: string
+  kind: 'file' | 'directory'
+  size_bytes?: number | null
+  updated_at?: number | null
+}
+
+export type WorkspaceTree = {
+  root: string
+  path: string
+  parent_path?: string | null
+  entries: WorkspaceEntry[]
+}
+
+export type WorkspaceFile = {
+  root: string
+  path: string
+  name: string
+  content: string
+  size_bytes: number
+  updated_at: number
+  language: string
+  truncated: boolean
+  binary: boolean
+}
+
+export type WorkspaceSearchResult = {
+  root: string
+  query: string
+  entries: WorkspaceEntry[]
 }

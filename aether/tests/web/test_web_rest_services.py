@@ -136,6 +136,27 @@ def test_tools_and_skills_routes(client: TestClient) -> None:
     assert missing.json()["error"]["code"] == "not_found"
 
 
+def test_logs_routes_list_and_filter_runtime_logs(client: TestClient, tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(exist_ok=True)
+    (log_dir / "gateway_crash.log").write_text(
+        "INFO gateway ready\nERROR gateway failed\nWARNING tools slow\n",
+        encoding="utf-8",
+    )
+
+    files = client.get("/api/logs/files")
+    assert files.status_code == 200
+    assert any(item["key"] == "gateway" for item in files.json()["files"])
+
+    logs = client.get("/api/logs?file=gateway&level=ERROR&lines=10")
+    assert logs.status_code == 200
+    assert logs.json()["exists"] is True
+    assert logs.json()["lines"] == ["ERROR gateway failed"]
+
+    invalid = client.get("/api/logs?file=../secret")
+    assert invalid.status_code == 400
+
+
 def test_run_status_and_cancel_routes(client: TestClient) -> None:
     missing = client.get("/api/runs/nope")
     assert missing.status_code == 404

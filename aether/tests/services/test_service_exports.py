@@ -22,6 +22,7 @@ SERVICE_PACKAGES = (
     "aether.services.skills",
     "aether.services.diagnostics",
     "aether.services.health",
+    "aether.services.logs",
     "aether.services.runs",
 )
 

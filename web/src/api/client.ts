@@ -2,6 +2,8 @@ import type {
   ConfigPaths,
   EffectiveConfig,
   HealthStatus,
+  LogFileSummary,
+  LogReadResult,
   ProviderModelList,
   ProviderRuntimeStatus,
   ProviderSelectionResult,
@@ -112,6 +114,17 @@ export const api = {
   tools: () => request<{ tools: ToolSummary[] }>('GET', '/api/tools'),
   skills: () => request<{ skills: SkillSummary[] }>('GET', '/api/skills'),
   diagnostics: () => request<HealthStatus>('GET', '/api/health'),
+  logFiles: () => request<{ files: LogFileSummary[] }>('GET', '/api/logs/files'),
+  logs: (params: { file?: string; lines?: number; level?: string; component?: string; search?: string }) => {
+    const query = new URLSearchParams()
+    if (params.file) query.set('file', params.file)
+    if (params.lines) query.set('lines', String(params.lines))
+    if (params.level && params.level !== 'ALL') query.set('level', params.level)
+    if (params.component && params.component !== 'all') query.set('component', params.component)
+    if (params.search) query.set('search', params.search)
+    const suffix = query.toString() ? '?' + query.toString() : ''
+    return request<LogReadResult>('GET', '/api/logs' + suffix)
+  },
   config: () => request<EffectiveConfig>('GET', '/api/config'),
   configPaths: () => request<ConfigPaths>('GET', '/api/config/paths'),
   prefs: () => request<Record<string, unknown>>('GET', '/api/prefs'),

@@ -63,4 +63,4 @@ python -m pytest aether/tests/gateway
 4. Send a message and confirm assistant deltas stream into one response.
 5. Trigger a permission or plan approval and confirm the modal can approve/reject.
 6. Reload the page and confirm transcript messages plus historical tool/diff blocks still render.
-7. Visit Models, Tools, Skills, Diagnostics, and Settings.
+7. Visit Models, Tools, Skills, Diagnostics, Logs, and Settings.

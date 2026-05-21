@@ -794,3 +794,76 @@ button {
   color: #eef4ff;
   padding: 12px;
 }
+
+
+.log-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px;
+}
+
+.log-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-controls select,
+.log-controls input {
+  min-height: 34px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 9px;
+  font: inherit;
+}
+
+.log-search-field {
+  grid-column: span 2;
+}
+
+.log-viewer {
+  min-height: 380px;
+  max-height: min(620px, calc(100vh - 260px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: #101828;
+  color: #eef4ff;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1px 3px;
+}
+
+.log-line-error {
+  color: #ffb4ab;
+}
+
+.log-line-warning {
+  color: #ffd98a;
+}
+
+.log-line-debug {
+  color: #9fb1cc;
+}
+
+.log-line-info {
+  color: #eef4ff;
+}
+
+@media (max-width: 760px) {
+  .log-search-field {
+    grid-column: span 1;
+  }
+}

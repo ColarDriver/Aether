@@ -1,4 +1,4 @@
-export type ConsoleView = 'chat' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'settings'
+export type ConsoleView = 'chat' | 'models' | 'tools' | 'skills' | 'diagnostics' | 'logs' | 'settings'
 
 export type SessionInfo = {
   session_id: string
@@ -150,4 +150,21 @@ export type RunSocketFrame = {
   id?: string | number | null
   transport_sequence?: number
   payload?: Record<string, unknown>
+}
+
+
+export type LogFileSummary = {
+  key: string
+  name: string
+  path: string
+  exists: boolean
+  size_bytes: number
+}
+
+export type LogReadResult = {
+  file: string
+  path: string
+  exists: boolean
+  lines: string[]
+  available_files: LogFileSummary[]
 }

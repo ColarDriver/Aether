@@ -114,18 +114,18 @@ Required before Sprint 20 completion:
 Implemented on branch `web-console-migration`:
 
 - PR20.1 backend foundation: FastAPI app factory, local auth/Host/CORS middleware, `aether-web` entrypoint, static SPA bootstrap hooks.
-- PR20.2 REST services: sessions, config/prefs, providers/models, tools, skills, diagnostics, health, and run status/cancel routes over `aether/services/*`.
+- PR20.2 REST services: sessions, config/prefs, providers/models, tools, skills, diagnostics, health, logs, and run status/cancel routes over `aether/services/*`.
 - PR20.3 run WebSocket: structured `/api/runs/ws` protocol, event mapping, cancellation, web prompt broker, approval and permission responders.
 - PR20.4 frontend shell: standalone Vite/React TypeScript app, API client, run socket, stores, sidebar, status bar, and console shell.
 - PR20.5 chat surface: transcript loading, persisted tool/diff reconstruction, composer, optimistic user messages, assistant deltas, tool blocks, token usage, permission modal, approval modal, markdown plan/table/code rendering, and diff viewer.
-- PR20.6 console views: provider/model selection, tools, skills, diagnostics, and read-only settings views.
+- PR20.6 console views: provider/model selection, tools, skills, diagnostics, logs, and read-only settings views.
 
 Latest verification performed during implementation:
 
 - `python -m pytest aether/tests/web`
 - `python -m pytest aether/tests/services`
 - `python -m pytest aether/tests/gateway`
-- `cd web && npm test` (11 files / 17 tests, including layout, provider/diagnostics views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (12 files / 18 tests, including layout, provider/diagnostics/logs views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:

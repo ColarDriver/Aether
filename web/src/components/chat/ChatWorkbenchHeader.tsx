@@ -41,7 +41,10 @@ export function ChatWorkbenchHeader({
       <div className="chat-workbench-meta" aria-label="Chat session status">
         {providerLabel && modelLabel ? (
           <span className="workbench-chip workbench-chip-model" title={providerLabel + ' / ' + modelLabel}>
-            {modelLabel}
+            <span>
+              <strong>{modelLabel}</strong>
+              <small>{providerLabel}</small>
+            </span>
           </span>
         ) : (
           <span className="workbench-chip">Provider not loaded</span>
@@ -49,12 +52,18 @@ export function ChatWorkbenchHeader({
         {session ? (
           <span className={modeLabel === 'plan' ? 'workbench-chip workbench-chip-plan' : 'workbench-chip'} title="Session mode">
             <Route size={13} />
-            {modeLabel}
+            <span>
+              <strong>{modeLabel}</strong>
+              <small>mode</small>
+            </span>
           </span>
         ) : null}
         <span className={online ? 'workbench-chip workbench-chip-online' : 'workbench-chip workbench-chip-offline'}>
           <Circle size={9} fill="currentColor" />
-          {online ? 'online' : 'offline'}
+          <span>
+            <strong>{online ? 'online' : 'offline'}</strong>
+            <small>runtime</small>
+          </span>
         </span>
       </div>
       <div className="chat-workbench-actions">

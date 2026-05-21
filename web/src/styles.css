@@ -606,7 +606,7 @@ button {
 }
 
 .workbench-chip {
-  min-height: 28px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -621,6 +621,32 @@ button {
   white-space: nowrap;
 }
 
+.workbench-chip span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.workbench-chip strong,
+.workbench-chip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+.workbench-chip strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workbench-chip small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .workbench-chip-model,
 .workbench-chip-plan {
   border-color: var(--accent-soft-strong);
@@ -632,7 +658,15 @@ button {
   color: var(--ok);
 }
 
+.workbench-chip-online strong {
+  color: var(--ok);
+}
+
 .workbench-chip-offline {
+  color: var(--danger);
+}
+
+.workbench-chip-offline strong {
   color: var(--danger);
 }
 

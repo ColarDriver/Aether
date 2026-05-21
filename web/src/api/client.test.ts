@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, request, setBaseUrl, setSessionToken } from './client'
+import { api, ApiError, request, setBaseUrl, setSessionToken } from './client'
 
 describe('api client', () => {
   beforeEach(() => {
@@ -22,6 +22,18 @@ describe('api client', () => {
     expect(result.ok).toBe(true)
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect((init.headers as Record<string, string>)['X-Aether-Session-Token']).toBe('token-1')
+  })
+
+  it('encodes documentation path segments without flattening slashes', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ path: 'sprint 20/00_overview.md' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.doc('sprint 20/00_overview.md')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://aether.test/api/docs/sprint%2020/00_overview.md',
+      expect.objectContaining({ method: 'GET' }),
+    )
   })
 
   it('maps structured errors to ApiError', async () => {

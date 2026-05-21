@@ -46,7 +46,7 @@ Add scripts:
 Frontend tests should cover:
 
 - API client headers/errors/timeouts
-- run WebSocket URL, queueing, reconnect, ping
+- run WebSocket URL, queued send, reconnect, and ping behavior
 - app shell layout
 - session store
 - chat store event reducer

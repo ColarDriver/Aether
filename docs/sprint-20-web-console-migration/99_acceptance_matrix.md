@@ -131,7 +131,7 @@ Latest verification performed during implementation:
 - `python -m pytest aether/tests/services` (51 passed after docs slice)
 - `python -m pytest aether/tests/gateway` (241 passed)
 - `uv run pyright aether/web aether/services aether/gateway/handlers` (0 errors)
-- `cd web && npm test` (21 files / 31 tests, including layout, docs, analytics, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
+- `cd web && npm test` (21 files / 35 tests, including API client path encoding, run socket queue/reconnect/ping, layout, docs, analytics, appearance/sessions/settings/provider/diagnostics/logs/environment views, markdown table/code, approval dialog, and persisted tool reconstruction coverage)
 - `cd web && npm run build`
 
 Remaining hardening before declaring the whole web migration complete:

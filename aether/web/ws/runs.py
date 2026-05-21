@@ -281,11 +281,11 @@ async def _resolve_prompt(
     if not prompt_id:
         await outbound.send_async(_error_frame("invalid_prompt_response", "prompt response requires prompt_id."))
         return
-    resolved = broker.resolve(prompt_id, payload)
+    resolved = broker.resolve(prompt_id, _prompt_resolution_payload(payload))
     await outbound.send_async(
         {
             "type": "prompt.resolved" if resolved else "prompt.missing",
-            "payload": {"prompt_id": prompt_id},
+            "payload": {"prompt_id": prompt_id, "result": payload.get("result")},
         }
     )
 
@@ -300,6 +300,15 @@ def _run_options(raw: Any) -> AgentRunOptions:
         disable_builtin_tools=_optional_bool(raw, "disable_builtin_tools"),
         system_override=_optional_str(raw, "system_override"),
     )
+
+
+def _prompt_resolution_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = payload.get("result")
+    if isinstance(result, dict):
+        merged = dict(payload)
+        merged.update(result)
+        return merged
+    return payload
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

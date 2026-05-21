@@ -4,10 +4,9 @@ import type { SessionInfo } from '../../api/types'
 import { useChatStore } from '../../stores/chatStore'
 import { EmptyState } from '../shared/EmptyState'
 import { ApprovalDialog } from './ApprovalDialog'
+import { ChatTimeline } from './ChatTimeline'
 import { Composer } from './Composer'
-import { MessageList } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
-import { ToolCallBlock } from './ToolCallBlock'
 
 type Props = {
   session: SessionInfo | null
@@ -15,8 +14,7 @@ type Props = {
 
 export function ChatView({ session }: Props) {
   const loadTranscript = useChatStore((state) => state.loadTranscript)
-  const messages = useChatStore((state) => (session ? state.messagesBySession[session.session_id] ?? [] : []))
-  const tools = useChatStore((state) => (session ? state.toolsBySession[session.session_id] ?? [] : []))
+  const blocks = useChatStore((state) => (session ? state.blocksBySession[session.session_id] ?? [] : []))
   const tokenUsageByRun = useChatStore((state) => state.tokenUsageByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
@@ -56,12 +54,11 @@ export function ChatView({ session }: Props) {
         ) : null}
       </div>
       <div className="chat-scroll">
-        <MessageList messages={messages} />
-        {tools.length > 0 ? (
-          <div className="tool-stack">
-            {tools.map((tool) => <ToolCallBlock key={tool.id} tool={tool} />)}
-          </div>
-        ) : null}
+        <ChatTimeline
+          blocks={blocks}
+          onRespondPermission={respondPermission}
+          onRespondApproval={respondApproval}
+        />
       </div>
       <Composer
         disabled={!session}

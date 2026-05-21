@@ -529,6 +529,260 @@ button {
   padding: 5px 8px;
 }
 
+.chat-timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.chat-block {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 11px;
+}
+
+.chat-block-user {
+  background: var(--accent-soft);
+}
+
+.chat-block-assistant {
+  background: var(--panel-2);
+}
+
+.chat-block-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.chat-user-text,
+.thinking-content,
+.tool-call-body pre,
+.tool-result-block pre,
+.prompt-inline-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+.chat-state-pill {
+  display: inline-flex;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-message-shell,
+.chat-message-document {
+  color: var(--text);
+}
+
+.chat-message-document {
+  width: 100%;
+}
+
+.chat-block-thinking {
+  padding: 6px 8px;
+  background: transparent;
+}
+
+.thinking-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.thinking-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.thinking-content {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.chat-block-system {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+.chat-block-status {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.status-spark {
+  color: var(--accent);
+  animation: blink 1.2s steps(1) infinite;
+}
+
+.tool-call-group {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-call-block {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.tool-call-failed {
+  border-color: #f3b5af;
+}
+
+.tool-call-header {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-call-header span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tool-call-header em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.tool-call-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.tool-call-body > pre,
+.tool-result-block {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 9px;
+  overflow: auto;
+}
+
+.tool-result-header {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.tool-result-block-error {
+  border-color: #f3b5af;
+}
+
+.chat-block-diff {
+  padding: 0;
+  overflow: hidden;
+}
+
+.diff-path {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 7px 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.prompt-inline-block {
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-inline-block header,
+.prompt-inline-block footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-inline-block header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-inline-block footer {
+  justify-content: flex-end;
+}
+
+.prompt-inline-block button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.question-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.question-preview p {
+  margin: 0;
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-options span {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 3px 7px;
+  font-size: 12px;
+}
+
 .composer {
   border-top: 1px solid var(--line);
   padding: 10px;

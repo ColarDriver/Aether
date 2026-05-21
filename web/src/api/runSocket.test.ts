@@ -115,4 +115,23 @@ describe('run socket client', () => {
 
     client.disconnect()
   })
+
+  it('nests approval responses under the result field', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RunSocketClient()
+
+    client.connect()
+    fakeSockets[0].open()
+    client.respondApproval('approval-1', { confirmed: true, answers: { q: 'yes' } })
+
+    expect(JSON.parse(fakeSockets[0].sent.at(-1) ?? '{}')).toEqual({
+      type: 'approval.respond',
+      payload: {
+        prompt_id: 'approval-1',
+        result: { confirmed: true, answers: { q: 'yes' } },
+      },
+    })
+
+    client.disconnect()
+  })
 })

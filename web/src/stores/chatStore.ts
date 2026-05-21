@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { api } from '../api/client'
 import { runSocket } from '../api/runSocket'
 import type { RunSocketFrame, TranscriptMessage } from '../api/types'
+import type { ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
+import { normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
 
 export type ChatMessage = {
   id: string
@@ -22,13 +24,6 @@ export type ToolBlock = {
   content?: string
   isError?: boolean
   metadata?: Record<string, unknown>
-}
-
-type TokenUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_read_tokens?: number
-  cache_write_tokens?: number
 }
 
 export type PermissionPrompt = {
@@ -68,9 +63,11 @@ type ChatState = {
   connected: boolean
   frames: RunSocketFrame[]
   activeRunId: string | null
+  blocksBySession: Record<string, ChatBlock[]>
   messagesBySession: Record<string, ChatMessage[]>
   toolsBySession: Record<string, ToolBlock[]>
   tokenUsageByRun: Record<string, TokenUsage>
+  statusByRun: Record<string, RunStatusSnapshot>
   pendingPermission: PermissionPrompt | null
   pendingApproval: ApprovalPrompt | null
   loadTranscript: (sessionId: string) => Promise<void>
@@ -87,15 +84,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
   connected: false,
   frames: [],
   activeRunId: null,
+  blocksBySession: {},
   messagesBySession: {},
   toolsBySession: {},
   tokenUsageByRun: {},
+  statusByRun: {},
   pendingPermission: null,
   pendingApproval: null,
   loadTranscript: async (sessionId) => {
     const { messages } = await api.sessionMessages(sessionId)
     const transcript = transcriptToChatState(sessionId, messages)
+    const blocks = normalizeTranscript(sessionId, messages)
     set((state) => ({
+      blocksBySession: {
+        ...state.blocksBySession,
+        [sessionId]: blocks,
+      },
       messagesBySession: {
         ...state.messagesBySession,
         [sessionId]: transcript.messages,
@@ -118,24 +122,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ? frame.payload.run_id
             : state.activeRunId,
       }))
+      applyRenderFrame(frame, set)
       applyRunFrame(frame, set)
     })
   },
   startRun: (sessionId, message) => {
     get().connect()
+    const runId = runSocket.startRun(sessionId, message)
+    const timestamp = Date.now()
     const userMessage: ChatMessage = {
-      id: 'user-' + Date.now(),
+      id: 'user-' + timestamp,
       role: 'user',
       text: message,
     }
+    const userBlock: ChatBlock = {
+      id: 'user-' + timestamp,
+      sessionId,
+      runId,
+      timestamp,
+      source: 'optimistic',
+      kind: 'user_message',
+      content: message,
+    }
     set((state) => ({
+      blocksBySession: {
+        ...state.blocksBySession,
+        [sessionId]: [...(state.blocksBySession[sessionId] ?? []), userBlock],
+      },
       messagesBySession: {
         ...state.messagesBySession,
         [sessionId]: [...(state.messagesBySession[sessionId] ?? []), userMessage],
       },
+      activeRunId: runId,
     }))
-    const runId = runSocket.startRun(sessionId, message)
-    set({ activeRunId: runId })
     return runId
   },
   cancelRun: (sessionId) => {
@@ -145,13 +164,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const prompt = get().pendingPermission
     if (!prompt) return
     runSocket.respondPermission(prompt.promptId, decision)
-    set({ pendingPermission: null })
+    set((state) => ({
+      pendingPermission: null,
+      blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, decision),
+    }))
   },
   respondApproval: (result) => {
     const prompt = get().pendingApproval
     if (!prompt) return
     runSocket.respondApproval(prompt.promptId, result)
-    set({ pendingApproval: null })
+    set((state) => ({
+      pendingApproval: null,
+      blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, result),
+    }))
   },
 }))
 
@@ -247,7 +272,7 @@ function applyRunFrame(
 
   if (frame.type === 'run.finished' || frame.type === 'run.cancelled' || frame.type === 'run.failed') {
     set((state) => ({
-      activeRunId: frame.type === 'run.failed' ? state.activeRunId : null,
+      activeRunId: null,
       messagesBySession: {
         ...state.messagesBySession,
         [sessionId]: finishAssistantMessage(state.messagesBySession[sessionId] ?? [], runId, frame.type),
@@ -354,6 +379,31 @@ function applyRunFrame(
   if (frame.type === 'prompt.resolved') {
     set({ pendingPermission: null, pendingApproval: null })
   }
+}
+
+function applyRenderFrame(
+  frame: RunSocketFrame,
+  set: (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void,
+) {
+  set((state) => {
+    const next = reduceRunFrame(
+      {
+        blocksBySession: state.blocksBySession,
+        activeRunId: state.activeRunId,
+        tokenUsageByRun: state.tokenUsageByRun,
+        statusByRun: state.statusByRun,
+        pendingPermissionBlock: null,
+        pendingApprovalBlock: null,
+      },
+      frame,
+    )
+    return {
+      blocksBySession: next.blocksBySession,
+      activeRunId: next.activeRunId,
+      tokenUsageByRun: next.tokenUsageByRun,
+      statusByRun: next.statusByRun,
+    }
+  })
 }
 
 function appendAssistantDelta(messages: ChatMessage[], runId: string, text: string): ChatMessage[] {

@@ -79,7 +79,7 @@ export class RunSocketClient {
   }
 
   respondApproval(promptId: string, result: Record<string, unknown>) {
-    this.send({ type: 'approval.respond', payload: { prompt_id: promptId, ...result } })
+    this.send({ type: 'approval.respond', payload: { prompt_id: promptId, result } })
   }
 
   private startPing() {

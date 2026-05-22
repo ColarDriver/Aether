@@ -41,6 +41,41 @@ describe('Composer', () => {
     expect(onSend).toHaveBeenCalledWith('hello')
   })
 
+  it('applies external draft patches for edit and quote flows', async () => {
+    const onSend = vi.fn()
+    const attachment = { type: 'file' as const, name: 'notes.md', path: 'notes.md' }
+    const { rerender } = render(
+      <Composer
+        disabled={false}
+        running={false}
+        onCancel={() => undefined}
+        onSend={onSend}
+        slashCommands={slashCommands}
+        draftPatch={{ id: 1, mode: 'replace', text: 'old prompt', attachments: [attachment] }}
+      />,
+    )
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    await waitFor(() => expect(textbox.value).toBe('old prompt'))
+    expect(screen.getAllByText('notes.md').length).toBeGreaterThanOrEqual(1)
+
+    rerender(
+      <Composer
+        disabled={false}
+        running={false}
+        onCancel={() => undefined}
+        onSend={onSend}
+        slashCommands={slashCommands}
+        draftPatch={{ id: 2, mode: 'append', text: '> Assistant:\n> answer' }}
+      />,
+    )
+
+    await waitFor(() => expect(textbox.value).toBe('old prompt\n\n> Assistant:\n> answer'))
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(onSend).toHaveBeenCalledWith('old prompt\n\n> Assistant:\n> answer', [attachment])
+  })
+
   it('routes complete slash commands separately from agent prompts', () => {
     const onSend = vi.fn()
     const onSlashCommand = vi.fn()

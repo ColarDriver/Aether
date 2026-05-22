@@ -53,6 +53,32 @@ describe('TaskDetailDialog', () => {
     expect(api.taskDetail).toHaveBeenCalledWith('task-1')
   })
 
+  it('renders related parent and child tasks with drill-down actions', async () => {
+    const onOpenTask = vi.fn()
+    const parent = { ...task, task_id: 'parent-task', prompt: 'Parent investigation', child_depth: 1, parent_task_id: null, started_at: 1 }
+    const current = { ...task, task_id: 'task-1', prompt: 'Current task', child_depth: 2, parent_task_id: 'parent-task', started_at: 2 }
+    const child = { ...task, task_id: 'child-task', prompt: 'Child verification', child_depth: 3, parent_task_id: 'task-1', started_at: 3, summary: 'verified' }
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(current)
+
+    render(
+      <TaskDetailDialog
+        taskId="task-1"
+        initialTask={current}
+        sessionTasks={[parent, current, child]}
+        onOpenTask={onOpenTask}
+        onClose={() => undefined}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Related tasks' })).toBeTruthy())
+    expect(screen.getByText('Parent investigation')).toBeTruthy()
+    expect(screen.getAllByText('Current task').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Child verification')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open related task child-task' }))
+    expect(onOpenTask).toHaveBeenCalledWith('child-task')
+  })
+
   it('shows a readable load error', async () => {
     vi.spyOn(api, 'taskDetail').mockRejectedValue(new Error('Task not found'))
 

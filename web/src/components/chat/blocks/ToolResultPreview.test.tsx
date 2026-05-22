@@ -68,6 +68,46 @@ describe('ToolResultPreview', () => {
   })
 
 
+  it('renders nested provider web-search payloads and web-fetch metadata', () => {
+    const { rerender } = render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({ web: { results: [{ title: 'Brave result', url: 'https://example.com/brave', description: 'Brave snippet' }] } }),
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Web results' })).toBeTruthy()
+    expect(screen.getByText('Brave result')).toBeTruthy()
+    expect(screen.getByText('Brave snippet')).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({ data: { webPages: { value: [{ name: 'Bocha result', url: 'https://example.com/bocha', snippet: 'Bocha snippet' }] } } }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Bocha result')).toBeTruthy()
+    expect(screen.getByText('Bocha snippet')).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_fetch',
+          content: 'Long document body',
+          metadata: { title: 'Fetched document', url: 'https://example.com/doc' },
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Fetched document')).toBeTruthy()
+    expect(screen.getByText('Long document body')).toBeTruthy()
+  })
+
   it('renders image artifacts from structured tool output', () => {
     render(
       <ToolResultBlock
@@ -166,6 +206,38 @@ describe('ToolResultPreview', () => {
     expect(within(preview).getByText('8')).toBeTruthy()
   })
 
+  it('renders notebook cell source and diff previews from tool arguments', () => {
+    const { rerender } = render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: 'inserted new markdown cell at index 2 (id=abc123)',
+          metadata: { path: 'analysis.ipynb', edit_mode: 'insert', cell_count: 8 },
+        })}
+        toolArguments={{ cell_idx: 1, cell_type: 'markdown', new_source: '# Analysis\n\nNotes' }}
+      />,
+    )
+
+    expect(screen.getByLabelText('Notebook cell source')).toBeTruthy()
+    expect(screen.getByText('Cell source')).toBeTruthy()
+    expect(screen.getByText(/# Analysis/)).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: 'replaced cell at index 1 (id=abc123, type=code)',
+          metadata: { path: 'analysis.ipynb', edit_mode: 'replace', cell_count: 8 },
+        })}
+        toolArguments={{ cell_idx: 1, cell_type: 'code', old_source: 'print("old")', new_source: 'print("new")' }}
+      />,
+    )
+
+    expect(screen.getByLabelText('Notebook cell diff')).toBeTruthy()
+    expect(document.querySelector('.diff-line-remove')?.textContent).toContain('print("old")')
+    expect(document.querySelector('.diff-line-add')?.textContent).toContain('print("new")')
+  })
+
   it('renders LSP results as semantic navigation rows', () => {
     render(
       <ToolResultBlock
@@ -221,6 +293,7 @@ describe('ToolResultPreview', () => {
     expect(within(preview).getByText('report.json')).toBeTruthy()
     expect(within(preview).getByText((text) => text.includes('application/json'))).toBeTruthy()
     expect(within(preview).getByText('Structured result')).toBeTruthy()
+    expect(within(preview).getByRole('button', { name: 'Copy report.json path' })).toBeTruthy()
     expect(screen.queryByText('Tool output')).toBeNull()
   })
 
@@ -239,6 +312,7 @@ describe('ToolResultPreview', () => {
     expect(preview).toBeTruthy()
     expect(within(preview).getByText('call.txt')).toBeTruthy()
     expect(within(preview).getByText('Full output: 100000 chars / 1200 lines')).toBeTruthy()
+    expect(within(preview).getByRole('button', { name: 'Copy call.txt path' })).toBeTruthy()
   })
 
   it('falls back to generic tool output for unknown tools', () => {

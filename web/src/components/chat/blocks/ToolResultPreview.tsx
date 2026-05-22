@@ -1,6 +1,8 @@
 import { BookOpen, ChevronLeft, ChevronRight, ExternalLink, FileArchive, FileCode2, FileText, Globe, ImageIcon, Monitor, Pencil, Search, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ToolResultBlock as ToolResult } from '../../../chat-rendering'
+import { DiffViewer } from '../DiffViewer'
+import { CopyButton } from '../../shared/CopyButton'
 import { CodeBlock } from './CodeBlock'
 import { InlineTaskSummary } from './InlineTaskSummary'
 
@@ -49,7 +51,7 @@ export function canPreviewToolResult(block: ToolResult): boolean {
   if (parseToolArtifacts(block).length > 0) return true
   if (isReadTool(toolName) || isTaskTool(toolName) || isEditTool(toolName) || isNotebookTool(toolName) || isLspTool(toolName) || isBrowserTool(toolName)) return true
   if (isSearchTool(toolName)) return parseSearchMatches(block.content).length > 0
-  if (isWebTool(toolName)) return parseWebResults(block.content).length > 0
+  if (isWebTool(toolName)) return parseWebResults(block).length > 0
   return false
 }
 
@@ -65,7 +67,7 @@ export function ToolResultPreview({ block, toolArguments = {} }: Props) {
   if (isNotebookTool(toolName)) return <NotebookPreview block={block} toolArguments={toolArguments} />
   if (isLspTool(toolName)) return <LspPreview block={block} toolArguments={toolArguments} />
   if (isSearchTool(toolName)) return <SearchPreview content={block.content} />
-  if (isWebTool(toolName)) return <WebPreview content={block.content} toolName={block.toolName || 'web'} />
+  if (isWebTool(toolName)) return <WebPreview block={block} toolName={block.toolName || 'web'} />
   if (isTaskTool(toolName)) return <TaskPreview block={block} toolArguments={toolArguments} />
 
   const toolArtifacts = parseToolArtifacts(block)
@@ -119,7 +121,7 @@ function NotebookPreview({ block, toolArguments }: PreviewProps) {
   const mode = firstString(block.metadata.edit_mode, toolArguments.edit_mode) || 'edit'
   const cellRef = firstString(toolArguments.cell_id, block.metadata.cell_id, block.metadata.cellId)
     || numberLabel('cell', numberValue(toolArguments.cell_idx) ?? numberValue(toolArguments.cellIdx))
-  const cellType = firstString(toolArguments.cell_type, block.metadata.cell_type, block.metadata.cellType)
+  const cellType = firstString(toolArguments.cell_type, block.metadata.cell_type, block.metadata.cellType) || 'code'
   const cellCount = numberValue(block.metadata.cell_count) ?? numberValue(block.metadata.cellCount)
   const stats = [
     { label: 'mode', value: mode },
@@ -134,9 +136,48 @@ function NotebookPreview({ block, toolArguments }: PreviewProps) {
         <em>{block.isError ? 'failed' : mode}</em>
       </header>
       <PreviewStats stats={stats} />
+      <NotebookCellPreview block={block} toolArguments={toolArguments} cellType={cellType} mode={mode} />
       {block.content ? <pre className="tool-preview-summary"><code>{block.content}</code></pre> : null}
     </section>
   )
+}
+
+function NotebookCellPreview({ block, toolArguments, cellType, mode }: PreviewProps & { cellType: string; mode: string }) {
+  const parsedContent = parseJson(block.content)
+  const contentRecord = isRecord(parsedContent) ? parsedContent : {}
+  const diff = firstString(block.metadata.diff, toolArguments.diff, contentRecord.diff)
+  const oldSource = firstString(block.metadata.old_source, block.metadata.oldSource, toolArguments.old_source, toolArguments.oldSource, contentRecord.old_source, contentRecord.oldSource)
+  const newSource = firstString(block.metadata.new_source, block.metadata.newSource, toolArguments.new_source, toolArguments.newSource, contentRecord.new_source, contentRecord.newSource)
+  if (!diff && !oldSource && !newSource) return null
+
+  if (diff || (oldSource && newSource)) {
+    return (
+      <div className="notebook-cell-preview" aria-label="Notebook cell diff">
+        <header>
+          <strong>Cell diff</strong>
+          <span>{cellType}</span>
+        </header>
+        <DiffViewer diff={diff || diffFromOldNew(oldSource || '', newSource || '')} />
+      </div>
+    )
+  }
+
+  const title = mode === 'delete' ? 'Removed cell source' : 'Cell source'
+  return (
+    <div className="notebook-cell-preview" aria-label="Notebook cell source">
+      <CodeBlock code={newSource || oldSource || ''} language={notebookLanguage(cellType)} title={title} wrap />
+    </div>
+  )
+}
+
+function notebookLanguage(cellType: string): string {
+  return cellType === 'markdown' ? 'markdown' : 'python'
+}
+
+function diffFromOldNew(oldText: string, newText: string): string {
+  const oldLines = oldText ? oldText.split('\n').map((line) => '-' + line) : []
+  const newLines = newText ? newText.split('\n').map((line) => '+' + line) : []
+  return [...oldLines, ...newLines].join('\n')
 }
 
 function LspPreview({ block, toolArguments }: PreviewProps) {
@@ -232,8 +273,8 @@ function SearchPreview({ content }: { content: string }) {
   )
 }
 
-function WebPreview({ content, toolName }: { content: string; toolName: string }) {
-  const results = parseWebResults(content)
+function WebPreview({ block, toolName }: { block: ToolResult; toolName: string }) {
+  const results = parseWebResults(block)
   if (results.length === 0) return null
   return (
     <section className="tool-preview tool-preview-web" aria-label="Web results">
@@ -314,7 +355,18 @@ function ArtifactPreview({ artifacts }: { artifacts: ToolArtifact[] }) {
               <small>{artifactMeta(artifact)}</small>
               {artifact.note ? <em>{artifact.note}</em> : null}
             </span>
-            {artifact.href ? <a href={artifact.href} target="_blank" rel="noreferrer">Open</a> : null}
+            <span className="tool-preview-artifact-actions">
+              {artifactCopyText(artifact) ? (
+                <CopyButton
+                  text={artifactCopyText(artifact) || ''}
+                  label={'Copy ' + artifact.name + ' path'}
+                  displayLabel="Copy"
+                  displayCopiedLabel="Copied"
+                  className="tool-preview-artifact-copy"
+                />
+              ) : null}
+              {artifact.href ? <a href={artifact.href} target="_blank" rel="noreferrer">Open</a> : null}
+            </span>
           </article>
         ))}
       </div>
@@ -418,25 +470,71 @@ function parseSearchMatches(content: string): SearchMatch[] {
     .filter((match) => match.text.trim().length > 0)
 }
 
-function parseWebResults(content: string): WebResult[] {
-  const parsed = parseJson(content)
-  const candidates = Array.isArray(parsed)
-    ? parsed
-    : isRecord(parsed)
-      ? arrayValue(parsed.results) || arrayValue(parsed.items) || arrayValue(parsed.search_results) || arrayValue(parsed.data) || []
-      : []
+function parseWebResults(block: ToolResult): WebResult[] {
   const results: WebResult[] = []
-  for (const item of candidates) {
-    if (!isRecord(item)) continue
-    const title = stringValue(item.title) || stringValue(item.name) || stringValue(item.url)
-    if (!title) continue
-    results.push({
-      title,
-      url: stringValue(item.url) || stringValue(item.link),
-      snippet: stringValue(item.snippet) || stringValue(item.description) || stringValue(item.content),
-    })
+  const seen = new Set<string>()
+  const add = (result: WebResult | null) => {
+    if (!result) return
+    const key = (result.url || result.title).toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    results.push(result)
+  }
+
+  collectWebResults(parseJson(block.content), add)
+  collectWebResults(block.metadata, add, block.content)
+  for (const result of webResultsFromMarkdown(block.content)) add(result)
+  return results
+}
+
+function collectWebResults(value: unknown, add: (result: WebResult | null) => void, fallbackSnippet = '', depth = 0): void {
+  if (value == null || depth > 5) return
+  if (Array.isArray(value)) {
+    for (const item of value) collectWebResults(item, add, fallbackSnippet, depth + 1)
+    return
+  }
+  if (!isRecord(value)) return
+
+  add(webResultFromRecord(value, fallbackSnippet))
+  for (const nested of Object.values(value)) collectWebResults(nested, add, fallbackSnippet, depth + 1)
+}
+
+function webResultFromRecord(record: Record<string, unknown>, fallbackSnippet = ''): WebResult | null {
+  const url = firstString(record.url, record.link, record.href, record.uri)
+  const title = firstString(record.title, record.name, record.heading, record.url, record.link, record.href)
+  if (!title && !url) return null
+  const snippet = firstString(
+    record.snippet,
+    record.description,
+    record.summary,
+    record.content,
+    record.text,
+    record.raw_content,
+    record.rawContent,
+    record.page_content,
+    record.pageContent,
+    fallbackSnippet,
+  )
+  return {
+    title: title || url || 'Web result',
+    url,
+    snippet: snippet ? compactSnippet(snippet) : null,
+  }
+}
+
+function webResultsFromMarkdown(content: string): WebResult[] {
+  const results: WebResult[] = []
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)(?:\s*[-–—:]\s*([^\n]+))?/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(content)) !== null) {
+    results.push({ title: match[1], url: match[2], snippet: match[3] ? compactSnippet(match[3]) : null })
   }
   return results
+}
+
+function compactSnippet(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.length > 320 ? compact.slice(0, 317).trimEnd() + '...' : compact
 }
 
 function parseToolArtifacts(block: ToolResult): ToolArtifact[] {
@@ -505,6 +603,10 @@ function spillArtifactFromText(content: string): ToolArtifact | null {
     size: null,
     note: match[1] ? 'Full output: ' + match[1].trim() : 'Full output saved to disk',
   }
+}
+
+function artifactCopyText(artifact: ToolArtifact): string | null {
+  return artifact.path || artifact.href || null
 }
 
 function artifactMeta(artifact: ToolArtifact): string {

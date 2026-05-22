@@ -12,7 +12,7 @@ export function SessionTaskBar({ tasks, onOpenTask }: Props) {
   const activeCount = tasks.filter((task) => !isTaskTerminal(task)).length
   const completedCount = tasks.filter((task) => task.status === 'completed').length
   const hasActiveTasks = activeCount > 0
-  const sortedTasks = useMemo(() => [...tasks].sort((a, b) => b.started_at - a.started_at), [tasks])
+  const sortedTasks = useMemo(() => sortTasksForSessionBar(tasks), [tasks])
 
   useEffect(() => {
     if (hasActiveTasks) setExpanded(true)
@@ -56,12 +56,43 @@ export function isTaskTerminal(task: Pick<TaskSummary, 'status'>): boolean {
   return task.status === 'completed' || task.status === 'failed' || task.status === 'interrupted' || task.status === 'killed'
 }
 
+export function sortTasksForSessionBar(tasks: TaskSummary[]): TaskSummary[] {
+  const childrenByParent = new Map<string, TaskSummary[]>()
+  const roots: TaskSummary[] = []
+  const ids = new Set(tasks.map((task) => task.task_id))
+  for (const task of tasks) {
+    if (task.parent_task_id && ids.has(task.parent_task_id)) {
+      const children = childrenByParent.get(task.parent_task_id) ?? []
+      children.push(task)
+      childrenByParent.set(task.parent_task_id, children)
+    } else {
+      roots.push(task)
+    }
+  }
+
+  const byStartedDesc = (a: TaskSummary, b: TaskSummary) => b.started_at - a.started_at
+  roots.sort(byStartedDesc)
+  for (const children of childrenByParent.values()) children.sort(byStartedDesc)
+
+  const sorted: TaskSummary[] = []
+  const visit = (task: TaskSummary) => {
+    sorted.push(task)
+    for (const child of childrenByParent.get(task.task_id) ?? []) visit(child)
+  }
+  for (const root of roots) visit(root)
+  return sorted
+}
+
+function taskIndent(task: TaskSummary): number {
+  return Math.max(0, Math.min(3, task.child_depth - 1)) * 16
+}
+
 function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task: TaskSummary) => void }) {
   const Icon = iconForTask(task)
   const tone = toneForTask(task)
   const detail = task.error || task.summary || activityDetail(task)
   return (
-    <li className={'session-task-item session-task-' + tone}>
+    <li className={'session-task-item session-task-' + tone} style={{ marginLeft: taskIndent(task) }}>
       <button
         type="button"
         className="session-task-row"

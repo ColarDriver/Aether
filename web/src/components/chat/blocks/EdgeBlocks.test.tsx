@@ -45,6 +45,46 @@ describe('edge timeline blocks', () => {
     expect(screen.getByText('Which mode should the agent use?')).toBeTruthy()
     expect(screen.getByText('More verification')).toBeTruthy()
     expect(screen.getAllByText('Careful')).toHaveLength(2)
+    expect(screen.getByText('Selected answer')).toBeTruthy()
+    expect(screen.getByText('selected')).toBeTruthy()
+  })
+
+  it('renders multi-select, free-text, and unmatched ask_user_question answers', () => {
+    render(
+      <AskUserQuestionBlock
+        block={{
+          ...base,
+          kind: 'ask_user_question',
+          state: 'answered',
+          questions: [
+            {
+              id: 'checks',
+              question: 'Which checks should run?',
+              multiSelect: true,
+              options: [
+                { id: 'lint', label: 'Lint' },
+                { id: 'tests', label: 'Tests' },
+                { id: 'build', label: 'Build' },
+              ],
+            },
+            {
+              id: 'notes',
+              question: 'Any extra notes?',
+              freeText: true,
+            },
+          ],
+          answers: { checks: 'Lint, Tests', notes: 'Run the slow suite too.', legacy: 'kept' },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('multi-select')).toBeTruthy()
+    expect(screen.getByText('free text')).toBeTruthy()
+    expect(screen.getAllByText('selected')).toHaveLength(2)
+    expect(screen.getByText('Run the slow suite too.')).toBeTruthy()
+    expect(screen.getByText('Additional answers')).toBeTruthy()
+    expect(screen.getByText('legacy')).toBeTruthy()
+    expect(screen.getByText('kept')).toBeTruthy()
   })
 
   it('renders diagnostics bundles without exposing raw XML', () => {

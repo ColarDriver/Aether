@@ -4,16 +4,30 @@ import { MessageActionBar } from '../MessageActionBar'
 
 type Props = {
   block: UserMessage
+  actionsDisabled?: boolean
+  onEdit?: (block: UserMessage) => void
+  onQuote?: (block: UserMessage) => void
+  onRetry?: (block: UserMessage) => void
 }
 
-export function UserMessageBlock({ block }: Props) {
+export function UserMessageBlock({ block, actionsDisabled = false, onEdit, onQuote, onRetry }: Props) {
+  const hasText = Boolean(block.content.trim())
   return (
     <article className="chat-block chat-block-user chat-message-group">
       <div className="chat-block-label">user</div>
       <AttachmentGallery attachments={block.attachments} align="end" />
-      {block.content.trim() ? <pre className="chat-user-text">{block.content.trim()}</pre> : null}
+      {hasText ? <pre className="chat-user-text">{block.content.trim()}</pre> : null}
       {block.pending ? <span className="chat-state-pill">pending</span> : null}
-      <MessageActionBar copyText={block.content} copyLabel="Copy prompt" align="end" />
+      <MessageActionBar
+        copyText={block.content}
+        copyLabel="Copy prompt"
+        align="end"
+        actions={[
+          ...(hasText && onQuote ? [{ kind: 'quote' as const, label: 'Quote prompt', onClick: () => onQuote(block), disabled: actionsDisabled }] : []),
+          ...(hasText && onEdit ? [{ kind: 'edit' as const, label: 'Edit prompt', onClick: () => onEdit(block), disabled: actionsDisabled }] : []),
+          ...((hasText || (block.attachments?.length ?? 0) > 0) && onRetry ? [{ kind: 'retry' as const, label: 'Retry prompt', onClick: () => onRetry(block), disabled: actionsDisabled }] : []),
+        ]}
+      />
     </article>
   )
 }

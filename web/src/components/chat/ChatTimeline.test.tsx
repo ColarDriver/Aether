@@ -37,6 +37,35 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('contents')).toBeTruthy()
   })
 
+  it('exposes local message lifecycle actions for user and assistant messages', () => {
+    const onRetry = vi.fn()
+    const onEdit = vi.fn()
+    const onQuoteUser = vi.fn()
+    const onQuoteAssistant = vi.fn()
+    const userBlock: ChatBlock = { ...base, id: 'u-actions', kind: 'user_message', content: 'change auth' }
+    const assistantBlock: ChatBlock = { ...base, id: 'a-actions', kind: 'assistant_message', content: 'Auth summary' }
+
+    render(
+      <ChatTimeline
+        blocks={[userBlock, assistantBlock]}
+        onRetryUserMessage={onRetry}
+        onEditUserMessage={onEdit}
+        onQuoteUserMessage={onQuoteUser}
+        onQuoteAssistantMessage={onQuoteAssistant}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Quote prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Quote reply' }))
+
+    expect(onRetry).toHaveBeenCalledWith(userBlock)
+    expect(onEdit).toHaveBeenCalledWith(userBlock)
+    expect(onQuoteUser).toHaveBeenCalledWith(userBlock)
+    expect(onQuoteAssistant).toHaveBeenCalledWith(assistantBlock)
+  })
+
   it('renders prompt blocks with actions', () => {
     const onPermission = vi.fn()
     const onApproval = vi.fn()

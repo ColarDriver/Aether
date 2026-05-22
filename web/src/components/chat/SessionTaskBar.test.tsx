@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TaskSummary } from '../../api/types'
-import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
+import { isTaskTerminal, SessionTaskBar, sortTasksForSessionBar } from './SessionTaskBar'
 
 afterEach(cleanup)
 
@@ -57,6 +57,14 @@ describe('SessionTaskBar', () => {
     expect(screen.queryByText('Inspect renderer')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Subagent tasks/ }))
     expect(screen.getByText('Inspect renderer')).toBeTruthy()
+  })
+
+  it('keeps child tasks grouped under their parent task', () => {
+    const parent = { ...baseTask, task_id: 'parent', prompt: 'Parent task', started_at: 10, child_depth: 1, parent_task_id: null }
+    const newerSibling = { ...baseTask, task_id: 'sibling', prompt: 'Sibling task', started_at: 12, child_depth: 1, parent_task_id: null }
+    const child = { ...baseTask, task_id: 'child', prompt: 'Child task', started_at: 20, child_depth: 2, parent_task_id: 'parent' }
+
+    expect(sortTasksForSessionBar([child, parent, newerSibling]).map((task) => task.task_id)).toEqual(['sibling', 'parent', 'child'])
   })
 
   it('classifies terminal statuses', () => {

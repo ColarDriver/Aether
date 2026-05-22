@@ -5,11 +5,14 @@ import { MessageActionBar } from '../MessageActionBar'
 
 type Props = {
   block: AssistantMessage
+  actionsDisabled?: boolean
+  onQuote?: (block: AssistantMessage) => void
 }
 
-export function AssistantMessageBlock({ block }: Props) {
+export function AssistantMessageBlock({ block, actionsDisabled = false, onQuote }: Props) {
   if (!block.content.trim()) return null
   const documentLayout = shouldUseDocumentLayout(block.content)
+  const showActions = !block.isStreaming
   return (
     <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
       <div className="chat-block-label">
@@ -19,7 +22,11 @@ export function AssistantMessageBlock({ block }: Props) {
       <div className={documentLayout ? 'chat-message-document' : 'chat-message-shell'}>
         <MarkdownRenderer text={block.content} streaming={Boolean(block.isStreaming)} />
       </div>
-      <MessageActionBar copyText={block.isStreaming ? undefined : block.content} copyLabel="Copy reply" />
+      <MessageActionBar
+        copyText={showActions ? block.content : undefined}
+        copyLabel="Copy reply"
+        actions={showActions && onQuote ? [{ kind: 'quote', label: 'Quote reply', onClick: () => onQuote(block), disabled: actionsDisabled }] : []}
+      />
     </article>
   )
 }

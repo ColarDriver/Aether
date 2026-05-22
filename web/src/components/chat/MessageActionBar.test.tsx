@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageActionBar } from './MessageActionBar'
 
 afterEach(cleanup)
@@ -14,9 +14,20 @@ describe('MessageActionBar', () => {
     expect(document.querySelector('[data-message-actions]')?.className).toContain('message-action-bar-end')
   })
 
-  it('does not render an empty copy action', () => {
+  it('renders explicit message actions without copy text', () => {
+    const onQuote = vi.fn()
+    render(<MessageActionBar copyText="   " copyLabel="Copy prompt" actions={[{ kind: 'quote', label: 'Quote prompt', onClick: onQuote }]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quote prompt' }))
+
+    expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull()
+    expect(onQuote).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not render an empty action bar', () => {
     render(<MessageActionBar copyText="   " copyLabel="Copy prompt" />)
 
     expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull()
+    expect(document.querySelector('[data-message-actions]')).toBeNull()
   })
 })

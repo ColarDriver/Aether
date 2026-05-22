@@ -9,7 +9,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useTaskStore } from '../../stores/taskStore'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
-import { Composer } from './Composer'
+import { Composer, type ComposerDraftPatch } from './Composer'
 import { PermissionDialog } from './PermissionDialog'
 import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 import { executeWebSlashCommand } from './slashExecute'
@@ -59,6 +59,8 @@ export function ChatView({ session }: Props) {
   const scrollSnapshotsRef = useRef<Record<string, ScrollSnapshot>>({})
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [composerDraftPatch, setComposerDraftPatch] = useState<ComposerDraftPatch | null>(null)
+  const composerDraftPatchIdRef = useRef(0)
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     shouldAutoScrollRef.current = true
@@ -140,6 +142,16 @@ export function ChatView({ session }: Props) {
   const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
   const fallbackModel = currentProvider?.model || 'gpt-5.4'
 
+  const patchComposerDraft = (mode: ComposerDraftPatch['mode'], text: string, attachments?: ComposerDraftPatch['attachments']) => {
+    composerDraftPatchIdRef.current += 1
+    setComposerDraftPatch({ id: composerDraftPatchIdRef.current, mode, text, ...(attachments ? { attachments } : {}) })
+  }
+
+  const quoteMessage = (role: 'user' | 'assistant', content: string) => {
+    const quoted = formatQuotedDraft(role, content)
+    if (quoted) patchComposerDraft('append', quoted)
+  }
+
   const createSessionAndRun = (message: string, attachments?: Parameters<typeof startRun>[2]) => {
     void createSession({ provider: fallbackProvider, model: fallbackModel })
       .then((created) => startRun(created.session_id, message, attachments))
@@ -187,6 +199,7 @@ export function ChatView({ session }: Props) {
           model={fallbackModel}
           onSend={createSessionAndRun}
           onCancel={() => undefined}
+          draftPatch={composerDraftPatch}
         />
       </div>
     )
@@ -224,9 +237,14 @@ export function ChatView({ session }: Props) {
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}
+          messageActionsDisabled={Boolean(activeRunId)}
           onOpenTask={setSelectedTaskId}
           onRespondPermission={respondPermission}
           onRespondApproval={respondApproval}
+          onRetryUserMessage={(block) => startRun(session.session_id, block.content, block.attachments)}
+          onEditUserMessage={(block) => patchComposerDraft('replace', block.content, block.attachments)}
+          onQuoteUserMessage={(block) => quoteMessage('user', block.content)}
+          onQuoteAssistantMessage={(block) => quoteMessage('assistant', block.content)}
         />
         <div ref={bottomRef} />
         {showJumpToLatest ? (
@@ -250,6 +268,7 @@ export function ChatView({ session }: Props) {
         onSend={(message, attachments) => startRun(session.session_id, message, attachments)}
         onSlashCommand={handleSlashCommand}
         onCancel={() => cancelRun(session.session_id)}
+        draftPatch={composerDraftPatch}
       />
       {pendingPermission ? (
         <PermissionDialog
@@ -270,6 +289,8 @@ export function ChatView({ session }: Props) {
         <TaskDetailDialog
           taskId={selectedTaskId}
           initialTask={tasks.find((task) => task.task_id === selectedTaskId)}
+          sessionTasks={tasks}
+          onOpenTask={setSelectedTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
       ) : null}
@@ -308,3 +329,10 @@ const starterPrompts = [
     icon: Route,
   },
 ]
+
+function formatQuotedDraft(role: 'user' | 'assistant', content: string): string {
+  const trimmed = content.trim()
+  if (!trimmed) return ''
+  const label = role === 'user' ? 'User' : 'Assistant'
+  return ['> ' + label + ':', ...trimmed.split('\n').map((line) => '> ' + line)].join('\n')
+}

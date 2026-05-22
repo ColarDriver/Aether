@@ -22,6 +22,13 @@ type ComposerDraft = {
   cursorPosition: number
 }
 
+export type ComposerDraftPatch = {
+  id: number
+  mode: 'replace' | 'append'
+  text: string
+  attachments?: ChatAttachment[]
+}
+
 const NEW_SESSION_DRAFT_KEY = '__aether_new_session__'
 
 type Props = {
@@ -39,6 +46,7 @@ type Props = {
   outputTokens?: number | null
   sessionSummary?: string | null
   messageCount?: number | null
+  draftPatch?: ComposerDraftPatch | null
 }
 
 export function Composer({
@@ -56,6 +64,7 @@ export function Composer({
   outputTokens,
   sessionSummary,
   messageCount,
+  draftPatch,
 }: Props) {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
@@ -71,6 +80,7 @@ export function Composer({
   const controlMenuRef = useRef<HTMLDivElement>(null)
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
   const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
+  const appliedDraftPatchIdRef = useRef<number | null>(null)
   const draftKey = sessionId ?? NEW_SESSION_DRAFT_KEY
   const draftMapRef = useRef(new Map<string, ComposerDraft>())
   const draftKeyRef = useRef(draftKey)
@@ -101,6 +111,28 @@ export function Composer({
     setInspectorKind(null)
     setControlMenuOpen(false)
   }, [draftKey])
+
+  useEffect(() => {
+    if (!draftPatch || appliedDraftPatchIdRef.current === draftPatch.id || disabled) return
+    appliedDraftPatchIdRef.current = draftPatch.id
+    const currentValue = valueRef.current
+    const nextValue = draftPatch.mode === 'append'
+      ? appendDraftText(currentValue, draftPatch.text)
+      : draftPatch.text
+    const nextAttachments = draftPatch.mode === 'append'
+      ? mergeDraftAttachments(attachmentsRef.current, draftPatch.attachments ?? [])
+      : draftPatch.attachments ?? []
+    const nextCursorPosition = nextValue.length
+    setValue(nextValue)
+    setAttachments(nextAttachments)
+    setCursorPosition(nextCursorPosition)
+    setInspectorKind(null)
+    setControlMenuOpen(false)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }, [disabled, draftPatch])
 
   useEffect(() => {
     if (!controlMenuOpen) return
@@ -640,6 +672,31 @@ function WorkspaceContextStrip({
       </div>
     </section>
   )
+}
+
+function appendDraftText(currentValue: string, text: string): string {
+  const current = currentValue.trimEnd()
+  const insert = text.trimEnd()
+  if (!current) return insert
+  if (!insert) return current
+  return current + '\n\n' + insert
+}
+
+function mergeDraftAttachments(current: ChatAttachment[], incoming: ChatAttachment[]): ChatAttachment[] {
+  if (incoming.length === 0) return current
+  const seen = new Set(current.map((attachment) => attachmentKey(attachment)))
+  const next = [...current]
+  for (const attachment of incoming) {
+    const key = attachmentKey(attachment)
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(attachment)
+  }
+  return next
+}
+
+function attachmentKey(attachment: ChatAttachment): string {
+  return [attachment.type, attachment.path || '', attachment.url || '', attachment.name || ''].join(':')
 }
 
 function removeWorkspaceReferenceTokens(value: string, paths: string[]): string {

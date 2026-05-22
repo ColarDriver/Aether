@@ -1,4 +1,4 @@
-import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square } from 'lucide-react'
+import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { api } from '../../api/client'
@@ -64,6 +64,8 @@ export function Composer({
   const [dragActive, setDragActive] = useState(false)
   const [inspectorKind, setInspectorKind] = useState<ComposerInspectorKind | null>(null)
   const [controlMenuOpen, setControlMenuOpen] = useState(false)
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
+  const [workspaceRootError, setWorkspaceRootError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const controlMenuRef = useRef<HTMLDivElement>(null)
@@ -123,6 +125,25 @@ export function Composer({
       cancelled = true
     }
   }, [disabled, slashCommands])
+
+  useEffect(() => {
+    if (disabled) return
+    let cancelled = false
+    api.workspaceTree('')
+      .then((result) => {
+        if (cancelled) return
+        setWorkspaceRoot(result.root)
+        setWorkspaceRootError(null)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setWorkspaceRoot(null)
+        setWorkspaceRootError(error instanceof Error ? error.message : String(error))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [disabled])
 
   const submit = () => {
     const text = value.trim()
@@ -191,6 +212,10 @@ export function Composer({
     setCursorPosition(nextCursorPosition)
     setControlMenuOpen(false)
     focusTextareaAt(nextCursorPosition)
+  }
+
+  const clearWorkspaceReferences = () => {
+    setAttachments((current) => current.filter((attachment) => attachment.note !== 'workspace reference'))
   }
 
   const openInspector = (kind: ComposerInspectorKind) => {
@@ -339,13 +364,14 @@ export function Composer({
           >
             <Paperclip size={16} />
           </Button>
-          <span className="composer-chip" title="Workspace references use @path search">
-            <Folder size={14} />
-            <span>
-              <strong>Workspace</strong>
-              <small>@path context</small>
-            </span>
-          </span>
+          <ProjectContextChip
+            root={workspaceRoot}
+            error={workspaceRootError}
+            referenceCount={attachments.filter((attachment) => attachment.note === 'workspace reference').length}
+            disabled={disabled || running}
+            onInsertReference={() => insertAtCursor('@')}
+            onClearReferences={clearWorkspaceReferences}
+          />
           {mode ? (
             <span className={mode === 'plan' ? 'composer-chip composer-chip-plan' : 'composer-chip'} title="Current session mode">
               <Route size={14} />
@@ -484,6 +510,63 @@ function ComposerControlMenu({
       ) : null}
     </div>
   )
+}
+
+function ProjectContextChip({
+  root,
+  error,
+  referenceCount,
+  disabled,
+  onInsertReference,
+  onClearReferences,
+}: {
+  root?: string | null
+  error?: string | null
+  referenceCount: number
+  disabled: boolean
+  onInsertReference: () => void
+  onClearReferences: () => void
+}) {
+  const label = root ? workspaceRootName(root) : 'Workspace'
+  const detail = referenceCount > 0
+    ? referenceCount.toLocaleString() + ' ref' + (referenceCount === 1 ? '' : 's')
+    : error
+      ? 'unavailable'
+      : root || '@path context'
+  return (
+    <span className={'composer-project-context' + (referenceCount > 0 ? ' composer-project-context-active' : '')}>
+      <button
+        type="button"
+        className="composer-chip composer-chip-workspace"
+        title={root || error || 'Workspace references use @path search'}
+        disabled={disabled}
+        aria-label="Add workspace reference"
+        onClick={onInsertReference}
+      >
+        <Folder size={14} />
+        <span>
+          <strong>{label}</strong>
+          <small>{detail}</small>
+        </span>
+      </button>
+      {referenceCount > 0 ? (
+        <button
+          type="button"
+          className="composer-project-clear"
+          aria-label="Clear workspace references"
+          disabled={disabled}
+          onClick={onClearReferences}
+        >
+          <X size={12} />
+        </button>
+      ) : null}
+    </span>
+  )
+}
+
+function workspaceRootName(root: string): string {
+  const clean = root.replace(/\\+$/g, '').replace(/\/+$/g, '')
+  return clean.split(/[\\/]/).filter(Boolean).pop() || root || 'Workspace'
 }
 
 function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | null; outputTokens?: number | null }) {

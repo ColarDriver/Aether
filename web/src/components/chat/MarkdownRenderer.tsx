@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { MathRenderer } from './MathRenderer'
 import { MermaidRenderer } from './MermaidRenderer'
 import { CodeBlock } from './blocks/CodeBlock'
 
@@ -11,6 +12,7 @@ type Props = {
 
 type MarkdownBlock =
   | { type: 'code'; language: string; code: string }
+  | { type: 'math'; source: string; display: boolean }
   | { type: 'heading'; level: 1 | 2 | 3 | 4; content: string }
   | { type: 'hr' }
   | { type: 'table'; block: string }
@@ -66,6 +68,7 @@ function renderBlock(block: MarkdownBlock, index: number, streaming = false, ima
       ? <MermaidRenderer code={block.code} key={index} />
       : <CodeBlock code={block.code} key={index} language={block.language} />
   }
+  if (block.type === 'math') return <MathRenderer display={block.display} key={index} source={block.source} />
   if (block.type === 'table') return <MarkdownTable block={block.block} imageContext={imageContext} key={index} />
   if (block.type === 'hr') return <hr className="markdown-hr" key={index} />
   if (block.type === 'blockquote') {
@@ -118,6 +121,33 @@ function splitMarkdownBlocks(text: string): MarkdownBlock[] {
       }
       if (index < lines.length) index += 1
       blocks.push({ type: 'code', language, code: codeLines.join('\n').trimEnd() })
+      continue
+    }
+
+    const displayMathStart = parseDisplayMathStart(line)
+    if (displayMathStart) {
+      const mathLines: string[] = []
+      const openingRemainder = displayMathStart.remainder
+      const sameLineEnd = openingRemainder.indexOf(displayMathStart.close)
+      if (sameLineEnd >= 0) {
+        mathLines.push(openingRemainder.slice(0, sameLineEnd))
+        index += 1
+      } else {
+        if (openingRemainder) mathLines.push(openingRemainder)
+        index += 1
+        while (index < lines.length) {
+          const nextLine = lines[index] ?? ''
+          const closeIndex = nextLine.indexOf(displayMathStart.close)
+          if (closeIndex >= 0) {
+            mathLines.push(nextLine.slice(0, closeIndex))
+            index += 1
+            break
+          }
+          mathLines.push(nextLine)
+          index += 1
+        }
+      }
+      blocks.push({ type: 'math', display: true, source: mathLines.join('\n').trim() })
       continue
     }
 
@@ -183,11 +213,19 @@ function splitMarkdownBlocks(text: string): MarkdownBlock[] {
   return blocks
 }
 
+function parseDisplayMathStart(line: string): { close: string; remainder: string } | null {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('$$')) return { close: '$$', remainder: trimmed.slice(2) }
+  if (trimmed.startsWith('\\[')) return { close: '\\]', remainder: trimmed.slice(2) }
+  return null
+}
+
 function startsBlock(line: string, nextLine: string): boolean {
   if (!line.trim()) return true
   const fence = String.fromCharCode(96, 96, 96)
   return (
     line.startsWith(fence) ||
+    Boolean(parseDisplayMathStart(line)) ||
     /^(#{1,4})\s+/.test(line) ||
     /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
     (line.trim().startsWith('|') && isTableLine(nextLine)) ||
@@ -298,6 +336,8 @@ function renderInline(text: string, imageContext?: ImageContext): ReactNode[] {
       '!\\[[^\\]]*\\]\\([^)]+\\)' +
       '|' + '\\[[^\\]]+\\]\\([^)]+\\)' +
       '|' + tick + '[^' + tick + ']+' + tick +
+      '|' + '\\\\([^\\n]+?\\\\)' +
+      '|' + '\\$([^\\s$\\n][^$\\n]*?[^\\s$\\n]|\\S)\\$' +
       '|\\*\\*[^*]+\\*\\*' +
       '|~~[^~]+~~' +
       '|(?<!\\*)\\*[^*]+\\*(?!\\*)' +
@@ -313,6 +353,10 @@ function renderInline(text: string, imageContext?: ImageContext): ReactNode[] {
     const value = match[0]
     if (value.startsWith(tick)) {
       parts.push(<code className="markdown-inline-code" key={parts.length}>{value.slice(1, -1)}</code>)
+    } else if (value.startsWith('\\(') && value.endsWith('\\)')) {
+      parts.push(<MathRenderer key={parts.length} source={value.slice(2, -2)} />)
+    } else if (value.startsWith('$') && value.endsWith('$')) {
+      parts.push(<MathRenderer key={parts.length} source={value.slice(1, -1)} />)
     } else if (value.startsWith('![')) {
       const image = parseImage(value)
       const src = safeImageSrc(image.src)

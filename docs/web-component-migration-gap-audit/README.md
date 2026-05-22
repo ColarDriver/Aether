@@ -23,10 +23,38 @@ Additional work completed on this branch:
 - Added `CurrentTurnChangeCard` at the chat-turn level. It summarizes changed files, addition/removal totals, per-file stats, and expandable per-file diffs derived from existing diff blocks.
 - Added Markdown image rendering for `![alt](url)` and bare image URLs, with safe-source filtering and a keyboard/navigable lightbox.
 - Added Aether-native Mermaid rendering for `mermaid` fenced blocks and unlabeled diagram fences, with sanitized SVG output, loading/error fallback, copy, and zoomable preview.
+- Added KaTeX-backed math rendering for inline `$...# Web Component Migration Gap Audit
+
+Status date: 2026-05-21
+Branch observed: `web-console-migration`
+
+## Bottom Line
+
+Aether web has migrated the core chat/runtime path: web shell, REST and WebSocket clients, typed chat rendering blocks, live transcript rendering, permission and approval prompts, basic diff rendering, workspace browsing, and settings/catalog views.
+
+It has not completed full cc-haha or Hermes-style developer console parity. The missing work is mostly higher-level workflow components around the composer, local inspector panels, current-turn change management, richer tool rendering, media/markdown rendering, and browser-level acceptance coverage.
+
+
+## Implementation Progress After Initial Audit
+
+Additional work completed on this branch:
+
+- Added Aether-native composer inspector panels for `/status`, `/context`, `/cost`, `/skills`, and `/mcp`. The first four use existing backend APIs; `/mcp` is an explicit unavailable-state panel until backend MCP routes exist.
+- Local inspector commands are now included in slash completion and open in the composer without sending an agent run or appending transcript notices.
+- Added a composer `+` control menu for attach files, slash command insertion, workspace reference insertion, and local inspector panels.
+- Added per-session composer drafts for text and attachments while switching sessions in the mounted chat workbench.
+- Added `TerminalChrome` for shell/exec-style tool results, including command header, exit status, duration, copy, and expandable truncation. Shell calls no longer duplicate raw JSON input when the terminal chrome already carries the command.
+- Added `ToolResultPreview` for common non-shell tools: file reads, grep/search output, web search/fetch JSON results, and subagent/task summaries. Unknown tools still fall back to the generic code block.
+- Added `CurrentTurnChangeCard` at the chat-turn level. It summarizes changed files, addition/removal totals, per-file stats, and expandable per-file diffs derived from existing diff blocks.
+- Added Markdown image rendering for `![alt](url)` and bare image URLs, with safe-source filtering and a keyboard/navigable lightbox.
+, inline `\(...\)`, and display `$...$` / `\[...\]` math blocks, with sanitized output and raw fallback.
 - Verified the updated composer path with `npm test -- Composer.test.tsx` and `npm run typecheck`.
 - Verified terminal and preview tool rendering with `npm test -- ToolResultPreview.test.tsx ToolCallBlock.test.tsx TerminalChrome.test.tsx` and `npm run build`.
 - Verified changed-file summaries with `npm test -- CurrentTurnChangeCard.test.tsx ChatTimeline.test.tsx` and `npm run build`.
 - Verified Markdown image rendering with `npm test -- MarkdownRenderer.test.tsx` and `npm run build`.
+- Verified Mermaid and math rendering with `npm test -- MathRenderer.test.tsx MarkdownRenderer.test.tsx MarkdownRenderer.mermaid.test.tsx MermaidRenderer.test.tsx`, `npm run typecheck`, and `npm run build`.
+- Verified structured tool image previews with `npm test -- ToolResultPreview.test.tsx ToolResultBlock.test.tsx MathRenderer.test.tsx MarkdownRenderer.test.tsx` and `npm run typecheck`.
+- Verified lazy Mermaid/KaTeX loading with `npm test -- MathRenderer.test.tsx MermaidRenderer.test.tsx MarkdownRenderer.test.tsx MarkdownRenderer.mermaid.test.tsx ToolResultPreview.test.tsx`, `npm run typecheck`, and `npm run build`.
 
 These changes move PR A to implemented, start PR B, and land the first slice of PR D. PR B is not complete yet: fuller file search navigation, project context chips, and repository/worktree launch controls remain separate work. PR C now has the frontend-only summary layer implemented from existing diff blocks; undo/checkpoint remains backend-dependent. PR D is still not complete yet: the first search/web/subagent/file-read previews exist, but richer per-tool lifecycle metadata, nested task output, and backend-shaped structured payloads remain separate work.
 
@@ -86,9 +114,9 @@ Reference files:
 | Message action bar expansion | `MessageActionBar.tsx`, `MessageList.tsx` | Copy only | Add retry, edit, quote, rewind/fork/checkpoint only after backend contracts are real. |
 | Terminal chrome | `TerminalChrome.tsx`, `ToolCallBlock.tsx` | Partial | Shell/exec output now has terminal chrome with command/status/duration/copy/truncation; structured payload and nested lifecycle depth still need work. |
 | Inline task summary | `InlineTaskSummary.tsx` | Missing | Render task/subagent summaries inline with status, output tail, model, duration. |
-| Inline image gallery | `MarkdownRenderer.tsx`, `AttachmentGallery.tsx` | Partial | User attachments and Markdown assistant images now have lightbox/gallery behavior; structured tool-output image references still need dedicated parsing. |
-| Mermaid rendering | `MermaidRenderer.tsx`, markdown renderer | Partial | Aether now renders Mermaid fenced blocks with sanitized SVG, loading/error fallback, copy, and zoomable preview; remaining work is visual polish, CSP review, and bundle/code-splitting hardening. |
-| Math rendering | Hermes/markdown parity expectation | Missing | Add KaTeX/MathJax style support only if product requires math-heavy output. |
+| Inline image gallery | `MarkdownRenderer.tsx`, `AttachmentGallery.tsx`, `ToolResultPreview.tsx` | Partial | User attachments, Markdown assistant images, and structured tool-output image references now have preview/lightbox behavior; remaining work is backend-shaped artifact metadata and browser visual coverage. |
+| Mermaid rendering | `MermaidRenderer.tsx`, markdown renderer | Partial | Aether now renders Mermaid fenced blocks with sanitized SVG, loading/error fallback, copy, zoomable preview, and async Mermaid loading; remaining work is visual polish, CSP review, and browser acceptance. |
+| Math rendering | Hermes/markdown parity expectation | Partial | KaTeX-backed inline and display math now renders with sanitized output, fallback, and async KaTeX/CSS loading. Remaining work is broader browser visual coverage. |
 | MCP management UI | cc-haha local panel, Hermes MCP CSS/API | Missing | Needs backend MCP service/routes first or explicit no-MCP product boundary. |
 | Browser E2E screenshots | Sprint 21/24 acceptance notes | Missing | Add Playwright or browser-level smoke for chat turn, streaming, permission, approval, workspace, narrow viewport. |
 
@@ -109,7 +137,7 @@ Reference files:
 - The chat timeline is structurally right, but tool-specific rendering is not rich enough for coding workflows.
 - Turn-level code change management is missing.
 - Message lifecycle actions are minimal.
-- Markdown/media support now covers common text Markdown, inline image/lightbox behavior, and Mermaid diagram rendering; math and structured tool-output image references remain incomplete.
+- Markdown/media support now covers common text Markdown, inline image/lightbox behavior, structured tool-output image references, Mermaid diagram rendering, and KaTeX math rendering. Mermaid and KaTeX are now lazy-loaded. Remaining media gaps are mostly backend-shaped artifact metadata and browser visual acceptance.
 - MCP and advanced session inspection need backend/frontend contracts before meaningful UI parity.
 - Visual acceptance is still weak because current verification is mostly unit tests and build checks.
 
@@ -192,8 +220,8 @@ Scope:
 
 - Decide whether to keep custom parser or add a markdown pipeline.
 - Add Mermaid support with safe fallback.
-- Add inline image gallery for assistant/tool output references.
-- Add optional math support only if product needs it.
+- Harden inline image/gallery behavior for backend-shaped assistant and tool artifact references.
+- Add browser-level visual acceptance for formula-heavy assistant output and large diagrams.
 
 Acceptance:
 

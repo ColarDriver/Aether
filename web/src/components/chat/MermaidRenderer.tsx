@@ -1,6 +1,5 @@
 import DOMPurify from 'dompurify'
 import { AlertTriangle, GitBranch, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, X } from 'lucide-react'
-import mermaid from 'mermaid'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CopyButton } from '../shared/CopyButton'
 import { CodeBlock } from './blocks/CodeBlock'
@@ -22,34 +21,41 @@ type DragState = {
   scrollTop: number
 }
 
+type MermaidApi = typeof import('mermaid').default
+
 let initialized = false
 let idCounter = 0
+let mermaidLoadPromise: Promise<MermaidApi> | null = null
 
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 3
 const ZOOM_STEP = 0.25
 
-function initializeMermaid() {
-  if (initialized) return
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: 'base',
-    securityLevel: 'strict',
-    suppressErrorRendering: true,
-    fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-    themeVariables: {
-      background: '#ffffff',
-      primaryColor: '#eaf2ff',
-      primaryBorderColor: '#7aa7ff',
-      primaryTextColor: '#172033',
-      lineColor: '#65758b',
-      secondaryColor: '#f1f5f9',
-      tertiaryColor: '#f8fafc',
-      noteBkgColor: '#fff7d6',
-      noteTextColor: '#172033',
-    },
-  })
-  initialized = true
+async function loadMermaid(): Promise<MermaidApi> {
+  mermaidLoadPromise ??= import('mermaid').then((module) => module.default)
+  const mermaid = await mermaidLoadPromise
+  if (!initialized) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      securityLevel: 'strict',
+      suppressErrorRendering: true,
+      fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+      themeVariables: {
+        background: '#ffffff',
+        primaryColor: '#eaf2ff',
+        primaryBorderColor: '#7aa7ff',
+        primaryTextColor: '#172033',
+        lineColor: '#65758b',
+        secondaryColor: '#f1f5f9',
+        tertiaryColor: '#f8fafc',
+        noteBkgColor: '#fff7d6',
+        noteTextColor: '#172033',
+      },
+    })
+    initialized = true
+  }
+  return mermaid
 }
 
 function sanitizeSvg(svg: string): string {
@@ -99,23 +105,24 @@ export function MermaidRenderer({ code }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    initializeMermaid()
     setSvg(null)
     setError(null)
 
     const id = `aether-mermaid-${++idCounter}`
-    mermaid.render(id, code).then(
-      ({ svg: renderedSvg }) => {
-        if (cancelled) return
-        setSvg(sanitizeSvg(renderedSvg))
-        setError(null)
-      },
-      (reason) => {
-        if (cancelled) return
-        setSvg(null)
-        setError(String(reason?.message || reason || 'Unable to render Mermaid diagram.'))
-      },
-    )
+    loadMermaid()
+      .then((mermaid) => mermaid.render(id, code))
+      .then(
+        ({ svg: renderedSvg }) => {
+          if (cancelled) return
+          setSvg(sanitizeSvg(renderedSvg))
+          setError(null)
+        },
+        (reason) => {
+          if (cancelled) return
+          setSvg(null)
+          setError(String(reason?.message || reason || 'Unable to render Mermaid diagram.'))
+        },
+      )
 
     return () => {
       cancelled = true

@@ -2770,6 +2770,160 @@ button {
   white-space: pre-wrap;
 }
 
+.tool-preview-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 10px;
+}
+
+.tool-preview-image-card {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
+}
+
+.tool-preview-image-card > button {
+  width: 100%;
+  display: block;
+  border: 0;
+  background: color-mix(in srgb, var(--panel) 70%, #000);
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.tool-preview-image-card > button:hover,
+.tool-preview-image-card > button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.tool-preview-image-card img {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  display: block;
+  object-fit: contain;
+}
+
+.tool-preview-image-card figcaption {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border-top: 1px solid var(--line-soft);
+  padding: 8px;
+}
+
+.tool-preview-image-card figcaption strong,
+.tool-preview-image-card figcaption span,
+.tool-preview-image-card figcaption a {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-preview-image-card figcaption strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tool-preview-image-card figcaption span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-preview-image-card figcaption a {
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.tool-preview-image-card figcaption a:hover {
+  text-decoration: underline;
+}
+
+.tool-image-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 245;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, .68);
+  padding: 24px;
+}
+
+.tool-image-modal {
+  width: min(980px, 100%);
+  max-height: min(860px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-float);
+}
+
+.tool-image-modal header {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 9px 12px;
+}
+
+.tool-image-modal header div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.tool-image-modal header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-image-modal header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-image-modal button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tool-image-stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 240px;
+  padding: 12px;
+}
+
+.tool-image-stage img {
+  justify-self: center;
+  max-width: 100%;
+  max-height: min(720px, calc(100vh - 150px));
+  object-fit: contain;
+}
+
 .tool-preview-task-failed > header em {
   color: var(--danger);
 }
@@ -6578,4 +6732,54 @@ button {
   width: 100%;
   height: 100%;
   max-width: none;
+}
+
+.math-renderer {
+  color: var(--text);
+}
+
+.math-renderer-inline {
+  display: inline;
+  max-width: 100%;
+}
+
+.math-renderer-inline .katex {
+  font-size: 1.03em;
+}
+
+.math-renderer-display {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  padding: 12px;
+  text-align: center;
+}
+
+.math-renderer-display .katex-display {
+  margin: 0;
+}
+
+.math-renderer-fallback {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.math-renderer-loading {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.math-renderer-inline.math-renderer-fallback {
+  padding: 1px 4px;
+}
+
+.math-renderer-display.math-renderer-fallback {
+  text-align: left;
+  white-space: pre-wrap;
 }

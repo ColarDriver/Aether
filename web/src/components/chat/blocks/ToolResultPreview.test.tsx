@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { ToolResultBlock } from './ToolResultBlock'
@@ -65,6 +65,29 @@ describe('ToolResultPreview', () => {
     expect(screen.getByRole('region', { name: 'Web results' })).toBeTruthy()
     expect(screen.getByText('Aether docs')).toBeTruthy()
     expect(screen.getByText('Docs snippet')).toBeTruthy()
+  })
+
+
+  it('renders image artifacts from structured tool output', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'browser_screenshot',
+          content: JSON.stringify({
+            images: [{ title: 'Viewport capture', url: 'https://example.com/screenshot.png', caption: 'Browser screenshot' }],
+          }),
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Tool image results' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByRole('img', { name: 'Viewport capture' })).toBeTruthy()
+    expect(within(preview).getByText('Browser screenshot')).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+
+    fireEvent.click(within(preview).getByRole('button', { name: 'Open image preview Viewport capture' }))
+    expect(screen.getByRole('dialog', { name: 'Viewport capture' })).toBeTruthy()
   })
 
   it('renders subagent results as an inline task summary', () => {

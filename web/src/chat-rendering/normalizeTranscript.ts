@@ -5,8 +5,10 @@ import {
   attachmentsFromMetadata,
   attachmentsFromUnknown,
   extractDiffFromMetadata,
+  isDiagnosticsText,
   isTaskNotificationText,
   parseAskUserQuestions,
+  parseDiagnosticsBlock,
   parseTaskNotification,
   recordFromUnknown,
 } from './content'
@@ -31,6 +33,19 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           source: 'transcript',
           kind: 'task_notification',
           ...notification,
+        })
+        return
+      }
+      const diagnostics = parseDiagnosticsBlock(text)
+      if (diagnostics && (metadata.source === 'diagnostics' || isDiagnosticsText(text))) {
+        blocks.push({
+          id: 'persisted-' + index + '-diagnostics',
+          sessionId,
+          runId,
+          timestamp,
+          source: 'transcript',
+          kind: 'diagnostics',
+          ...diagnostics,
         })
         return
       }

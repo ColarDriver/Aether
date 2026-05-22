@@ -4,6 +4,7 @@ import {
   extractDiffFromMetadata,
   firstNonEmptyLine,
   jsonPreview,
+  parseDiagnosticsBlock,
   parseTaskNotification,
   parseAskUserQuestions,
   recordFromUnknown,
@@ -32,6 +33,7 @@ describe('chat rendering blocks', () => {
       { ...base, id: 'ap', kind: 'approval_request', promptId: 'approval-1', approvalKind: 'plan', questions: [], state: 'pending' },
       { ...base, id: 'q', kind: 'ask_user_question', questions: [{ question: 'Continue?' }], state: 'pending' },
       { ...base, id: 's', kind: 'streaming_status', state: 'thinking', tokens: { output_tokens: 12 } },
+      { ...base, id: 'diag', kind: 'diagnostics', content: '<diagnostics></diagnostics>', files: [{ path: 'app.py', diagnostics: [{ severity: 'error', line: 1, column: 2, source: 'pyright', message: 'broken' }] }] },
       { ...base, id: 'tn', kind: 'task_notification', taskId: 'task-1', status: 'completed', summary: 'done' },
       { ...base, id: 'sys', kind: 'system_notice', content: 'cancelled' },
       { ...base, id: 'e', kind: 'error', message: 'failed', code: 'run_failed' },
@@ -48,6 +50,7 @@ describe('chat rendering blocks', () => {
       'approval_request',
       'ask_user_question',
       'streaming_status',
+      'diagnostics',
       'task_notification',
       'system_notice',
       'error',
@@ -135,6 +138,33 @@ describe('chat rendering content helpers', () => {
     ])
     expect(parseAskUserQuestions({ questions: [] })).toEqual([])
     expect(parseAskUserQuestions(null)).toEqual([])
+  })
+
+  it('parses diagnostics attachment blocks from XML', () => {
+    expect(parseDiagnosticsBlock(
+      '<diagnostics>\n' +
+      'The following diagnostics appeared after your most recent edits.\n\n' +
+      '## /workspace/Aether/app.py\n' +
+      '  ERROR   3:5  pyright [reportUndefinedVariable]: name is not defined\n' +
+      '  WARNING 8:2  ruff [F401]: unused import\n' +
+      '</diagnostics>',
+    )).toEqual({
+      content: '<diagnostics>\n' +
+        'The following diagnostics appeared after your most recent edits.\n\n' +
+        '## /workspace/Aether/app.py\n' +
+        '  ERROR   3:5  pyright [reportUndefinedVariable]: name is not defined\n' +
+        '  WARNING 8:2  ruff [F401]: unused import\n' +
+        '</diagnostics>',
+      files: [
+        {
+          path: '/workspace/Aether/app.py',
+          diagnostics: [
+            { severity: 'error', line: 3, column: 5, source: 'pyright', code: 'reportUndefinedVariable', message: 'name is not defined' },
+            { severity: 'warning', line: 8, column: 2, source: 'ruff', code: 'F401', message: 'unused import' },
+          ],
+        },
+      ],
+    })
   })
 
   it('parses Aether task notifications from XML', () => {

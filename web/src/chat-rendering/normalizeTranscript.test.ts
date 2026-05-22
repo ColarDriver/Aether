@@ -116,6 +116,29 @@ describe('normalizeTranscript', () => {
     })
   })
 
+  it('normalizes diagnostics user turns without exposing raw XML as a user prompt', () => {
+    const blocks = normalizeTranscript('session-6', [
+      {
+        role: 'user',
+        text: '<diagnostics>\n## src/app.py\n  ERROR   4:8  pyright [reportGeneralTypeIssues]: bad type\n</diagnostics>',
+        metadata: { source: 'diagnostics' },
+      },
+    ])
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({
+      kind: 'diagnostics',
+      files: [
+        {
+          path: 'src/app.py',
+          diagnostics: [
+            { severity: 'error', line: 4, column: 8, source: 'pyright', code: 'reportGeneralTypeIssues', message: 'bad type' },
+          ],
+        },
+      ],
+    })
+  })
+
   it('normalizes task-notification user turns without exposing raw XML', () => {
     const blocks = normalizeTranscript('session-5', [
       {

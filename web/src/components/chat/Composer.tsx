@@ -1,4 +1,4 @@
-import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
+import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, FileText, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { api } from '../../api/client'
@@ -214,8 +214,26 @@ export function Composer({
     focusTextareaAt(nextCursorPosition)
   }
 
+  const removeAttachmentAt = (index: number) => {
+    setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
+  }
+
+  const removeWorkspaceReferenceAt = (index: number) => {
+    const attachment = attachments[index]
+    removeAttachmentAt(index)
+    if (attachment?.path) {
+      setValue((current) => removeWorkspaceReferenceTokens(current, [attachment.path || '']))
+    }
+  }
+
   const clearWorkspaceReferences = () => {
+    const paths = attachments
+      .filter((attachment) => attachment.note === 'workspace reference' && attachment.path)
+      .map((attachment) => attachment.path || '')
     setAttachments((current) => current.filter((attachment) => attachment.note !== 'workspace reference'))
+    if (paths.length > 0) {
+      setValue((current) => removeWorkspaceReferenceTokens(current, paths))
+    }
   }
 
   const openInspector = (kind: ComposerInspectorKind) => {
@@ -238,6 +256,13 @@ export function Composer({
     void addFiles(files)
     return true
   }
+
+  const workspaceReferenceItems = attachments
+    .map((attachment, index) => ({ attachment, index }))
+    .filter((item) => item.attachment.note === 'workspace reference')
+  const manualAttachmentItems = attachments
+    .map((attachment, index) => ({ attachment, index }))
+    .filter((item) => item.attachment.note !== 'workspace reference')
 
   return (
     <div
@@ -294,11 +319,20 @@ export function Composer({
         <Paperclip size={18} />
         <span>Drop files to attach</span>
       </div>
-      {attachments.length > 0 ? (
+      <WorkspaceContextStrip
+        disabled={disabled || running}
+        items={workspaceReferenceItems}
+        onClear={clearWorkspaceReferences}
+        onRemove={removeWorkspaceReferenceAt}
+      />
+      {manualAttachmentItems.length > 0 ? (
         <div className="composer-attachments">
           <AttachmentGallery
-            attachments={attachments}
-            onRemove={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+            attachments={manualAttachmentItems.map((item) => item.attachment)}
+            onRemove={(index) => {
+              const item = manualAttachmentItems[index]
+              if (item) removeAttachmentAt(item.index)
+            }}
           />
         </div>
       ) : null}
@@ -564,6 +598,63 @@ function ProjectContextChip({
   )
 }
 
+function WorkspaceContextStrip({
+  items,
+  disabled,
+  onRemove,
+  onClear,
+}: {
+  items: Array<{ attachment: ChatAttachment; index: number }>
+  disabled: boolean
+  onRemove: (index: number) => void
+  onClear: () => void
+}) {
+  if (items.length === 0) return null
+  return (
+    <section className="composer-workspace-context" aria-label="Workspace context">
+      <header>
+        <span>
+          <AtSign size={14} aria-hidden="true" />
+          <strong>Workspace context</strong>
+          <small>{items.length.toLocaleString()} ref{items.length === 1 ? '' : 's'}</small>
+        </span>
+        <button type="button" disabled={disabled} onClick={onClear}>Clear</button>
+      </header>
+      <div className="composer-workspace-context-list">
+        {items.map(({ attachment, index }) => {
+          const Icon = attachment.isDirectory ? Folder : FileText
+          const label = attachment.name || attachment.path || 'workspace reference'
+          return (
+            <span className="composer-workspace-context-chip" key={(attachment.path || label) + '-' + index}>
+              <Icon size={14} aria-hidden="true" />
+              <span>
+                <strong>{label}</strong>
+                {attachment.path ? <small>{attachment.path}</small> : null}
+              </span>
+              <button type="button" aria-label={'Remove workspace reference ' + label} disabled={disabled} onClick={() => onRemove(index)}>
+                <X size={12} aria-hidden="true" />
+              </button>
+            </span>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function removeWorkspaceReferenceTokens(value: string, paths: string[]): string {
+  let next = value
+  for (const path of paths) {
+    if (!path) continue
+    const escaped = escapeRegExp(path)
+    next = next.replace(new RegExp('(^|\\s)@' + escaped + '(?=\\s|$)\\s?', 'g'), (_match, prefix: string) => prefix || '')
+  }
+  return next.replace(/[ \t]{2,}/g, ' ')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 function workspaceRootName(root: string): string {
   const clean = root.replace(/\\+$/g, '').replace(/\/+$/g, '')
   return clean.split(/[\\/]/).filter(Boolean).pop() || root || 'Workspace'

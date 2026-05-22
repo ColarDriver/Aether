@@ -90,18 +90,155 @@ describe('ToolResultPreview', () => {
     expect(screen.getByRole('dialog', { name: 'Viewport capture' })).toBeTruthy()
   })
 
-  it('renders subagent results as an inline task summary', () => {
+  it('renders subagent results as a structured inline task summary', () => {
     render(
       <ToolResultBlock
-        block={result({ toolName: 'spawn_agent', content: 'Mapped auth files', metadata: { model: 'gpt-5.4' } })}
+        block={result({
+          toolName: 'spawn_agent',
+          content: 'Mapped auth files',
+          metadata: {
+            task_id: 'task-123',
+            model: 'gpt-5.4',
+            subagent_type: 'explorer',
+            duration_ms: 2400,
+            input_tokens: 120,
+            output_tokens: 80,
+            result_path: 'tasks/task-123.md',
+          },
+        })}
         toolArguments={{ prompt: 'Explore auth flow' }}
       />,
     )
 
-    expect(screen.getByRole('region', { name: 'Subagent result' })).toBeTruthy()
+    const summary = screen.getByRole('region', { name: 'Subagent result' })
+    expect(summary).toBeTruthy()
     expect(screen.getByText('Explore auth flow')).toBeTruthy()
-    expect(screen.getByText('Model: gpt-5.4')).toBeTruthy()
+    expect(screen.getByText('explorer / gpt-5.4')).toBeTruthy()
+    expect(screen.getByText('2.4s')).toBeTruthy()
+    expect(screen.getByText('200')).toBeTruthy()
+    expect(screen.getByText('tasks/task-123.md')).toBeTruthy()
     expect(screen.getByText('Mapped auth files')).toBeTruthy()
+  })
+
+  it('renders file edit metadata as a structured change preview', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'file_edit',
+          content: 'updated /workspace/Aether/src/auth.ts (2 substitutions)',
+          metadata: {
+            path: 'src/auth.ts',
+            lines_added: 4,
+            lines_removed: 2,
+            hunks: 1,
+            change_count: 2,
+          },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'File change' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('src/auth.ts')).toBeTruthy()
+    expect(within(preview).getByText('+4')).toBeTruthy()
+    expect(within(preview).getByText('-2')).toBeTruthy()
+    expect(within(preview).getByText('updated /workspace/Aether/src/auth.ts (2 substitutions)')).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+  })
+
+  it('renders notebook edits with cell metadata', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: 'inserted new code cell at index 2 (id=abc123)',
+          metadata: { path: 'analysis.ipynb', edit_mode: 'insert', cell_count: 8 },
+        })}
+        toolArguments={{ cell_idx: 1, cell_type: 'code' }}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Notebook edit' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('analysis.ipynb')).toBeTruthy()
+    expect(within(preview).getAllByText('insert').length).toBeGreaterThan(0)
+    expect(within(preview).getByText('cell 1')).toBeTruthy()
+    expect(within(preview).getByText('8')).toBeTruthy()
+  })
+
+  it('renders LSP results as semantic navigation rows', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'lsp',
+          content: '# LSP findReferences for src/auth.ts\n\n- /workspace/Aether/src/auth.ts:12:4\n- /workspace/Aether/src/app.ts:3:8\n',
+          metadata: { operation: 'findReferences', file_path: 'src/auth.ts' },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'LSP result' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('findReferences')).toBeTruthy()
+    expect(within(preview).getByText('/workspace/Aether/src/auth.ts:12:4')).toBeTruthy()
+  })
+
+  it('renders browser screenshot metadata as an artifact card', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_browser',
+          content: '# Browser screenshot saved\n- url: https://example.com\n- path: /tmp/call.png\n',
+          metadata: { operation: 'screenshot', url: 'https://example.com', screenshot_path: '/tmp/call.png', bytes: 2048 },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Browser result' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('screenshot')).toBeTruthy()
+    expect(within(preview).getByText('https://example.com')).toBeTruthy()
+    expect(within(preview).getByText('Screenshot saved')).toBeTruthy()
+    expect(within(preview).getByText('/tmp/call.png')).toBeTruthy()
+  })
+
+  it('renders structured non-image artifacts as an artifact bundle', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'artifact_tool',
+          content: JSON.stringify({
+            artifacts: [
+              { name: 'report.json', path: '/tmp/report.json', mime_type: 'application/json', size_bytes: 128, summary: 'Structured result' },
+            ],
+          }),
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Tool artifacts' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('report.json')).toBeTruthy()
+    expect(within(preview).getByText((text) => text.includes('application/json'))).toBeTruthy()
+    expect(within(preview).getByText('Structured result')).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+  })
+
+  it('renders standard spill notices as readable artifacts', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'list_dir',
+          content: 'preview\n\n... [output truncated: 100000 chars / 1200 lines saved to ~/.aether/tool_results/s/call.txt — use read_file to retrieve the full content] ...',
+          metadata: { spilled: true, truncated: true },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Tool artifacts' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('call.txt')).toBeTruthy()
+    expect(within(preview).getByText('Full output: 100000 chars / 1200 lines')).toBeTruthy()
   })
 
   it('falls back to generic tool output for unknown tools', () => {

@@ -66,6 +66,22 @@ export type PromptResolution = {
 
 export type DiffOrigin = 'permission_preview' | 'tool_result' | 'transcript'
 
+export type DiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint' | string
+
+export type DiagnosticEntry = {
+  severity: DiagnosticSeverity
+  line: number
+  column: number
+  source: string
+  message: string
+  code?: string | null
+}
+
+export type DiagnosticFileGroup = {
+  path: string
+  diagnostics: DiagnosticEntry[]
+}
+
 export type DiffContent = {
   path?: string | null
   diff?: string | null
@@ -161,6 +177,12 @@ export type StreamingStatusBlock = ChatBlockBase & {
   tokens?: TokenUsage
 }
 
+export type DiagnosticsBlock = ChatBlockBase & {
+  kind: 'diagnostics'
+  content: string
+  files: DiagnosticFileGroup[]
+}
+
 export type TaskNotificationBlock = ChatBlockBase & {
   kind: 'task_notification'
   taskId: string
@@ -194,6 +216,7 @@ export type ChatBlock =
   | ApprovalRequestBlock
   | AskUserQuestionBlock
   | StreamingStatusBlock
+  | DiagnosticsBlock
   | TaskNotificationBlock
   | SystemNoticeBlock
   | ErrorBlock

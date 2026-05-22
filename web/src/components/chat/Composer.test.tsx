@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import { Composer } from './Composer'
@@ -278,6 +278,32 @@ describe('Composer', () => {
     expect(onSend).toHaveBeenCalledWith('@src/app.ts', [
       expect.objectContaining({ type: 'text', name: 'app.ts', path: 'src/app.ts' }),
     ])
+  })
+
+  it('shows workspace references as managed context chips and removes matching text tokens', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
+      root: '/workspace/Aether',
+      query: 'app',
+      entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@app', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    const context = screen.getByLabelText('Workspace context')
+    expect(context).toBeTruthy()
+    expect(within(context).getByText('Workspace context')).toBeTruthy()
+    expect(within(context).getByText('1 ref')).toBeTruthy()
+    expect(screen.getByText('app.ts')).toBeTruthy()
+    expect(screen.getByText('src/app.ts')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('Remove workspace reference app.ts'))
+    await waitFor(() => expect(screen.queryByLabelText('Workspace context')).toBeNull())
+    expect(textbox.value).toBe('')
   })
 
   it('renders command-surface metadata in the footer', () => {

@@ -5,6 +5,7 @@ import {
   AskUserQuestionBlock,
   AssistantMessageBlock,
   CurrentTurnChangeCard,
+  DiagnosticsBlock,
   DiffBlock,
   ErrorBlock,
   PermissionRequestBlock,
@@ -151,6 +152,8 @@ function ChatBlockView({
       return <ToolResultBlock block={block} />
     case 'diff':
       return <DiffBlock block={block} />
+    case 'diagnostics':
+      return <DiagnosticsBlock block={block} />
     case 'permission_request':
       return <PermissionRequestBlock block={block} onRespond={onRespondPermission} />
     case 'approval_request':

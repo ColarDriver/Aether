@@ -1,4 +1,4 @@
-import type { AskUserQuestion, AskUserQuestionOption, ChatAttachment, DiffContent, TaskNotificationBlock } from './blocks'
+import type { AskUserQuestion, AskUserQuestionOption, ChatAttachment, DiagnosticEntry, DiagnosticFileGroup, DiffContent, TaskNotificationBlock } from './blocks'
 
 export function stringFromUnknown(value: unknown): string {
   if (typeof value === 'string') return value
@@ -100,6 +100,43 @@ export function attachmentsFromMetadata(metadata: Record<string, unknown>): Chat
     if (attachments.length > 0) return attachments
   }
   return []
+}
+
+
+export type DiagnosticsBlockContent = {
+  content: string
+  files: DiagnosticFileGroup[]
+}
+
+export function parseDiagnosticsBlock(text: string): DiagnosticsBlockContent | null {
+  const xml = diagnosticsXml(text)
+  if (!xml) return null
+  const body = xml.replace(/^<diagnostics>\s*/i, '').replace(/\s*<\/diagnostics>$/i, '')
+  const files: DiagnosticFileGroup[] = []
+  let current: DiagnosticFileGroup | null = null
+
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trimEnd()
+    const heading = line.match(/^##\s+(.+)$/)
+    if (heading) {
+      current = { path: decodeXmlText(heading[1]!.trim()), diagnostics: [] }
+      files.push(current)
+      continue
+    }
+    if (!current) continue
+    const diagnostic = parseDiagnosticLine(line)
+    if (diagnostic) current.diagnostics.push(diagnostic)
+  }
+
+  const nonEmptyFiles = files.filter((file) => file.diagnostics.length > 0)
+  if (nonEmptyFiles.length === 0) return null
+  return { content: xml, files: nonEmptyFiles }
+}
+
+export function isDiagnosticsText(text: string): boolean {
+  const trimmed = text.trim()
+  const xml = diagnosticsXml(trimmed)
+  return Boolean(xml && xml === trimmed)
 }
 
 export type TaskNotificationContent = Pick<
@@ -231,6 +268,29 @@ function numberOrUndefined(value: unknown): number | undefined {
 
 function numberOrNull(value: unknown): number | null {
   return numberOrUndefined(value) ?? null
+}
+
+
+function parseDiagnosticLine(line: string): DiagnosticEntry | null {
+  const match = line.match(/^\s*(ERROR|WARNING|INFO|HINT)\s+(\d+):(\d+)\s+([^:]+):\s*(.*)$/i)
+  if (!match) return null
+  const sourceAndCode = decodeXmlText(match[4]!.trim())
+  const sourceMatch = sourceAndCode.match(/^(.*?)\s+\[([^\]]+)\]$/)
+  return {
+    severity: match[1]!.toLowerCase(),
+    line: Number(match[2]),
+    column: Number(match[3]),
+    source: (sourceMatch?.[1] ?? sourceAndCode).trim(),
+    ...(sourceMatch?.[2] ? { code: sourceMatch[2] } : {}),
+    message: decodeXmlText(match[5]!.trim()),
+  }
+}
+
+function diagnosticsXml(text: string): string | null {
+  const trimmed = text.trim()
+  const full = trimmed.match(/^<diagnostics>\s*[\s\S]*<\/diagnostics>$/i)
+  if (full) return trimmed
+  return trimmed.match(/<diagnostics>\s*[\s\S]*?<\/diagnostics>/i)?.[0] ?? null
 }
 
 function taskNotificationXml(text: string): string | null {

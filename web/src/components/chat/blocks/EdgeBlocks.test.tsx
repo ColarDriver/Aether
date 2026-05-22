@@ -3,6 +3,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AskUserQuestionBlock } from './AskUserQuestionBlock'
+import { DiagnosticsBlock } from './DiagnosticsBlock'
 import { ErrorBlock } from './ErrorBlock'
 import { SystemNoticeBlock } from './SystemNoticeBlock'
 
@@ -44,6 +45,35 @@ describe('edge timeline blocks', () => {
     expect(screen.getByText('Which mode should the agent use?')).toBeTruthy()
     expect(screen.getByText('More verification')).toBeTruthy()
     expect(screen.getAllByText('Careful')).toHaveLength(2)
+  })
+
+  it('renders diagnostics bundles without exposing raw XML', () => {
+    render(
+      <DiagnosticsBlock
+        block={{
+          ...base,
+          kind: 'diagnostics',
+          content: '<diagnostics>raw</diagnostics>',
+          files: [
+            {
+              path: 'src/app.py',
+              diagnostics: [
+                { severity: 'error', line: 4, column: 8, source: 'pyright', code: 'reportGeneralTypeIssues', message: 'bad type' },
+                { severity: 'warning', line: 9, column: 1, source: 'ruff', message: 'unused import' },
+              ],
+            },
+          ],
+        }}
+      />,
+    )
+
+    expect(screen.getByLabelText('Diagnostics')).toBeTruthy()
+    expect(screen.getByText('2 issues after recent edits')).toBeTruthy()
+    expect(screen.getByText('src/app.py')).toBeTruthy()
+    expect(screen.getByText('4:8')).toBeTruthy()
+    expect(screen.getByText('pyright [reportGeneralTypeIssues]')).toBeTruthy()
+    expect(screen.getByText('bad type')).toBeTruthy()
+    expect(screen.queryByText('<diagnostics>raw</diagnostics>')).toBeNull()
   })
 
   it('renders rich system notices with a stable header', () => {

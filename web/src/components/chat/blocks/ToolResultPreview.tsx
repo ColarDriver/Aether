@@ -1,7 +1,8 @@
-import { Bot, ChevronLeft, ChevronRight, ExternalLink, FileText, Globe, ImageIcon, Search, X } from 'lucide-react'
+import { BookOpen, ChevronLeft, ChevronRight, ExternalLink, FileArchive, FileCode2, FileText, Globe, ImageIcon, Monitor, Pencil, Search, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { CodeBlock } from './CodeBlock'
+import { InlineTaskSummary } from './InlineTaskSummary'
 
 type Props = {
   block: ToolResult
@@ -32,24 +33,43 @@ type ToolImage = {
   href: string | null
 }
 
+type ToolArtifact = {
+  name: string
+  href: string | null
+  path: string | null
+  kind: string | null
+  mimeType: string | null
+  size: number | null
+  note: string | null
+}
+
 export function canPreviewToolResult(block: ToolResult): boolean {
   const toolName = (block.toolName || '').toLowerCase()
   if (parseToolImages(block).length > 0) return true
-  if (isReadTool(toolName) || isTaskTool(toolName)) return true
+  if (parseToolArtifacts(block).length > 0) return true
+  if (isReadTool(toolName) || isTaskTool(toolName) || isEditTool(toolName) || isNotebookTool(toolName) || isLspTool(toolName) || isBrowserTool(toolName)) return true
   if (isSearchTool(toolName)) return parseSearchMatches(block.content).length > 0
   if (isWebTool(toolName)) return parseWebResults(block.content).length > 0
   return false
 }
 
 export function ToolResultPreview({ block, toolArguments = {} }: Props) {
+  const toolName = (block.toolName || '').toLowerCase()
+  if (isBrowserTool(toolName)) return <BrowserPreview block={block} toolArguments={toolArguments} />
+
   const toolImages = parseToolImages(block)
   if (toolImages.length > 0) return <ImagePreview images={toolImages} />
 
-  const toolName = (block.toolName || '').toLowerCase()
   if (isReadTool(toolName)) return <ReadFilePreview block={block} toolArguments={toolArguments} />
+  if (isEditTool(toolName)) return <FileChangePreview block={block} toolArguments={toolArguments} />
+  if (isNotebookTool(toolName)) return <NotebookPreview block={block} toolArguments={toolArguments} />
+  if (isLspTool(toolName)) return <LspPreview block={block} toolArguments={toolArguments} />
   if (isSearchTool(toolName)) return <SearchPreview content={block.content} />
   if (isWebTool(toolName)) return <WebPreview content={block.content} toolName={block.toolName || 'web'} />
   if (isTaskTool(toolName)) return <TaskPreview block={block} toolArguments={toolArguments} />
+
+  const toolArtifacts = parseToolArtifacts(block)
+  if (toolArtifacts.length > 0) return <ArtifactPreview artifacts={toolArtifacts} />
   return null
 }
 
@@ -64,6 +84,126 @@ function ReadFilePreview({ block, toolArguments }: PreviewProps) {
       </header>
       <CodeBlock code={block.content} language={language} wrap />
     </section>
+  )
+}
+
+function FileChangePreview({ block, toolArguments }: PreviewProps) {
+  const path = firstString(block.metadata.path, toolArguments.path, toolArguments.file_path, toolArguments.filePath)
+    || firstStringFromArray(block.metadata.edited_paths)
+    || 'File change'
+  const additions = numberValue(block.metadata.lines_added) ?? numberValue(block.metadata.linesAdded)
+  const removals = numberValue(block.metadata.lines_removed) ?? numberValue(block.metadata.linesRemoved)
+  const hunks = numberValue(block.metadata.hunks)
+  const changeCount = numberValue(block.metadata.change_count) ?? numberValue(block.metadata.changeCount)
+  const stats = [
+    additions != null ? { label: 'added', value: '+' + additions.toLocaleString(), tone: 'add' } : null,
+    removals != null ? { label: 'removed', value: '-' + removals.toLocaleString(), tone: 'remove' } : null,
+    hunks != null ? { label: 'hunks', value: hunks.toLocaleString() } : null,
+    changeCount != null ? { label: 'changes', value: changeCount.toLocaleString() } : null,
+    typeof block.metadata.existed === 'boolean' ? { label: 'mode', value: block.metadata.existed ? 'overwrite' : 'create' } : null,
+  ].filter((item): item is { label: string; value: string; tone?: string } => Boolean(item))
+  return (
+    <section className="tool-preview tool-preview-edit" aria-label="File change">
+      <header>
+        <span><Pencil size={14} /><strong>{path}</strong></span>
+        <em>{block.isError ? 'failed' : 'changed'}</em>
+      </header>
+      {stats.length > 0 ? <PreviewStats stats={stats} /> : null}
+      {block.content ? <pre className="tool-preview-summary"><code>{block.content}</code></pre> : null}
+    </section>
+  )
+}
+
+function NotebookPreview({ block, toolArguments }: PreviewProps) {
+  const path = firstString(block.metadata.path, toolArguments.notebook_path, toolArguments.path) || 'Notebook'
+  const mode = firstString(block.metadata.edit_mode, toolArguments.edit_mode) || 'edit'
+  const cellRef = firstString(toolArguments.cell_id, block.metadata.cell_id, block.metadata.cellId)
+    || numberLabel('cell', numberValue(toolArguments.cell_idx) ?? numberValue(toolArguments.cellIdx))
+  const cellType = firstString(toolArguments.cell_type, block.metadata.cell_type, block.metadata.cellType)
+  const cellCount = numberValue(block.metadata.cell_count) ?? numberValue(block.metadata.cellCount)
+  const stats = [
+    { label: 'mode', value: mode },
+    cellRef ? { label: 'cell', value: cellRef } : null,
+    cellType ? { label: 'type', value: cellType } : null,
+    cellCount != null ? { label: 'cells', value: cellCount.toLocaleString() } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item))
+  return (
+    <section className="tool-preview tool-preview-notebook" aria-label="Notebook edit">
+      <header>
+        <span><BookOpen size={14} /><strong>{path}</strong></span>
+        <em>{block.isError ? 'failed' : mode}</em>
+      </header>
+      <PreviewStats stats={stats} />
+      {block.content ? <pre className="tool-preview-summary"><code>{block.content}</code></pre> : null}
+    </section>
+  )
+}
+
+function LspPreview({ block, toolArguments }: PreviewProps) {
+  const operation = firstString(block.metadata.operation, toolArguments.operation) || 'lsp'
+  const target = firstString(block.metadata.file_path, block.metadata.filePath, toolArguments.filePath, toolArguments.query, block.metadata.query)
+  const matches = parseMarkdownBullets(block.content)
+  return (
+    <section className="tool-preview tool-preview-lsp" aria-label="LSP result">
+      <header>
+        <span><FileCode2 size={14} /><strong>{operation}</strong></span>
+        <em>{block.isError ? 'failed' : 'lsp'}</em>
+      </header>
+      {target ? <PreviewStats stats={[{ label: operation === 'workspaceSymbol' ? 'query' : 'target', value: target }]} /> : null}
+      {matches.length > 0 ? (
+        <ol className="tool-preview-lsp-list">
+          {matches.slice(0, 30).map((match, index) => <li key={index}><code>{match}</code></li>)}
+        </ol>
+      ) : block.content ? (
+        <pre className="tool-preview-summary"><code>{block.content}</code></pre>
+      ) : null}
+    </section>
+  )
+}
+
+function BrowserPreview({ block, toolArguments }: PreviewProps) {
+  const operation = firstString(block.metadata.operation, toolArguments.operation) || 'browser'
+  const url = firstString(block.metadata.url, toolArguments.url)
+  const selector = firstString(block.metadata.selector, toolArguments.selector)
+  const screenshotPath = firstString(block.metadata.screenshot_path, block.metadata.screenshotPath)
+  const stats = [
+    url ? { label: 'url', value: url } : null,
+    selector ? { label: 'selector', value: selector } : null,
+    numberValue(block.metadata.bytes) != null ? { label: 'bytes', value: numberValue(block.metadata.bytes)!.toLocaleString() } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item))
+  return (
+    <section className="tool-preview tool-preview-browser" aria-label="Browser result">
+      <header>
+        <span><Monitor size={14} /><strong>{operation}</strong></span>
+        <em>{block.isError ? 'failed' : 'browser'}</em>
+      </header>
+      {stats.length > 0 ? <PreviewStats stats={stats} /> : null}
+      {screenshotPath ? (
+        <div className="tool-preview-artifact">
+          <ImageIcon size={14} aria-hidden="true" />
+          <span>
+            <strong>Screenshot saved</strong>
+            <code>{screenshotPath}</code>
+          </span>
+        </div>
+      ) : block.content ? (
+        <pre className="tool-preview-summary"><code>{block.content}</code></pre>
+      ) : null}
+    </section>
+  )
+}
+
+function PreviewStats({ stats }: { stats: Array<{ label: string; value: string; tone?: string }> }) {
+  if (stats.length === 0) return null
+  return (
+    <div className="tool-preview-stats">
+      {stats.map((stat) => (
+        <span className={stat.tone ? 'tool-preview-stat-' + stat.tone : undefined} key={stat.label} title={stat.value}>
+          <strong>{stat.value}</strong>
+          <small>{stat.label}</small>
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -122,17 +262,62 @@ function WebPreview({ content, toolName }: { content: string; toolName: string }
 }
 
 function TaskPreview({ block, toolArguments }: PreviewProps) {
-  const prompt = stringValue(toolArguments.prompt) || stringValue(toolArguments.description) || stringValue(toolArguments.task) || stringValue(block.metadata.prompt)
-  const model = stringValue(toolArguments.model) || stringValue(block.metadata.model)
-  const status = block.isError ? 'failed' : stringValue(block.metadata.status) || 'completed'
+  const parsedContent = parseJson(block.content)
+  const contentRecord = isRecord(parsedContent) ? parsedContent : {}
+  const usage = isRecord(block.metadata.usage) ? block.metadata.usage : isRecord(contentRecord.usage) ? contentRecord.usage : {}
+  const prompt = firstString(
+    toolArguments.prompt,
+    toolArguments.description,
+    toolArguments.task,
+    block.metadata.prompt,
+    contentRecord.prompt,
+    contentRecord.description,
+    contentRecord.task,
+  )
+  const status = block.isError ? 'failed' : firstString(block.metadata.status, contentRecord.status) || 'completed'
+  const summary = firstString(block.metadata.summary, contentRecord.summary)
+  const outputTail = firstString(block.metadata.output_tail, block.metadata.outputTail, contentRecord.output_tail, contentRecord.outputTail)
+    || (summary ? null : block.content)
   return (
-    <section className={'tool-preview tool-preview-task tool-preview-task-' + status} aria-label="Subagent result">
+    <InlineTaskSummary
+      className="tool-preview tool-preview-task"
+      ariaLabel="Subagent result"
+      title={prompt || 'Subagent task'}
+      status={status}
+      taskId={firstString(block.metadata.task_id, block.metadata.taskId, contentRecord.task_id, contentRecord.taskId, contentRecord.id)}
+      subagentType={firstString(toolArguments.subagent_type, toolArguments.subagentType, toolArguments.agent_type, toolArguments.agentType, block.metadata.subagent_type, block.metadata.subagentType, contentRecord.subagent_type, contentRecord.subagentType)}
+      model={firstString(toolArguments.model, block.metadata.model, contentRecord.model)}
+      durationSeconds={durationSecondsFromMetadata(block.metadata) ?? durationSecondsFromMetadata(contentRecord)}
+      inputTokens={numberValue(block.metadata.input_tokens) ?? numberValue(block.metadata.inputTokens) ?? numberValue(usage.input_tokens) ?? numberValue(usage.inputTokens)}
+      outputTokens={numberValue(block.metadata.output_tokens) ?? numberValue(block.metadata.outputTokens) ?? numberValue(usage.output_tokens) ?? numberValue(usage.outputTokens)}
+      summary={summary}
+      error={firstString(block.metadata.error, contentRecord.error)}
+      outputTail={outputTail}
+      outputFile={firstString(block.metadata.output_file, block.metadata.outputFile, block.metadata.result_path, block.metadata.resultPath, contentRecord.output_file, contentRecord.outputFile, contentRecord.result_path, contentRecord.resultPath)}
+    />
+  )
+}
+
+function ArtifactPreview({ artifacts }: { artifacts: ToolArtifact[] }) {
+  return (
+    <section className="tool-preview tool-preview-artifacts" aria-label="Tool artifacts">
       <header>
-        <span><Bot size={14} /><strong>{prompt || 'Subagent task'}</strong></span>
-        <em>{status}</em>
+        <span><FileArchive size={14} /><strong>Artifacts</strong></span>
+        <em>{artifacts.length.toLocaleString()} item{artifacts.length === 1 ? '' : 's'}</em>
       </header>
-      {model ? <p className="tool-preview-note">Model: {model}</p> : null}
-      {block.content ? <pre className="tool-preview-task-output"><code>{block.content}</code></pre> : null}
+      <div className="tool-preview-artifact-list">
+        {artifacts.map((artifact, index) => (
+          <article className="tool-preview-artifact-row" key={(artifact.href || artifact.path || artifact.name) + '-' + index}>
+            <FileText size={14} aria-hidden="true" />
+            <span>
+              <strong>{artifact.name}</strong>
+              <small>{artifactMeta(artifact)}</small>
+              {artifact.note ? <em>{artifact.note}</em> : null}
+            </span>
+            {artifact.href ? <a href={artifact.href} target="_blank" rel="noreferrer">Open</a> : null}
+          </article>
+        ))}
+      </div>
     </section>
   )
 }
@@ -254,6 +439,88 @@ function parseWebResults(content: string): WebResult[] {
   return results
 }
 
+function parseToolArtifacts(block: ToolResult): ToolArtifact[] {
+  const artifacts: ToolArtifact[] = []
+  const seen = new Set<string>()
+  const add = (artifact: ToolArtifact | null) => {
+    if (!artifact) return
+    const key = artifact.href || artifact.path || artifact.name
+    if (seen.has(key)) return
+    seen.add(key)
+    artifacts.push(artifact)
+  }
+
+  add(spillArtifactFromText(block.content))
+  const parsed = parseJson(block.content)
+  collectArtifactsFromRecord(parsed, add)
+  collectArtifactsFromRecord(block.metadata, add)
+  return artifacts.filter((artifact) => !artifact.href || !safeImageSrc(artifact.href))
+}
+
+function collectArtifactsFromRecord(value: unknown, add: (artifact: ToolArtifact | null) => void): void {
+  if (!isRecord(value)) return
+  for (const key of ['artifacts', 'attachments', 'files', 'outputs']) {
+    const items = arrayValue(value[key])
+    if (!items) continue
+    for (const item of items) add(artifactFromRecord(recordOrNull(item)))
+  }
+  add(artifactFromRecord(pickArtifactRecord(value)))
+}
+
+function artifactFromRecord(record: Record<string, unknown> | null): ToolArtifact | null {
+  if (!record) return null
+  const path = firstString(record.path, record.file_path, record.filePath, record.result_path, record.resultPath, record.output_file, record.outputFile)
+  const url = firstString(record.url, record.href, record.uri)
+  const href = safeHref(url || path)
+  if (!href && !path) return null
+  const name = firstString(record.title, record.name, record.filename, record.file_name, record.label) || artifactNameFromPath(path || href || 'artifact')
+  return {
+    name,
+    href,
+    path: path || null,
+    kind: firstString(record.kind, record.type) || null,
+    mimeType: firstString(record.mime_type, record.mimeType, record.media_type, record.mediaType) || null,
+    size: numberValue(record.size) ?? numberValue(record.size_bytes) ?? numberValue(record.sizeBytes) ?? numberValue(record.bytes),
+    note: firstString(record.caption, record.description, record.summary) || null,
+  }
+}
+
+function pickArtifactRecord(record: Record<string, unknown>): Record<string, unknown> | null {
+  const path = firstString(record.result_path, record.resultPath, record.output_file, record.outputFile, record.artifact_path, record.artifactPath)
+  if (!path) return null
+  return { path, name: firstString(record.result_name, record.resultName, record.output_name, record.outputName), kind: 'result' }
+}
+
+function spillArtifactFromText(content: string): ToolArtifact | null {
+  const match = content.match(/output truncated: ([^\]]*?) saved to (\S+)\s+[—-]\s+use read_file to retrieve/i)
+  if (!match) return null
+  const path = match[2]?.trim()
+  if (!path) return null
+  return {
+    name: artifactNameFromPath(path),
+    href: safeHref(path),
+    path,
+    kind: 'spilled result',
+    mimeType: null,
+    size: null,
+    note: match[1] ? 'Full output: ' + match[1].trim() : 'Full output saved to disk',
+  }
+}
+
+function artifactMeta(artifact: ToolArtifact): string {
+  const parts = [artifact.kind, artifact.mimeType, artifact.size != null ? artifact.size.toLocaleString() + ' bytes' : null, artifact.path].filter(Boolean)
+  return parts.join(' / ') || 'artifact'
+}
+
+function artifactNameFromPath(path: string): string {
+  const clean = path.split(/[?#]/, 1)[0] || path
+  return clean.split(/[\/]/).filter(Boolean).pop() || 'artifact'
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null
+}
+
 function parseToolImages(block: ToolResult): ToolImage[] {
   const images: ToolImage[] = []
   const seen = new Set<string>()
@@ -372,6 +639,22 @@ function isTaskTool(toolName: string) {
   return ['task', 'agent', 'spawn_agent', 'delegate_task'].includes(toolName)
 }
 
+function isEditTool(toolName: string) {
+  return ['write', 'write_file', 'create_file', 'edit', 'edit_file', 'file_edit', 'replace', 'apply_patch'].includes(toolName)
+}
+
+function isNotebookTool(toolName: string) {
+  return toolName === 'notebook_edit'
+}
+
+function isLspTool(toolName: string) {
+  return toolName === 'lsp'
+}
+
+function isBrowserTool(toolName: string) {
+  return ['web_browser', 'browser', 'browser_tool'].includes(toolName)
+}
+
 function languageFromPath(path?: string | null): string | null {
   if (!path) return null
   const ext = path.split('.').pop()?.toLowerCase()
@@ -388,6 +671,52 @@ function languageFromPath(path?: string | null): string | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const text = stringValue(value)
+    if (text) return text
+  }
+  return null
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function durationSecondsFromMetadata(metadata: Record<string, unknown>): number | null {
+  const seconds = numberValue(metadata.duration_seconds) ?? numberValue(metadata.durationSeconds)
+  if (seconds != null) return seconds
+  const millis = numberValue(metadata.duration_ms) ?? numberValue(metadata.durationMs)
+  return millis != null ? millis / 1000 : null
+}
+
+function firstStringFromArray(value: unknown): string | null {
+  if (!Array.isArray(value)) return null
+  for (const item of value) {
+    const text = stringValue(item)
+    if (text) return text
+  }
+  return null
+}
+
+function numberLabel(prefix: string, value: number | null): string | null {
+  return value == null ? null : prefix + ' ' + value.toLocaleString()
+}
+
+function parseMarkdownBullets(content: string): string[] {
+  return content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean)
 }
 
 function arrayValue(value: unknown): unknown[] | null {

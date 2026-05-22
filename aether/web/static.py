@@ -44,6 +44,9 @@ def inject_bootstrap(html: str, *, session_token: str, base_path: str = "") -> s
         f"window.__AETHER_SESSION_TOKEN__={session_token!r};"
         "</script>"
     )
+    module_index = html.find("<script type=\"module\"")
+    if module_index >= 0:
+        return html[:module_index] + script + html[module_index:]
     if "</head>" in html:
         return html.replace("</head>", f"{script}</head>", 1)
     return f"{script}{html}"

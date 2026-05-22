@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MarkdownRenderer } from './MarkdownRenderer'
 
@@ -68,6 +68,26 @@ describe('MarkdownRenderer', () => {
     expect(document.querySelector('br')).toBeTruthy()
   })
 
+  it('renders markdown images and opens the image preview dialog', () => {
+    render(<MarkdownRenderer text={'Here is ![Diagram](https://example.com/diagram.png) and https://example.com/screenshot.webp'} />)
+
+    expect(screen.getByRole('img', { name: 'Diagram' })).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'screenshot.webp' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Diagram/ }))
+    expect(screen.getByRole('dialog', { name: 'Diagram' })).toBeTruthy()
+    expect(screen.getByText('1 / 2')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }))
+    expect(screen.getByRole('dialog', { name: 'screenshot.webp' })).toBeTruthy()
+  })
+
+  it('does not render unsafe markdown image sources as images', () => {
+    render(<MarkdownRenderer text={'![bad](javascript:alert(1))'} />)
+
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(document.querySelector('.markdown-image')).toBeNull()
+  })
   it('keeps the streaming caret inside the last markdown block', () => {
     render(<MarkdownRenderer text={'- one\n- two'} streaming />)
 

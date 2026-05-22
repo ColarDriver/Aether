@@ -15,7 +15,8 @@ type Props = {
 export function ToolCallBlock({ block, result, diffs = [] }: Props) {
   const [expanded, setExpanded] = useState(false)
   const todos = block.toolName === 'todo_write' ? todosFromToolArguments(block.arguments) : []
-  const hasDetails = Object.keys(block.arguments).length > 0 || Boolean(result) || diffs.length > 0
+  const showRawInput = Object.keys(block.arguments).length > 0 && todos.length === 0 && !isTerminalTool(block.toolName)
+  const hasDetails = showRawInput || Boolean(result) || diffs.length > 0
   const detailsVisible = expanded || Boolean(result) || diffs.length > 0
   const summary = toolSummary(block)
   const ToolIcon = toolIconForName(block.toolName)
@@ -31,11 +32,11 @@ export function ToolCallBlock({ block, result, diffs = [] }: Props) {
       {detailsVisible ? (
         <div className="tool-call-body">
           {todos.length > 0 ? <TodoListPreview todos={todos} /> : null}
-          {Object.keys(block.arguments).length > 0 && todos.length === 0 ? (
+          {showRawInput ? (
             <CodeBlock code={JSON.stringify(block.arguments, null, 2)} language="json" title="Input" />
           ) : null}
           {diffs.map((diff) => <DiffBlock block={diff} key={diff.id} />)}
-          {result ? <ToolResultBlock block={result} /> : null}
+          {result ? <ToolResultBlock block={result} command={stringArg(block.arguments, 'command')} toolArguments={block.arguments} /> : null}
         </div>
       ) : null}
     </article>
@@ -59,9 +60,13 @@ function stringArg(args: Record<string, unknown>, key: string): string {
   return typeof args[key] === 'string' ? args[key] : ''
 }
 
+function isTerminalTool(toolName: string): boolean {
+  return ['bash', 'shell', 'exec', 'exec_command', 'terminal', 'run_shell'].includes(toolName.toLowerCase())
+}
+
 function toolIconForName(toolName: string) {
   const normalized = toolName.toLowerCase()
-  if (['bash', 'shell', 'exec_command'].includes(normalized)) return Terminal
+  if (isTerminalTool(toolName)) return Terminal
   if (['read', 'read_file', 'view_file'].includes(normalized)) return FileText
   if (['write', 'write_file', 'create_file', 'edit', 'file_edit', 'replace', 'apply_patch'].includes(normalized)) return Pencil
   if (['grep', 'rg', 'search', 'search_files'].includes(normalized)) return Search

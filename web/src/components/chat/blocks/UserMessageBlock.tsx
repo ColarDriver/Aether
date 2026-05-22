@@ -11,7 +11,7 @@ export function UserMessageBlock({ block }: Props) {
     <article className="chat-block chat-block-user chat-message-group">
       <div className="chat-block-label">user</div>
       <AttachmentGallery attachments={block.attachments} align="end" />
-      {block.content.trim() ? <pre className="chat-user-text">{block.content}</pre> : null}
+      {block.content.trim() ? <pre className="chat-user-text">{block.content.trim()}</pre> : null}
       {block.pending ? <span className="chat-state-pill">pending</span> : null}
       <MessageActionBar copyText={block.content} copyLabel="Copy prompt" align="end" />
     </article>

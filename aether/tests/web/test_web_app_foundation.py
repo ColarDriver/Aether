@@ -72,6 +72,18 @@ def test_static_bootstrap_injects_token_and_base_path(tmp_path: Path) -> None:
     assert injected.index("<script>") < injected.index("</head>")
 
 
+def test_static_bootstrap_precedes_module_script() -> None:
+    html = (
+        "<html><head>"
+        "<script type=\"module\" src=\"/assets/app.js\"></script>"
+        "</head><body></body></html>"
+    )
+
+    injected = inject_bootstrap(html, session_token="abc")
+
+    assert injected.index("window.__AETHER_SESSION_TOKEN__") < injected.index("<script type=\"module\"")
+
+
 def test_entry_parser_imports_without_starting_server() -> None:
     parser = build_parser()
     args = parser.parse_args(["--host", "127.0.0.1", "--port", "9121", "--no-open"])

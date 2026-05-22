@@ -4,6 +4,7 @@ import {
   ApprovalRequestBlock,
   AskUserQuestionBlock,
   AssistantMessageBlock,
+  CurrentTurnChangeCard,
   DiffBlock,
   ErrorBlock,
   PermissionRequestBlock,
@@ -44,10 +45,28 @@ export function ChatTimeline({ blocks, onRespondPermission, onRespondApproval, o
               diffs={model.diffsByToolCallId}
             />
           ))}
+          <CurrentTurnChangeCard diffs={diffsForTurn(turn, model.diffsByToolCallId)} />
         </section>
       ))}
     </div>
   )
+}
+
+function diffsForTurn(turn: ChatTurn, diffs: Map<string, DiffChatBlock[]>): DiffChatBlock[] {
+  const collected: DiffChatBlock[] = []
+  for (const item of turn.items) {
+    if (item.kind === 'tool_group') {
+      for (const toolCall of item.toolCalls) collected.push(...(diffs.get(toolCall.toolCallId) ?? []))
+      continue
+    }
+    if (item.block.kind === 'diff') collected.push(item.block)
+  }
+  const seen = new Set<string>()
+  return collected.filter((diff) => {
+    if (seen.has(diff.id)) return false
+    seen.add(diff.id)
+    return true
+  })
 }
 
 function ChatRenderItemView({

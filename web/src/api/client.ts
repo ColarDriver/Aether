@@ -78,7 +78,13 @@ export async function request<T>(method: string, path: string, body?: unknown, o
     })
     clearTimeout(timeout)
     if (!response.ok) {
-      const errorBody = await response.json().catch(() => response.text())
+      const raw = await response.text().catch(() => '')
+      let errorBody: unknown = raw
+      try {
+        errorBody = JSON.parse(raw)
+      } catch {
+        // body is not JSON; keep the raw text
+      }
       throw new ApiError(response.status, errorBody)
     }
     if (response.status === 204) return undefined as T

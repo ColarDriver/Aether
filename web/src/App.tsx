@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookOpen, Boxes, Brain, CircleAlert, FileText, Folder, KeyRound, MessagesSquare, Settings, ShieldCheck, Wrench } from 'lucide-react'
+import { CircleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useAppearanceStore } from "./stores/appearanceStore"
@@ -62,8 +62,6 @@ export function App() {
           <ChatWorkbenchHeader
             session={activeSession}
             online={Boolean(status?.ok)}
-            provider={current?.provider_name}
-            model={current?.model}
             workspaceRailOpen={workspaceRailOpen}
             onToggleWorkspaceRail={() => setWorkspaceRailOpen((value) => !value)}
           />
@@ -138,17 +136,4 @@ function viewTitle(view: string) {
   return titles[view] || 'Aether'
 }
 
-export const navItems = [
-  { id: 'chat', label: 'Chat', icon: Activity },
-  { id: 'sessions', label: 'Sessions', icon: MessagesSquare },
-  { id: 'models', label: 'Models', icon: Boxes },
-  { id: 'tools', label: 'Tools', icon: Wrench },
-  { id: 'skills', label: 'Skills', icon: Brain },
-  { id: 'diagnostics', label: 'Diagnostics', icon: ShieldCheck },
-  { id: 'logs', label: 'Logs', icon: FileText },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-  { id: 'docs', label: 'Docs', icon: BookOpen },
-  { id: 'workspace', label: 'Workspace', icon: Folder },
-  { id: 'environment', label: 'Environment', icon: KeyRound },
-  { id: 'settings', label: 'Settings', icon: Settings },
-] as const
+export { navItems } from './navItems'

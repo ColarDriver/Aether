@@ -41,6 +41,19 @@ describe("appearanceStore", () => {
     expect(document.documentElement.lang).toBe("ja")
   })
 
+  it("keeps working when browser storage is unavailable", async () => {
+    vi.spyOn(api, "setPref").mockResolvedValue({ ok: true, key: "web.theme" })
+    const storageSpy = vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new Error("storage blocked")
+    })
+
+    await useAppearanceStore.getState().setTheme("dark")
+
+    expect(useAppearanceStore.getState().theme).toBe("dark")
+    expect(document.documentElement.dataset.theme).toBe("dark")
+    storageSpy.mockRestore()
+  })
+
   it("applies appearance directly to the document root", () => {
     applyAppearance("dark", "fr")
 

@@ -1,4 +1,7 @@
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { MermaidRenderer } from './MermaidRenderer'
 import { CodeBlock } from './blocks/CodeBlock'
 
 type Props = {
@@ -20,32 +23,55 @@ type ListItem = {
   checked?: boolean
 }
 
+type MarkdownImage = {
+  src: string
+  alt: string
+}
+
+type ImageContext = {
+  images: MarkdownImage[]
+  openImage: (index: number) => void
+}
+
+const MERMAID_DIAGRAM_START = /^(---|graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|c4Context|c4Container|c4Component|c4Dynamic|sankey-beta|block-beta|packet-beta|xychart-beta|kanban|architecture-beta)\b/i
+const PLAIN_CODE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext'])
+
 export function MarkdownRenderer({ text, streaming = false }: Props) {
   const blocks = splitMarkdownBlocks(text)
+  const images = useMemo(() => extractMarkdownImages(text), [text])
+  const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null)
+  const imageContext = useMemo<ImageContext>(() => ({ images, openImage: setActiveImageIndex }), [images])
   return (
     <div className="markdown-renderer">
-      {blocks.map((block, index) => renderBlock(block, index, streaming && index === blocks.length - 1))}
+      {blocks.map((block, index) => renderBlock(block, index, streaming && index === blocks.length - 1, imageContext))}
       {blocks.length === 0 && streaming ? <span className="streaming-caret" /> : null}
+      {activeImageIndex !== null ? (
+        <MarkdownImagePreview images={images} activeIndex={activeImageIndex} onClose={() => setActiveImageIndex(null)} onSelect={setActiveImageIndex} />
+      ) : null}
     </div>
   )
 }
 
-function renderBlock(block: MarkdownBlock, index: number, streaming = false) {
+function renderBlock(block: MarkdownBlock, index: number, streaming = false, imageContext?: ImageContext) {
   const caret = streaming ? <StreamingCaret /> : null
   if (block.type === 'heading') {
-    const content = <>{renderInline(block.content)}{caret}</>
+    const content = <>{renderInline(block.content, imageContext)}{caret}</>
     if (block.level === 1) return <h1 key={index}>{content}</h1>
     if (block.level === 2) return <h2 key={index}>{content}</h2>
     if (block.level === 3) return <h3 key={index}>{content}</h3>
     return <h4 key={index}>{content}</h4>
   }
-  if (block.type === 'code') return <CodeBlock code={block.code} key={index} language={block.language} />
-  if (block.type === 'table') return <MarkdownTable block={block.block} key={index} />
+  if (block.type === 'code') {
+    return shouldRenderAsMermaid(block.language, block.code)
+      ? <MermaidRenderer code={block.code} key={index} />
+      : <CodeBlock code={block.code} key={index} language={block.language} />
+  }
+  if (block.type === 'table') return <MarkdownTable block={block.block} imageContext={imageContext} key={index} />
   if (block.type === 'hr') return <hr className="markdown-hr" key={index} />
   if (block.type === 'blockquote') {
     return (
       <blockquote key={index}>
-        {renderInline(block.content)}
+        {renderInline(block.content, imageContext)}
         {caret}
       </blockquote>
     )
@@ -57,13 +83,13 @@ function renderBlock(block: MarkdownBlock, index: number, streaming = false) {
         {block.items.map((item, itemIndex) => (
           <li className={item.checked != null ? 'markdown-task-item' : undefined} key={itemIndex}>
             {item.checked != null ? <input checked={item.checked} readOnly type="checkbox" /> : null}
-            <span>{renderInline(item.content)}{streaming && itemIndex === block.items.length - 1 ? caret : null}</span>
+            <span>{renderInline(item.content, imageContext)}{streaming && itemIndex === block.items.length - 1 ? caret : null}</span>
           </li>
         ))}
       </Tag>
     )
   }
-  return <p key={index}>{renderInline(block.content)}{caret}</p>
+  return <p key={index}>{renderInline(block.content, imageContext)}{caret}</p>
 }
 
 function StreamingCaret() {
@@ -214,7 +240,26 @@ function hasTasks(items: ListItem[]): boolean {
   return items.some((item) => item.checked != null)
 }
 
-function MarkdownTable({ block }: { block: string }) {
+function shouldRenderAsMermaid(language: string, code: string): boolean {
+  const normalizedLanguage = normalizeCodeLanguage(language)
+  if (normalizedLanguage === 'mermaid') return true
+  if (!PLAIN_CODE_LANGUAGES.has(normalizedLanguage)) return false
+  return looksLikeMermaid(code)
+}
+
+function normalizeCodeLanguage(language: string): string {
+  return language.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? ''
+}
+
+function looksLikeMermaid(code: string): boolean {
+  const firstMeaningfulLine = code
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('%%'))
+  return firstMeaningfulLine ? MERMAID_DIAGRAM_START.test(firstMeaningfulLine) : false
+}
+
+function MarkdownTable({ block, imageContext }: { block: string; imageContext?: ImageContext }) {
   const lines = block.split('\n').map((line) => splitTableRow(line))
   const [headers, maybeSeparator, ...rest] = lines
   const hasSeparator = isSeparatorRow(maybeSeparator ?? [])
@@ -223,12 +268,12 @@ function MarkdownTable({ block }: { block: string }) {
     <div className="markdown-table-wrap">
       <table className="markdown-table">
         <thead>
-          <tr>{headers.map((cell) => <th key={cell}>{renderInline(cell)}</th>)}</tr>
+          <tr>{headers.map((cell) => <th key={cell}>{renderInline(cell, imageContext)}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}
+              {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell, imageContext)}</td>)}
             </tr>
           ))}
         </tbody>
@@ -245,12 +290,13 @@ function isSeparatorRow(row: string[]): boolean {
   return row.length > 0 && row.every((cell) => /^:?-{2,}:?$/.test(cell) || cell === '')
 }
 
-function renderInline(text: string): ReactNode[] {
+function renderInline(text: string, imageContext?: ImageContext): ReactNode[] {
   const parts: ReactNode[] = []
   const tick = String.fromCharCode(96)
   const pattern = new RegExp(
     '(' +
-      '\\[[^\\]]+\\]\\([^)]+\\)' +
+      '!\\[[^\\]]*\\]\\([^)]+\\)' +
+      '|' + '\\[[^\\]]+\\]\\([^)]+\\)' +
       '|' + tick + '[^' + tick + ']+' + tick +
       '|\\*\\*[^*]+\\*\\*' +
       '|~~[^~]+~~' +
@@ -267,6 +313,17 @@ function renderInline(text: string): ReactNode[] {
     const value = match[0]
     if (value.startsWith(tick)) {
       parts.push(<code className="markdown-inline-code" key={parts.length}>{value.slice(1, -1)}</code>)
+    } else if (value.startsWith('![')) {
+      const image = parseImage(value)
+      const src = safeImageSrc(image.src)
+      const alt = image.alt || imageAltFromUrl(src || '')
+      const imageIndex = imageContext?.images.findIndex((item) => item.src === src && item.alt === alt) ?? -1
+      parts.push(src ? (
+        <button type="button" className="markdown-image" key={parts.length} onClick={() => imageContext?.openImage(imageIndex >= 0 ? imageIndex : 0)}>
+          <img src={src} alt={alt} loading="lazy" />
+          {alt ? <span>{alt}</span> : null}
+        </button>
+      ) : value)
     } else if (value.startsWith('[')) {
       const link = parseLink(value)
       parts.push(
@@ -275,19 +332,30 @@ function renderInline(text: string): ReactNode[] {
         </a>,
       )
     } else if (value.startsWith('~~')) {
-      parts.push(<del key={parts.length}>{renderInline(value.slice(2, -2))}</del>)
+      parts.push(<del key={parts.length}>{renderInline(value.slice(2, -2), imageContext)}</del>)
     } else if (value.startsWith('*') && !value.startsWith('**')) {
-      parts.push(<em key={parts.length}>{renderInline(value.slice(1, -1))}</em>)
+      parts.push(<em key={parts.length}>{renderInline(value.slice(1, -1), imageContext)}</em>)
     } else if (/^https?:\/\//i.test(value)) {
-      parts.push(
-        <a href={safeHref(value)} key={parts.length} rel="noreferrer" target="_blank">
-          {value}
-        </a>,
-      )
+      const src = safeImageSrc(value)
+      if (src) {
+        const imageIndex = imageContext?.images.findIndex((item) => item.src === src) ?? -1
+        parts.push(
+          <button type="button" className="markdown-image markdown-image-url" key={parts.length} onClick={() => imageContext?.openImage(imageIndex >= 0 ? imageIndex : 0)}>
+            <img src={src} alt={imageAltFromUrl(src)} loading="lazy" />
+            <span>{imageAltFromUrl(src)}</span>
+          </button>,
+        )
+      } else {
+        parts.push(
+          <a href={safeHref(value)} key={parts.length} rel="noreferrer" target="_blank">
+            {value}
+          </a>,
+        )
+      }
     } else if (value === '\n') {
       parts.push(<br key={parts.length} />)
     } else {
-      parts.push(<strong key={parts.length}>{renderInline(value.slice(2, -2))}</strong>)
+      parts.push(<strong key={parts.length}>{renderInline(value.slice(2, -2), imageContext)}</strong>)
     }
     lastIndex = match.index + value.length
   }
@@ -295,9 +363,99 @@ function renderInline(text: string): ReactNode[] {
   return parts
 }
 
+function MarkdownImagePreview({ images, activeIndex, onClose, onSelect }: { images: MarkdownImage[]; activeIndex: number; onClose: () => void; onSelect: (index: number) => void }) {
+  const activeImage = images[activeIndex]
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (images.length <= 1) return
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        onSelect((activeIndex - 1 + images.length) % images.length)
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        onSelect((activeIndex + 1) % images.length)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [activeIndex, images.length, onClose, onSelect])
+
+  if (!activeImage) return null
+
+  return (
+    <div className="markdown-image-backdrop" role="dialog" aria-modal="true" aria-label={activeImage.alt || 'Image preview'}>
+      <div className="markdown-image-modal">
+        <header>
+          <div>
+            <strong>{activeImage.alt || imageAltFromUrl(activeImage.src)}</strong>
+            <span>{activeIndex + 1} / {images.length}</span>
+          </div>
+          <button type="button" aria-label="Close image preview" onClick={onClose}>
+            <X aria-hidden="true" size={16} />
+          </button>
+        </header>
+        <div className="markdown-image-stage">
+          {images.length > 1 ? (
+            <button type="button" aria-label="Previous image" onClick={() => onSelect((activeIndex - 1 + images.length) % images.length)}>
+              <ChevronLeft aria-hidden="true" size={18} />
+            </button>
+          ) : null}
+          <img src={activeImage.src} alt={activeImage.alt || imageAltFromUrl(activeImage.src)} />
+          {images.length > 1 ? (
+            <button type="button" aria-label="Next image" onClick={() => onSelect((activeIndex + 1) % images.length)}>
+              <ChevronRight aria-hidden="true" size={18} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function extractMarkdownImages(text: string): MarkdownImage[] {
+  const images: MarkdownImage[] = []
+  const seen = new Set<string>()
+  const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)|\bhttps?:\/\/[^\s<>)\]]+/g
+  let match: RegExpExecArray | null
+  while ((match = imagePattern.exec(text)) !== null) {
+    const src = safeImageSrc(match[2] ?? match[0])
+    if (!src) continue
+    const alt = match[1] || imageAltFromUrl(src)
+    const key = src + '\n' + alt
+    if (seen.has(key)) continue
+    seen.add(key)
+    images.push({ src, alt })
+  }
+  return images
+}
+
+function parseImage(value: string): { alt: string; src: string } {
+  const match = value.match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
+  return { alt: match?.[1] ?? '', src: match?.[2] ?? '' }
+}
+
 function parseLink(value: string): { label: string; href: string } {
   const match = value.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
   return { label: match?.[1] ?? value, href: match?.[2] ?? '#' }
+}
+
+function safeImageSrc(src: string): string | null {
+  const trimmed = src.trim()
+  if (/^data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,/i.test(trimmed)) return trimmed
+  if (/^(https?:|\/(?!\/)|\.\/|\.\.\/)/i.test(trimmed) && isImageUrl(trimmed)) return trimmed
+  return null
+}
+
+function isImageUrl(value: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i.test(value)
+}
+
+function imageAltFromUrl(src: string): string {
+  const clean = src.split(/[?#]/, 1)[0] || src
+  return clean.split('/').filter(Boolean).pop() || 'image'
 }
 
 function safeHref(href: string): string {

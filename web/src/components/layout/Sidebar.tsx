@@ -1,8 +1,7 @@
-import { Circle, Layers, MessageSquare, Plus, Search } from 'lucide-react'
+import { MessageSquare, Plus, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { navItems } from '../../App'
+import { navItems } from '../../navItems'
 import type { ConsoleView, SessionInfo } from '../../api/types'
-import { AppearanceControls } from '../shared/AppearanceControls'
 import { Button } from '../shared/Button'
 
 type Props = {
@@ -16,7 +15,6 @@ type Props = {
 
 export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession, onSelectView, onNewSession }: Props) {
   const [query, setQuery] = useState('')
-  const activeSession = sessions.find((session) => session.session_id === activeSessionId)
   const filteredSessions = useMemo(() => {
     const needle = query.trim().toLowerCase()
     if (!needle) return sessions
@@ -47,7 +45,7 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
           <div className="brand-mark">A</div>
           <div>
             <strong>Aether</strong>
-            <span>{activeSession?.model || sessions.length + ' sessions'}</span>
+            <span>{sessions.length + ' sessions'}</span>
           </div>
         </div>
         <div className="sidebar-primary-actions">
@@ -56,40 +54,6 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
             <span>New session</span>
           </button>
         </div>
-        <section className="sidebar-session-card" aria-label="Active session">
-          <div className="sidebar-session-card-head">
-            <span className="sidebar-session-card-icon" aria-hidden="true">
-              <Layers size={15} />
-            </span>
-            <div>
-              <strong>{activeSession?.summary || activeSession?.session_id.slice(0, 8) || 'No active session'}</strong>
-              <span>{activeSession ? activeSession.provider + ' / ' + activeSession.model : 'Create or resume a session'}</span>
-            </div>
-          </div>
-          <div className="sidebar-session-card-meta">
-            <span><Circle size={7} fill="currentColor" />{activeSession?.mode || 'agent'}</span>
-            <span>{activeSession?.message_count ?? 0} msgs</span>
-          </div>
-        </section>
-        <section className="sidebar-quick-nav" aria-label="Quick views">
-          <div className="sidebar-section-title">Views</div>
-          <nav className="nav-list" aria-label="Pinned console sections">
-            {navItems.filter((item) => ['chat', 'sessions', 'workspace', 'tools'].includes(item.id)).map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.id}
-                  className={activeView === item.id ? 'nav-item nav-item-active' : 'nav-item'}
-                  type="button"
-                  onClick={() => onSelectView(item.id)}
-                >
-                  <Icon size={16} />
-                  <span>{item.label}</span>
-                </button>
-              )
-            })}
-          </nav>
-        </section>
         <div className="sidebar-section-header">
           <span>Sessions</span>
           <Button title="New session" aria-label="New session quick action" onClick={onNewSession}>
@@ -135,20 +99,6 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
               ))}
             </section>
           ))}
-        </div>
-        <div className="sidebar-control-center" aria-label="Aether control center">
-          <div>
-            <strong>Control Center</strong>
-            <span>{sessions.length} sessions</span>
-          </div>
-          <AppearanceControls compact />
-          <button
-            type="button"
-            className={activeView === 'settings' ? 'sidebar-settings-link sidebar-settings-link-active' : 'sidebar-settings-link'}
-            onClick={() => onSelectView('settings')}
-          >
-            Settings
-          </button>
         </div>
       </aside>
     </>

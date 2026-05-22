@@ -30,8 +30,6 @@ describe('ChatWorkbenchHeader', () => {
 
     expect(screen.getByText('Refine web UI')).toBeTruthy()
     expect(screen.getByText('4 messages')).toBeTruthy()
-    expect(screen.getByText('gpt-5.4')).toBeTruthy()
-    expect(screen.getByText('plan')).toBeTruthy()
     expect(screen.getByText('online')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide workspace panel' }))

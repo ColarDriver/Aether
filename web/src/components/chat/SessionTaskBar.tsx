@@ -28,7 +28,10 @@ export function SessionTaskBar({ tasks, onOpenTask }: Props) {
         <span className="session-task-icon">
           <ListTodo size={16} aria-hidden="true" />
         </span>
-        <strong>Subagent tasks</strong>
+        <span className="session-task-title">
+          <strong>Subagent tasks</strong>
+          <small>{hasActiveTasks ? 'Running background work' : 'Task history'}</small>
+        </span>
         <span className="session-task-progress" aria-hidden="true">
           <span style={{ width: progress + '%' }} />
         </span>
@@ -74,8 +77,8 @@ function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task:
           {detail ? <p>{detail}</p> : null}
         </div>
         <span className="session-task-meta">
-          {task.status}
-          {task.model ? ' · ' + task.model : ''}
+          <span>{task.status}</span>
+          {task.model ? <em>{task.model}</em> : null}
         </span>
       </button>
     </li>

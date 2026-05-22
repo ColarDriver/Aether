@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ToolCallBlock as ToolCall, ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -52,6 +52,35 @@ describe('ToolCallBlock todo rendering', () => {
     expect(screen.queryByText('"todos"')).toBeNull()
   })
 
+  it('renders shell results in terminal chrome', () => {
+    const block: ToolCall = {
+      ...base,
+      kind: 'tool_call',
+      toolCallId: 'tc-shell',
+      toolName: 'exec_command',
+      status: 'finished',
+      arguments: { command: 'npm test -- Composer.test.tsx' },
+    }
+    const result: ToolResult = {
+      ...base,
+      id: 'tool-result-shell',
+      kind: 'tool_result',
+      toolCallId: 'tc-shell',
+      toolName: 'exec_command',
+      content: '15 tests passed',
+      isError: false,
+      metadata: { exit_code: 0, duration_ms: 1234 },
+    }
+
+    render(<ToolCallBlock block={block} result={result} />)
+
+    const terminal = screen.getByRole('region', { name: 'Terminal output' })
+    expect(terminal).toBeTruthy()
+    expect(within(terminal).getByText('npm test -- Composer.test.tsx')).toBeTruthy()
+    expect(within(terminal).getByText('15 tests passed')).toBeTruthy()
+    expect(within(terminal).getByText('exit 0')).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+  })
   it('normalizes valid todo_write items only', () => {
     expect(todosFromToolArguments({
       todos: [

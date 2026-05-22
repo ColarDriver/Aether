@@ -52,15 +52,6 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
     }
 
     if (message.role === 'system') {
-      blocks.push({
-        id: 'persisted-' + index + '-system',
-        sessionId,
-        runId,
-        timestamp,
-        source: 'transcript',
-        kind: 'system_notice',
-        content: message.text ?? '',
-      })
       return
     }
 

@@ -36,15 +36,14 @@ describe('Sidebar', () => {
 
     expect(screen.getByText('Aether')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Models/ })).toBeTruthy()
-    expect(screen.getByLabelText('Aether control center')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Settings' }).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Plan auth flow')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
+    expect(screen.getByText('Plan auth flow')).toBeTruthy()
     expect(screen.getByText('Older')).toBeTruthy()
-    expect(screen.getAllByText('plan')).toHaveLength(2)
-    expect(screen.getAllByText('3 msgs')).toHaveLength(2)
+    expect(screen.getByText('plan')).toBeTruthy()
+    expect(screen.getByText('3 msgs')).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'auth' } })
-    expect(screen.getAllByText('Plan auth flow')).toHaveLength(2)
+    expect(screen.getByText('Plan auth flow')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Models/ }))
     fireEvent.click(screen.getByRole('button', { name: /Plan auth flow.*gpt-5.4.*plan.*3 msgs/ }))

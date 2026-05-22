@@ -114,25 +114,43 @@ export function applyAppearance(theme: AppearanceThemeId, locale: AppearanceLoca
 }
 
 function readStoredTheme(): AppearanceThemeId {
-  if (typeof localStorage === "undefined") return "light"
-  return asTheme(localStorage.getItem(THEME_STORAGE_KEY)) ?? "light"
+  const storage = getLocalStorage()
+  if (!storage) return "light"
+  try {
+    return asTheme(storage.getItem(THEME_STORAGE_KEY)) ?? "light"
+  } catch {
+    return "light"
+  }
 }
 
 function readStoredLocale(): AppearanceLocale {
-  if (typeof localStorage === "undefined") return "en"
-  return asLocale(localStorage.getItem(LOCALE_STORAGE_KEY)) ?? "en"
+  const storage = getLocalStorage()
+  if (!storage) return "en"
+  try {
+    return asLocale(storage.getItem(LOCALE_STORAGE_KEY)) ?? "en"
+  } catch {
+    return "en"
+  }
 }
 
 function writeStoredAppearance(theme: AppearanceThemeId, locale: AppearanceLocale) {
-  if (typeof localStorage === "undefined") return
+  const storage = getLocalStorage()
+  if (!storage) return
   try {
-    localStorage.setItem(THEME_STORAGE_KEY, theme)
-    localStorage.setItem(LOCALE_STORAGE_KEY, locale)
+    storage.setItem(THEME_STORAGE_KEY, theme)
+    storage.setItem(LOCALE_STORAGE_KEY, locale)
   } catch {
     // Best effort only; service-backed prefs remain authoritative.
   }
 }
 
+function getLocalStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage
+  } catch {
+    return null
+  }
+}
 function asTheme(value: unknown): AppearanceThemeId | null {
   return typeof value === "string" && APPEARANCE_THEMES.some((theme) => theme.id === value)
     ? (value as AppearanceThemeId)

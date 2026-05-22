@@ -1,20 +1,33 @@
-import { Boxes, CircleGauge, Folder, Paperclip, Route, Send, Square } from 'lucide-react'
+import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import { api } from '../../api/client'
 import type { SlashCommandInfo } from '../../api/types'
 import type { WorkspaceEntry } from '../../api/types'
 import type { ChatAttachment } from '../../chat-rendering'
+import { useProviderStore } from '../../stores/providerStore'
+import { useSessionStore } from '../../stores/sessionStore'
 import { Button } from '../shared/Button'
 import { AttachmentGallery } from './AttachmentGallery'
+import { ComposerInspectorPanel, type ComposerInspectorKind } from './ComposerInspectorPanel'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
 import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
 import { isSlashCommandInput } from './slashExecute'
 import { mergeWorkspaceAttachment } from './workspaceReferences'
 
+type ComposerDraft = {
+  value: string
+  attachments: ChatAttachment[]
+  cursorPosition: number
+}
+
+const NEW_SESSION_DRAFT_KEY = '__aether_new_session__'
+
 type Props = {
   disabled: boolean
   running: boolean
+  sessionId?: string | null
   onSend: (message: string, attachments?: ChatAttachment[]) => void
   onCancel: () => void
   onSlashCommand?: (command: string) => void
@@ -24,11 +37,14 @@ type Props = {
   mode?: string | null
   inputTokens?: number | null
   outputTokens?: number | null
+  sessionSummary?: string | null
+  messageCount?: number | null
 }
 
 export function Composer({
   disabled,
   running,
+  sessionId,
   onSend,
   onCancel,
   onSlashCommand,
@@ -38,19 +54,60 @@ export function Composer({
   mode,
   inputTokens,
   outputTokens,
+  sessionSummary,
+  messageCount,
 }: Props) {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [cursorPosition, setCursorPosition] = useState(0)
   const [loadedCommands, setLoadedCommands] = useState<SlashCommandInfo[]>([])
   const [dragActive, setDragActive] = useState(false)
+  const [inspectorKind, setInspectorKind] = useState<ComposerInspectorKind | null>(null)
+  const [controlMenuOpen, setControlMenuOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const controlMenuRef = useRef<HTMLDivElement>(null)
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
   const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
-  const commands = slashCommands ?? loadedCommands
-  const modelTitle = provider && model ? provider + ' / ' + model : 'Provider not loaded'
-  const modelLabel = provider && model ? model : 'Model'
+  const draftKey = sessionId ?? NEW_SESSION_DRAFT_KEY
+  const draftMapRef = useRef(new Map<string, ComposerDraft>())
+  const draftKeyRef = useRef(draftKey)
+  const valueRef = useRef(value)
+  const attachmentsRef = useRef(attachments)
+  const cursorPositionRef = useRef(cursorPosition)
+  const commands = mergeLocalInspectorCommands(slashCommands ?? loadedCommands)
+
+  useEffect(() => {
+    valueRef.current = value
+    attachmentsRef.current = attachments
+    cursorPositionRef.current = cursorPosition
+    draftMapRef.current.set(draftKeyRef.current, { value, attachments, cursorPosition })
+  }, [attachments, cursorPosition, value])
+
+  useEffect(() => {
+    if (draftKeyRef.current === draftKey) return
+    draftMapRef.current.set(draftKeyRef.current, {
+      value: valueRef.current,
+      attachments: attachmentsRef.current,
+      cursorPosition: cursorPositionRef.current,
+    })
+    draftKeyRef.current = draftKey
+    const draft = draftMapRef.current.get(draftKey)
+    setValue(draft?.value ?? '')
+    setAttachments(draft?.attachments ?? [])
+    setCursorPosition(draft?.cursorPosition ?? 0)
+    setInspectorKind(null)
+    setControlMenuOpen(false)
+  }, [draftKey])
+
+  useEffect(() => {
+    if (!controlMenuOpen) return
+    const handler = (event: MouseEvent) => {
+      if (controlMenuRef.current && !controlMenuRef.current.contains(event.target as Node)) setControlMenuOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [controlMenuOpen])
 
   useEffect(() => {
     if (slashCommands || disabled) return
@@ -75,6 +132,11 @@ export function Composer({
     setValue('')
     setAttachments([])
     setCursorPosition(0)
+    const inspectorCommand = localInspectorKindForCommand(text)
+    if (!hasAttachments && inspectorCommand) {
+      setInspectorKind(inspectorCommand)
+      return
+    }
     if (onSlashCommand && !hasAttachments && isSlashCommandInput(text)) {
       onSlashCommand(text)
       return
@@ -107,6 +169,34 @@ export function Composer({
 
   const updateCursorPosition = () => {
     setCursorPosition(textareaRef.current?.selectionStart ?? value.length)
+  }
+
+  const focusTextareaAt = (nextCursorPosition: number) => {
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }
+
+  const insertAtCursor = (token: string) => {
+    if (disabled || running) return
+    const start = textareaRef.current?.selectionStart ?? cursorPosition
+    const end = textareaRef.current?.selectionEnd ?? cursorPosition
+    const prefix = value.slice(0, start)
+    const suffix = value.slice(end)
+    const insert = prefix.length > 0 && !/\s$/.test(prefix) ? ' ' + token : token
+    const nextValue = prefix + insert + suffix
+    const nextCursorPosition = prefix.length + insert.length
+    setValue(nextValue)
+    setCursorPosition(nextCursorPosition)
+    setControlMenuOpen(false)
+    focusTextareaAt(nextCursorPosition)
+  }
+
+  const openInspector = (kind: ComposerInspectorKind) => {
+    setInspectorKind(kind)
+    setControlMenuOpen(false)
+    focusTextareaAt(cursorPosition)
   }
 
   const addFiles = async (files: Iterable<File>) => {
@@ -161,6 +251,20 @@ export function Composer({
         ref={workspaceReferencePopoverRef}
         value={value}
       />
+      {inspectorKind ? (
+        <ComposerInspectorPanel
+          kind={inspectorKind}
+          sessionId={sessionId}
+          sessionSummary={sessionSummary}
+          messageCount={messageCount}
+          provider={provider}
+          model={model}
+          mode={mode}
+          inputTokens={inputTokens}
+          outputTokens={outputTokens}
+          onClose={() => setInspectorKind(null)}
+        />
+      ) : null}
       <div className="composer-drop-hint" aria-hidden={!dragActive}>
         <Paperclip size={18} />
         <span>Drop files to attach</span>
@@ -214,6 +318,19 @@ export function Composer({
               void addFiles(files)
             }}
           />
+          <ComposerControlMenu
+            disabled={disabled || running}
+            open={controlMenuOpen}
+            onToggle={() => setControlMenuOpen((current) => !current)}
+            onAttach={() => {
+              setControlMenuOpen(false)
+              fileInputRef.current?.click()
+            }}
+            onSlash={() => insertAtCursor('/')}
+            onWorkspace={() => insertAtCursor('@')}
+            onInspector={openInspector}
+            refEl={controlMenuRef}
+          />
           <Button
             aria-label="Attach files"
             title="Attach files"
@@ -240,13 +357,7 @@ export function Composer({
           ) : null}
         </div>
         <div className="composer-runbar">
-          <span className="composer-chip composer-chip-model" title={modelTitle}>
-            <Boxes size={14} />
-            <span>
-              <strong>{modelLabel}</strong>
-              {provider ? <small>{provider}</small> : null}
-            </span>
-          </span>
+          <ModelChip provider={provider} model={model} disabled={disabled || running} sessionId={sessionId} />
           <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
           <div className="composer-actions">
             {running ? (
@@ -270,12 +381,109 @@ export function Composer({
   )
 }
 
+const LOCAL_INSPECTOR_COMMANDS: SlashCommandInfo[] = [
+  { name: '/status', description: 'Show runtime and session status', category: 'local' },
+  { name: '/context', description: 'Show active context usage', category: 'local' },
+  { name: '/cost', description: 'Show local usage analytics', category: 'local' },
+  { name: '/skills', description: 'Show available skills', category: 'local' },
+  { name: '/mcp', description: 'Show MCP integration status', category: 'local' },
+]
+
+function mergeLocalInspectorCommands(commands: SlashCommandInfo[]): SlashCommandInfo[] {
+  const seen = new Set<string>()
+  const merged: SlashCommandInfo[] = []
+  for (const command of [...LOCAL_INSPECTOR_COMMANDS, ...commands]) {
+    if (seen.has(command.name)) continue
+    seen.add(command.name)
+    merged.push(command)
+  }
+  return merged
+}
+
+function localInspectorKindForCommand(value: string): ComposerInspectorKind | null {
+  const head = value.trim().split(/\s+/, 1)[0]
+  if (head === '/status') return 'status'
+  if (head === '/context') return 'context'
+  if (head === '/cost') return 'cost'
+  if (head === '/skills') return 'skills'
+  if (head === '/mcp') return 'mcp'
+  return null
+}
+
 function isExactSlashCommand(value: string, commands: SlashCommandInfo[]): boolean {
   const trimmed = value.trim()
   if (!isSlashCommandInput(trimmed)) return false
   const head = trimmed.split(/\s+/, 1)[0]
   if (head !== trimmed) return true
   return commands.some((command) => command.name === head)
+}
+
+function ComposerControlMenu({
+  disabled,
+  open,
+  onToggle,
+  onAttach,
+  onSlash,
+  onWorkspace,
+  onInspector,
+  refEl,
+}: {
+  disabled: boolean
+  open: boolean
+  onToggle: () => void
+  onAttach: () => void
+  onSlash: () => void
+  onWorkspace: () => void
+  onInspector: (kind: ComposerInspectorKind) => void
+  refEl: RefObject<HTMLDivElement | null>
+}) {
+  return (
+    <div className="composer-control-menu" ref={refEl}>
+      <Button aria-label="Open composer menu" title="Open composer menu" onClick={onToggle} disabled={disabled}>
+        <Plus size={16} />
+      </Button>
+      {open ? (
+        <div className="composer-control-popover" role="menu" aria-label="Composer menu">
+          <div className="composer-control-section">
+            <button type="button" role="menuitem" onClick={onAttach}>
+              <Paperclip size={14} />
+              <span>Attach files</span>
+            </button>
+            <button type="button" role="menuitem" onClick={onSlash}>
+              <Command size={14} />
+              <span>Slash command</span>
+            </button>
+            <button type="button" role="menuitem" onClick={onWorkspace}>
+              <AtSign size={14} />
+              <span>Workspace reference</span>
+            </button>
+          </div>
+          <div className="composer-control-section">
+            <button type="button" role="menuitem" onClick={() => onInspector('status')}>
+              <Activity size={14} />
+              <span>Status</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => onInspector('context')}>
+              <Brain size={14} />
+              <span>Context</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => onInspector('cost')}>
+              <BarChart3 size={14} />
+              <span>Cost</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => onInspector('skills')}>
+              <Sparkles size={14} />
+              <span>Skills</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => onInspector('mcp')}>
+              <Server size={14} />
+              <span>MCP</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | null; outputTokens?: number | null }) {
@@ -308,5 +516,97 @@ function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | nul
         <small>tokens</small>
       </span>
     </span>
+  )
+}
+
+function ModelChip({ provider, model, disabled, sessionId }: { provider?: string | null; model?: string | null; disabled: boolean; sessionId?: string | null }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const providers = useProviderStore((state) => state.providers)
+  const modelsByProvider = useProviderStore((state) => state.modelsByProvider)
+  const loadProviders = useProviderStore((state) => state.loadProviders)
+  const loadModels = useProviderStore((state) => state.loadModels)
+  const selectModel = useProviderStore((state) => state.selectModel)
+  const updateSession = useSessionStore((state) => state.updateSession)
+
+  useEffect(() => {
+    if (!open) return
+    if (!providers.length) void loadProviders()
+    const handler = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open, loadProviders, providers.length])
+
+  useEffect(() => {
+    if (open) {
+      for (const p of providers) void loadModels(p.name)
+    }
+  }, [open, providers, loadModels])
+
+  useEffect(() => {
+    if (!open || !ref.current || !popoverRef.current) return
+    const rect = ref.current.getBoundingClientRect()
+    const pop = popoverRef.current
+    pop.style.right = (window.innerWidth - rect.right) + 'px'
+    pop.style.bottom = (window.innerHeight - rect.top + 6) + 'px'
+  }, [open])
+
+  const handleSelect = (providerName: string, modelId: string) => {
+    void selectModel(providerName, modelId)
+    if (sessionId) {
+      void updateSession(sessionId, { provider: providerName, model: modelId })
+    }
+    setOpen(false)
+  }
+
+  const title = provider && model ? provider + ' / ' + model : 'Provider not loaded'
+  const label = provider && model ? model : 'Model'
+
+  return (
+    <div className="composer-model-picker" ref={ref}>
+      <button
+        type="button"
+        className="composer-chip composer-chip-model"
+        title={title}
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Boxes size={14} />
+        <span>
+          <strong>{label}</strong>
+          {provider ? <small>{provider}</small> : null}
+        </span>
+        <ChevronDown size={12} />
+      </button>
+      {open ? (
+        <div className="composer-model-popover" ref={popoverRef}>
+          {providers.map((p) => {
+            const models = modelsByProvider[p.name] ?? []
+            return (
+              <div key={p.name} className="composer-model-group">
+                <div className="composer-model-group-header">{p.display_name}</div>
+                <div className="composer-model-list">
+                  {models.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={m.id === model && p.name === provider ? 'composer-model-option active-model' : 'composer-model-option'}
+                      onClick={() => handleSelect(p.name, m.id)}
+                    >
+                      {m.display_name || m.id}
+                    </button>
+                  ))}
+                  {models.length === 0 ? <span className="muted">Loading...</span> : null}
+                </div>
+              </div>
+            )
+          })}
+          {providers.length === 0 ? <span className="muted">Loading providers...</span> : null}
+        </div>
+      ) : null}
+    </div>
   )
 }

@@ -1,12 +1,10 @@
-import { Bot, Circle, PanelRightClose, PanelRightOpen, Route } from 'lucide-react'
+import { Bot, Circle, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { SessionInfo } from '../../api/types'
 import { AppearanceControls } from '../shared/AppearanceControls'
 
 type Props = {
   session: SessionInfo | null
   online: boolean
-  provider?: string | null
-  model?: string | null
   workspaceRailOpen: boolean
   onToggleWorkspaceRail: () => void
 }
@@ -14,15 +12,10 @@ type Props = {
 export function ChatWorkbenchHeader({
   session,
   online,
-  provider,
-  model,
   workspaceRailOpen,
   onToggleWorkspaceRail,
 }: Props) {
   const title = session?.summary || session?.session_id.slice(0, 8) || 'New chat'
-  const providerLabel = session?.provider ?? provider
-  const modelLabel = session?.model ?? model
-  const modeLabel = session?.mode || 'agent'
   const messageCount = session?.message_count ?? 0
 
   return (
@@ -39,25 +32,6 @@ export function ChatWorkbenchHeader({
         </div>
       </div>
       <div className="chat-workbench-meta" aria-label="Chat session status">
-        {providerLabel && modelLabel ? (
-          <span className="workbench-chip workbench-chip-model" title={providerLabel + ' / ' + modelLabel}>
-            <span>
-              <strong>{modelLabel}</strong>
-              <small>{providerLabel}</small>
-            </span>
-          </span>
-        ) : (
-          <span className="workbench-chip">Provider not loaded</span>
-        )}
-        {session ? (
-          <span className={modeLabel === 'plan' ? 'workbench-chip workbench-chip-plan' : 'workbench-chip'} title="Session mode">
-            <Route size={13} />
-            <span>
-              <strong>{modeLabel}</strong>
-              <small>mode</small>
-            </span>
-          </span>
-        ) : null}
         <span className={online ? 'workbench-chip workbench-chip-online' : 'workbench-chip workbench-chip-offline'}>
           <Circle size={9} fill="currentColor" />
           <span>

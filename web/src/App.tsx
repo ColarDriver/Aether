@@ -46,14 +46,21 @@ const WORKSPACE_RAIL_WIDTH_MIN = 320
 const WORKSPACE_RAIL_WIDTH_MAX = 640
 const WORKSPACE_FILE_PANEL_WIDTH_DEFAULT = 560
 const WORKSPACE_FILE_PANEL_WIDTH_MIN = 320
-const WORKSPACE_FILE_PANEL_WIDTH_MAX = 900
-const MIN_CHAT_WORKSPACE_WIDTH = 560
+const MIN_CHAT_COLUMN_WIDTH = 320
+const MIN_CHAT_WORKSPACE_WIDTH = MIN_CHAT_COLUMN_WIDTH
 const RESIZE_KEY_STEP = 16
 
 type AppShellStyle = CSSProperties & {
   '--sidebar-width'?: string
   '--workspace-rail-width'?: string
   '--workspace-file-panel-width'?: string
+}
+
+type WorkspaceFilePanelClampContext = {
+  sidebarWidth: number
+  workspaceRailWidth: number
+  workspaceRailOpen: boolean
+  panelsSwappedInChat: boolean
 }
 
 export function App() {
@@ -74,6 +81,17 @@ export function App() {
   const [workspacePreviewFile, setWorkspacePreviewFile] = useState<WorkspaceFile | null>(null)
   const [workspacePreviewLoading, setWorkspacePreviewLoading] = useState(false)
   const [workspacePreviewError, setWorkspacePreviewError] = useState<string | null>(null)
+  const panelsSwappedInChat = activeView === 'chat' && panelsSwapped
+  const workspaceFilePanelClampContext = useMemo<WorkspaceFilePanelClampContext>(() => ({
+    sidebarWidth,
+    workspaceRailWidth,
+    workspaceRailOpen,
+    panelsSwappedInChat,
+  }), [panelsSwappedInChat, sidebarWidth, workspaceRailOpen, workspaceRailWidth])
+  const workspaceFilePanelMaxWidth = useMemo(
+    () => clampWorkspaceFilePanelWidth(Number.POSITIVE_INFINITY, workspaceFilePanelClampContext),
+    [workspaceFilePanelClampContext],
+  )
 
   useEffect(() => {
     void bootstrapAppearance()
@@ -87,12 +105,12 @@ export function App() {
     const handleResize = () => {
       setSidebarWidth((width) => clampSidebarWidth(width))
       setWorkspaceRailWidth((width) => clampWorkspaceRailWidth(width, sidebarWidth))
-      setWorkspaceFilePanelWidth((width) => clampWorkspaceFilePanelWidth(width))
+      setWorkspaceFilePanelWidth((width) => clampWorkspaceFilePanelWidth(width, workspaceFilePanelClampContext))
     }
     window.addEventListener('resize', handleResize)
     handleResize()
     return () => window.removeEventListener('resize', handleResize)
-  }, [sidebarWidth])
+  }, [sidebarWidth, workspaceFilePanelClampContext])
 
   useEffect(() => {
     writeStoredNumber(SIDEBAR_WIDTH_STORAGE_KEY, sidebarWidth)
@@ -104,7 +122,7 @@ export function App() {
 
   useEffect(() => {
     writeStoredNumber(WORKSPACE_FILE_PANEL_WIDTH_STORAGE_KEY, workspaceFilePanelWidth)
-  }, [workspaceFilePanelWidth])
+  }, [workspaceFilePanelClampContext, workspaceFilePanelWidth])
 
   useEffect(() => {
     writeStoredBoolean(PANEL_SWAP_STORAGE_KEY, panelsSwapped)
@@ -115,7 +133,6 @@ export function App() {
     '--workspace-rail-width': workspaceRailWidth + 'px',
     '--workspace-file-panel-width': workspaceFilePanelWidth + 'px',
   }), [sidebarWidth, workspaceFilePanelWidth, workspaceRailWidth])
-  const panelsSwappedInChat = activeView === 'chat' && panelsSwapped
   const appShellClassName = [
     'app-shell',
     panelsSwappedInChat ? 'app-shell-panels-swapped' : '',
@@ -169,7 +186,7 @@ export function App() {
     document.body.classList.add('is-resizing-layout')
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      setWorkspaceFilePanelWidth(clampWorkspaceFilePanelWidth(startWidth - (moveEvent.clientX - startX)))
+      setWorkspaceFilePanelWidth(clampWorkspaceFilePanelWidth(startWidth + (moveEvent.clientX - startX), workspaceFilePanelClampContext))
     }
     const handlePointerUp = () => {
       document.body.classList.remove('is-resizing-layout')
@@ -179,7 +196,7 @@ export function App() {
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', handlePointerUp, { once: true })
-  }, [workspaceFilePanelWidth])
+  }, [workspaceFilePanelClampContext, workspaceFilePanelWidth])
 
   const handleSidebarResizeKey = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -214,16 +231,16 @@ export function App() {
   const handleWorkspaceFilePanelResizeKey = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       event.preventDefault()
-      const delta = event.key === 'ArrowLeft' ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP
-      setWorkspaceFilePanelWidth((width) => clampWorkspaceFilePanelWidth(width + delta))
+      const delta = event.key === 'ArrowRight' ? RESIZE_KEY_STEP : -RESIZE_KEY_STEP
+      setWorkspaceFilePanelWidth((width) => clampWorkspaceFilePanelWidth(width + delta, workspaceFilePanelClampContext))
     } else if (event.key === 'Home') {
       event.preventDefault()
       setWorkspaceFilePanelWidth(WORKSPACE_FILE_PANEL_WIDTH_MIN)
     } else if (event.key === 'End') {
       event.preventDefault()
-      setWorkspaceFilePanelWidth(WORKSPACE_FILE_PANEL_WIDTH_MAX)
+      setWorkspaceFilePanelWidth(workspaceFilePanelMaxWidth)
     }
-  }, [])
+  }, [workspaceFilePanelClampContext, workspaceFilePanelMaxWidth])
 
   const handleSelectWorkspaceFile = useCallback((path: string) => {
     setWorkspacePreviewPath(path)
@@ -248,6 +265,16 @@ export function App() {
     setWorkspacePreviewError(null)
     setWorkspacePreviewLoading(false)
   }, [])
+
+  const handleSaveWorkspaceFile = useCallback(async (path: string, content: string) => {
+    const saved = await api.workspaceSaveFile(path, content)
+    const nextFile = { ...saved, path: saved.path || path }
+    setWorkspacePreviewFile(nextFile)
+    setWorkspacePreviewPath(nextFile.path)
+    setWorkspacePreviewError(null)
+    notify('Saved ' + nextFile.path, 'success')
+    return nextFile
+  }, [notify])
 
   const handleDeleteSession = useCallback(async (sessionId: string) => {
     try {
@@ -356,21 +383,8 @@ export function App() {
               !panelsSwappedInChat && !workspaceRailOpen ? 'chat-workbench-rail-closed' : '',
               workspacePreviewOpen ? 'chat-workbench-file-open' : '',
             ].filter(Boolean).join(' ')}>
-              <ChatView session={activeSession} />
               {workspacePreviewOpen ? (
                 <>
-                  <div
-                    className="layout-resizer chat-workbench-resizer chat-workbench-file-resizer"
-                    role="separator"
-                    aria-label="Resize workspace file preview"
-                    aria-orientation="vertical"
-                    aria-valuemin={WORKSPACE_FILE_PANEL_WIDTH_MIN}
-                    aria-valuemax={WORKSPACE_FILE_PANEL_WIDTH_MAX}
-                    aria-valuenow={workspaceFilePanelWidth}
-                    tabIndex={0}
-                    onPointerDown={startWorkspaceFilePanelResize}
-                    onKeyDown={handleWorkspaceFilePanelResizeKey}
-                  />
                   <WorkspaceFilePanel
                     preview={{
                       path: workspacePreviewPath,
@@ -379,9 +393,23 @@ export function App() {
                       error: workspacePreviewError,
                     }}
                     onClose={closeWorkspacePreview}
+                    onSave={handleSaveWorkspaceFile}
+                  />
+                  <div
+                    className="layout-resizer chat-workbench-resizer chat-workbench-file-resizer"
+                    role="separator"
+                    aria-label="Resize workspace file preview"
+                    aria-orientation="vertical"
+                    aria-valuemin={WORKSPACE_FILE_PANEL_WIDTH_MIN}
+                    aria-valuemax={workspaceFilePanelMaxWidth}
+                    aria-valuenow={workspaceFilePanelWidth}
+                    tabIndex={0}
+                    onPointerDown={startWorkspaceFilePanelResize}
+                    onKeyDown={handleWorkspaceFilePanelResizeKey}
                   />
                 </>
               ) : null}
+              <ChatView session={activeSession} />
               {panelsSwappedInChat ? (
                 <>
                   <div
@@ -522,10 +550,24 @@ function clampWorkspaceRailWidth(width: number, sidebarWidth: number): number {
   return clamp(width, WORKSPACE_RAIL_WIDTH_MIN, Math.max(WORKSPACE_RAIL_WIDTH_MIN, Math.min(WORKSPACE_RAIL_WIDTH_MAX, maxByViewport)))
 }
 
-function clampWorkspaceFilePanelWidth(width: number): number {
+function clampWorkspaceFilePanelWidth(width: number, context: WorkspaceFilePanelClampContext): number {
   const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth
-  const maxByViewport = Math.max(WORKSPACE_FILE_PANEL_WIDTH_MIN, Math.min(WORKSPACE_FILE_PANEL_WIDTH_MAX, Math.round(viewportWidth * 0.56)))
-  return clamp(width, WORKSPACE_FILE_PANEL_WIDTH_MIN, maxByViewport)
+  const appShellSideWidth = context.panelsSwappedInChat && context.workspaceRailOpen
+    ? context.workspaceRailWidth
+    : context.panelsSwappedInChat
+      ? 0
+      : context.sidebarWidth
+  const workbenchSideWidth = context.panelsSwappedInChat
+    ? context.sidebarWidth
+    : context.workspaceRailOpen
+      ? context.workspaceRailWidth
+      : 0
+  const workbenchSideResizerWidth = workbenchSideWidth > 0 ? LAYOUT_RESIZER_WIDTH : 0
+  const appShellResizerWidth = appShellSideWidth > 0 ? LAYOUT_RESIZER_WIDTH : 0
+  const availableWorkbenchWidth = viewportWidth - APP_RAIL_WIDTH - appShellSideWidth - appShellResizerWidth
+  const maxByWorkbench = availableWorkbenchWidth - MIN_CHAT_COLUMN_WIDTH - LAYOUT_RESIZER_WIDTH - workbenchSideResizerWidth - workbenchSideWidth
+  const maxWidth = Math.max(WORKSPACE_FILE_PANEL_WIDTH_MIN, maxByWorkbench)
+  return clamp(width, WORKSPACE_FILE_PANEL_WIDTH_MIN, maxWidth)
 }
 
 function clamp(value: number, min: number, max: number): number {

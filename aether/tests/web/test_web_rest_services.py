@@ -26,6 +26,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "app.py").write_text("print(\"hi\")\n", encoding="utf-8")
+    (workspace_root / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     docs_root = tmp_path / "docs"
     docs_root.mkdir()
     (docs_root / "README.md").write_text("# Test Docs\n\nHello docs.\n", encoding="utf-8")
@@ -382,6 +383,23 @@ def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None
     assert file.status_code == 200
     assert file.json()["content"] == 'print("hi")\n'
     assert file.json()["language"] == "python"
+    assert file.json()["mime_type"] == "text/x-python"
+
+    image = client.get("/api/workspace/file?path=logo.png")
+    assert image.status_code == 200
+    assert image.json()["binary"] is True
+    assert image.json()["mime_type"] == "image/png"
+
+    raw_image = client.get("/api/workspace/raw?path=logo.png")
+    assert raw_image.status_code == 200
+    assert raw_image.content == b"\x89PNG\r\n\x1a\n"
+    assert raw_image.headers["content-type"].startswith("image/png")
+
+    saved = client.put("/api/workspace/file", json={"path": "app.py", "content": 'print("bye")\n'})
+    assert saved.status_code == 200
+    assert saved.json()["content"] == 'print("bye")\n'
+    assert saved.json()["language"] == "python"
+    assert client.get("/api/workspace/file?path=app.py").json()["content"] == 'print("bye")\n'
 
     search = client.get("/api/workspace/search?q=app")
     assert search.status_code == 200
@@ -389,6 +407,15 @@ def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None
 
     escaped = client.get("/api/workspace/file?path=../secret.py")
     assert escaped.status_code == 400
+
+    escaped_save = client.put("/api/workspace/file", json={"path": "../secret.py", "content": "x"})
+    assert escaped_save.status_code == 400
+
+    image_save = client.put("/api/workspace/file", json={"path": "logo.png", "content": "not an image"})
+    assert image_save.status_code == 400
+
+    escaped_raw = client.get("/api/workspace/raw?path=../secret.py")
+    assert escaped_raw.status_code == 400
 
 
 def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:

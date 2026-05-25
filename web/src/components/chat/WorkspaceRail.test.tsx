@@ -24,50 +24,26 @@ const nestedTree = {
   ],
 }
 
-const readme = {
-  root: '/workspace/Aether',
-  path: 'README.md',
-  name: 'README.md',
-  content: '# Aether\n\nHello.',
-  size_bytes: 18,
-  updated_at: 2,
-  language: 'markdown',
-  truncated: false,
-  binary: false,
-}
-
-const appFile = {
-  root: '/workspace/Aether',
-  path: 'aether/app.py',
-  name: 'app.py',
-  content: 'print("hi")\n',
-  size_bytes: 12,
-  updated_at: 3,
-  language: 'python',
-  truncated: false,
-  binary: false,
-}
-
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
 })
 
 describe('WorkspaceRail', () => {
-  it('browses directories, previews files, and searches paths', async () => {
+  it('browses directories, selects files, and searches paths', async () => {
     vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => (path === 'aether' ? nestedTree : rootTree))
-    vi.spyOn(api, 'workspaceFile').mockImplementation(async (path: string) => (path === 'aether/app.py' ? appFile : readme))
     const search = vi.spyOn(api, 'workspaceSearch').mockResolvedValue({ root: '/workspace/Aether', query: 'app', entries: nestedTree.entries })
+    const onSelectFile = vi.fn()
 
-    render(<WorkspaceRail />)
+    render(<WorkspaceRail selectedFilePath="README.md" onSelectFile={onSelectFile} />)
 
     expect(await screen.findByTitle('README.md')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'root' })).toBeTruthy()
-    expect(screen.getByText('Select a file')).toBeTruthy()
+    expect(screen.queryByText('Select a file')).toBeNull()
     expect(screen.getByText(/2 items.*1 dir.*1 file/)).toBeTruthy()
 
     fireEvent.click(screen.getByTitle('README.md'))
-    expect(await screen.findByText('Hello.')).toBeTruthy()
+    expect(onSelectFile).toHaveBeenCalledWith('README.md')
 
     fireEvent.click(screen.getByTitle('aether'))
     expect(await screen.findByTitle('aether/app.py')).toBeTruthy()
@@ -78,6 +54,6 @@ describe('WorkspaceRail', () => {
     await waitFor(() => expect(search).toHaveBeenCalledWith('app', 80))
     expect(screen.getByText('Search "app"')).toBeTruthy()
     fireEvent.click(screen.getByTitle('aether/app.py'))
-    expect(await screen.findByText(/print/)).toBeTruthy()
+    expect(onSelectFile).toHaveBeenCalledWith('aether/app.py')
   })
 })

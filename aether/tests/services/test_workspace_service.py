@@ -65,6 +65,11 @@ def test_workspace_service_marks_binary_and_truncates_large_text(tmp_path) -> No
     image = service.read_file("image.png")
     assert image.binary is True
     assert image.content == ""
+    assert image.mime_type == "image/png"
+    assert service.mime_type("image.png") == "image/png"
+    assert service.raw_file_path("image.png").name == "image.png"
+    with pytest.raises(ServiceValidationError):
+        service.write_file("image.png", "not an image")
 
     large = service.read_file("large.txt")
     assert large.truncated is True

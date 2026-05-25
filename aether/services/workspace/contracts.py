@@ -31,6 +31,7 @@ class WorkspaceFile:
     size_bytes: int
     updated_at: float
     language: str
+    mime_type: str | None = None
     truncated: bool = False
     binary: bool = False
 

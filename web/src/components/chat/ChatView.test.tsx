@@ -63,6 +63,52 @@ describe('ChatView', () => {
     expect(api.sessionTasks).toHaveBeenCalledWith('session-1', { limit: 100 })
   })
 
+  it('keeps the latest completed run tokens visible in the composer', () => {
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({ session_id: 'session-1', messages: [] })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({ tasks: [], active_count: 0, total_count: 0 })
+    useChatStore.setState({
+      activeRunId: null,
+      blocksBySession: {
+        'session-1': [{
+          id: 'assistant-r1',
+          sessionId: 'session-1',
+          runId: 'r1',
+          timestamp: 1,
+          source: 'live',
+          kind: 'assistant_message',
+          content: 'Done.',
+          isStreaming: false,
+        }],
+      },
+      statusByRun: {
+        r1: {
+          runId: 'r1',
+          sessionId: 'session-1',
+          state: 'idle',
+          tokens: { input_tokens: 100, output_tokens: 23, total_tokens: 123 },
+        },
+      },
+      tokenUsageByRun: {
+        r1: { input_tokens: 100, output_tokens: 23, total_tokens: 123 },
+      },
+    })
+
+    render(
+      <ChatView
+        session={{
+          session_id: 'session-1',
+          created_at: 1,
+          updated_at: 1,
+          provider: 'openai',
+          model: 'gpt-5.4',
+          message_count: 1,
+        }}
+      />,
+    )
+
+    expect(screen.getByLabelText(/123 tokens/)).toBeTruthy()
+  })
+
   it('keeps the composer visible when no session is selected', () => {
     render(<ChatView session={null} />)
 

@@ -457,6 +457,7 @@ export type WorkspaceFile = {
   size_bytes: number
   updated_at: number
   language: string
+  mime_type?: string | null
   truncated: boolean
   binary: boolean
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from typing import Iterable
 
@@ -34,6 +35,8 @@ _BINARY_EXTENSIONS = {
     ".class",
     ".dll",
     ".dmg",
+    ".doc",
+    ".docx",
     ".exe",
     ".gif",
     ".gz",
@@ -47,28 +50,52 @@ _BINARY_EXTENSIONS = {
     ".mp3",
     ".mp4",
     ".o",
+    ".odt",
     ".pdf",
     ".png",
+    ".ppt",
+    ".pptx",
     ".pyc",
     ".so",
     ".sqlite",
+    ".svg",
     ".tar",
     ".webp",
+    ".xls",
+    ".xlsx",
     ".zip",
+}
+_IMAGE_EXTENSIONS = {
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".webp",
 }
 _LANGUAGE_BY_EXTENSION = {
     ".css": "css",
+    ".bmp": "image",
+    ".gif": "image",
     ".html": "html",
+    ".jpeg": "image",
+    ".jpg": "image",
     ".json": "json",
     ".md": "markdown",
+    ".png": "image",
     ".py": "python",
     ".sh": "shell",
+    ".svg": "svg",
     ".toml": "toml",
     ".ts": "typescript",
     ".tsx": "tsx",
     ".js": "javascript",
     ".jsx": "jsx",
     ".yaml": "yaml",
+    ".webp": "image",
     ".yml": "yaml",
 }
 
@@ -107,6 +134,7 @@ class WorkspaceService:
                 size_bytes=stat.st_size,
                 updated_at=stat.st_mtime,
                 language=_language_for_path(file_path),
+                mime_type=_mime_type_for_path(file_path),
                 binary=True,
             )
         stat = file_path.stat()
@@ -123,6 +151,7 @@ class WorkspaceService:
                 size_bytes=stat.st_size,
                 updated_at=stat.st_mtime,
                 language=_language_for_path(file_path),
+                mime_type=_mime_type_for_path(file_path),
                 truncated=truncated,
                 binary=True,
             )
@@ -134,8 +163,36 @@ class WorkspaceService:
             size_bytes=stat.st_size,
             updated_at=stat.st_mtime,
             language=_language_for_path(file_path),
+            mime_type=_mime_type_for_path(file_path),
             truncated=truncated,
         )
+
+    def raw_file_path(self, path: str) -> Path:
+        file_path = self._resolve(path)
+        if not file_path.exists() or not file_path.is_file():
+            raise ServiceNotFoundError(f"workspace file not found: {path}", details={"path": path})
+        return file_path
+
+    def mime_type(self, path: str) -> str:
+        return _mime_type_for_path(self.raw_file_path(path))
+
+    def write_file(self, path: str, content: str) -> WorkspaceFile:
+        file_path = self._resolve(path)
+        if not file_path.exists() or not file_path.is_file():
+            raise ServiceNotFoundError(f"workspace file not found: {path}", details={"path": path})
+        current = self.read_file(path)
+        if current.binary or _is_image_path(file_path):
+            raise ServiceValidationError("workspace binary or image files cannot be edited", details={"path": path})
+        if current.truncated:
+            raise ServiceValidationError("workspace truncated files cannot be edited", details={"path": path})
+        encoded = str(content).encode("utf-8")
+        if len(encoded) > self._max_file_bytes:
+            raise ServiceValidationError(
+                "workspace file exceeds editable size limit",
+                details={"path": path, "max_file_bytes": self._max_file_bytes},
+            )
+        file_path.write_bytes(encoded)
+        return self.read_file(path)
 
     def search(self, query: str, *, limit: int = 100) -> WorkspaceSearchResult:
         normalized_query = query.strip().lower()
@@ -217,6 +274,19 @@ def _is_excluded_child(path: Path) -> bool:
 
 def _is_binary_path(path: Path) -> bool:
     return path.suffix.lower() in _BINARY_EXTENSIONS
+
+
+def _is_image_path(path: Path) -> bool:
+    return path.suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def _mime_type_for_path(path: Path) -> str:
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    if guessed:
+        return guessed
+    if path.suffix.lower() in _IMAGE_EXTENSIONS:
+        return "image/" + path.suffix.lower().lstrip(".")
+    return "application/octet-stream" if _is_binary_path(path) else "text/plain"
 
 
 def _language_for_path(path: Path) -> str:

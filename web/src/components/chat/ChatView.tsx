@@ -1,7 +1,8 @@
 import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionInfo, TaskSummary } from '../../api/types'
-import type { ChatBlock } from '../../chat-rendering'
+import type { ChatBlock, RunStatusSnapshot, TokenUsage } from '../../chat-rendering'
+import { tokenUsageFromRecord, tokenUsageTotal } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useProviderStore } from '../../stores/providerStore'
@@ -141,8 +142,10 @@ export function ChatView({ session }: Props) {
     requestAnimationFrame(() => scrollToBottom('smooth'))
   }, [blocks, scrollToBottom, session])
 
-  const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
   const activeStatus = activeRunId ? statusByRun[activeRunId] : undefined
+  const activeUsage = activeRunId ? tokenUsageByRun[activeRunId] ?? activeStatus?.tokens : undefined
+  const latestSessionUsage = session ? latestTokenUsageForSession(session.session_id, blocks, statusByRun) : undefined
+  const usage = activeRunId ? activeUsage : latestSessionUsage
   const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
   const fallbackModel = currentProvider?.model || 'gpt-5.4'
 
@@ -312,6 +315,35 @@ export function ChatView({ session }: Props) {
       ) : null}
     </div>
   )
+}
+
+function latestTokenUsageForSession(
+  sessionId: string,
+  blocks: ChatBlock[],
+  statusByRun: Record<string, RunStatusSnapshot>,
+): TokenUsage | undefined {
+  const seenRunIds = new Set<string>()
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]
+    if (!block || block.sessionId !== sessionId) continue
+    const runId = block.runId || ''
+    if (runId && !seenRunIds.has(runId)) {
+      seenRunIds.add(runId)
+      const statusUsage = statusByRun[runId]?.tokens
+      if (tokenUsageTotal(statusUsage) > 0) return statusUsage
+    }
+    if (block.kind === 'assistant_message' || block.kind === 'tool_result') {
+      const metadataUsage = tokenUsageFromRecord(block.metadata ?? {})
+      if (tokenUsageTotal(metadataUsage) > 0) return metadataUsage
+    }
+  }
+
+  const snapshots = Object.values(statusByRun).filter((snapshot) => snapshot.sessionId === sessionId)
+  for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+    const tokens = snapshots[index]?.tokens
+    if (tokenUsageTotal(tokens) > 0) return tokens
+  }
+  return undefined
 }
 
 export function isNearChatBottom(element: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {

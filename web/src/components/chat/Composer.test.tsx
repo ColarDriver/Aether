@@ -724,6 +724,6 @@ describe('Composer', () => {
     expect(screen.getByText('gpt-5.4')).toBeTruthy()
     expect(screen.getByText('Workspace')).toBeTruthy()
     expect(screen.getByText('plan')).toBeTruthy()
-    expect(screen.getByLabelText(/2,000 active-run tokens/)).toBeTruthy()
+    expect(screen.getByLabelText(/2,000 tokens/)).toBeTruthy()
   })
 })

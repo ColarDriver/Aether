@@ -914,8 +914,8 @@ function ContextRing({ inputTokens, outputTokens, tokens }: { inputTokens?: numb
   const circumference = 61.261
   const offset = circumference - (circumference * percent) / 100
   const title = total > 0
-    ? total.toLocaleString() + ' active-run tokens (' + detail + ')'
-    : 'No active-run token usage yet'
+    ? total.toLocaleString() + ' tokens (' + detail + ')'
+    : 'No token usage yet'
 
   return (
     <span className="composer-context-ring" title={title} aria-label={title}>

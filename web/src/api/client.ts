@@ -132,6 +132,10 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   return requestWithTokenRetry<T>(method, path, body, options, false)
 }
 
+export async function requestBlob(method: string, path: string, options?: { timeoutMs?: number }): Promise<Blob> {
+  return requestBlobWithTokenRetry(method, path, options, false)
+}
+
 async function requestWithTokenRetry<T>(method: string, path: string, body: unknown, options: { timeoutMs?: number } | undefined, didRefreshToken: boolean): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 30_000)
@@ -152,6 +156,33 @@ async function requestWithTokenRetry<T>(method: string, path: string, body: unkn
     }
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
+  } catch (error) {
+    clearTimeout(timeout)
+    if (controller.signal.aborted) {
+      throw new Error('Request timed out after ' + Math.round((options?.timeoutMs ?? 30_000) / 1000) + 's')
+    }
+    throw error
+  }
+}
+
+async function requestBlobWithTokenRetry(method: string, path: string, options: { timeoutMs?: number } | undefined, didRefreshToken: boolean): Promise<Blob> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 30_000)
+  try {
+    const response = await fetch(baseUrl + path, {
+      method,
+      headers: buildHeaders(),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+    if (!response.ok) {
+      if (response.status === 401 && !didRefreshToken) {
+        const refreshed = await refreshSessionTokenFromBootstrapDocument().catch(() => null)
+        if (refreshed) return requestBlobWithTokenRetry(method, path, options, true)
+      }
+      throw await buildApiError(response)
+    }
+    return response.blob()
   } catch (error) {
     clearTimeout(timeout)
     if (controller.signal.aborted) {
@@ -208,6 +239,8 @@ export const api = {
     return request<WorkspaceTree>('GET', '/api/workspace/tree' + suffix)
   },
   workspaceFile: (path: string) => request<WorkspaceFile>('GET', '/api/workspace/file?path=' + encodeURIComponent(path)),
+  workspaceFileBlob: (path: string) => requestBlob('GET', '/api/workspace/raw?path=' + encodeURIComponent(path)),
+  workspaceSaveFile: (path: string, content: string) => request<WorkspaceFile>('PUT', '/api/workspace/file', { path, content }),
   workspaceSearch: (q: string, limit = 100) => {
     const query = new URLSearchParams({ q, limit: String(limit) })
     return request<WorkspaceSearchResult>('GET', '/api/workspace/search?' + query.toString())

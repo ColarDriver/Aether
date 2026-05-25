@@ -17,6 +17,14 @@ describe('reduceRunFrame', () => {
     })
   })
 
+  it('estimates active-run tokens from streamed text before provider usage arrives', () => {
+    const state = createChatRenderState()
+    const streamed = reduceRunFrame(state, frame('assistant.delta', { session_id: 's1', run_id: 'r1', text: 'Streaming token count should grow.' }))
+
+    expect(streamed.tokenUsageByRun.r1?.output_tokens).toBeGreaterThan(0)
+    expect(streamed.statusByRun.r1?.tokens?.output_tokens).toBe(streamed.tokenUsageByRun.r1?.output_tokens)
+  })
+
   it('renders run.result final text when no assistant delta was streamed', () => {
     const accepted = reduceRunFrame(
       createChatRenderState(),

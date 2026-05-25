@@ -9,7 +9,7 @@ import type {
 } from './blocks'
 import { answersFromMetadata, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown, stringFromUnknown } from './content'
 import type { ChatRenderState, RunStatusSnapshot } from './runState'
-import { tokenUsageFromRecord } from './tokens'
+import { tokenUsageFromRecord, tokenUsageTotal } from './tokens'
 import { frameRunId, frameSessionId } from './runState'
 
 export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): ChatRenderState {
@@ -46,13 +46,15 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
   if (frame.type === 'assistant.delta') {
     const text = stringFromUnknown(payload.text)
     if (!text) return state
-    return withSessionBlocks(state, sessionId, appendAssistantDelta(blocks, sessionId, runId, text, sequence(frame)))
+    const nextBlocks = appendAssistantDelta(blocks, sessionId, runId, text, sequence(frame))
+    return withEstimatedTokenUsage(withSessionBlocks(state, sessionId, nextBlocks), sessionId, runId, nextBlocks)
   }
 
   if (frame.type === 'reasoning.delta') {
     const text = stringFromUnknown(payload.text)
     if (!text) return state
-    return withSessionBlocks(state, sessionId, appendThinkingDelta(blocks, sessionId, runId, text, sequence(frame)))
+    const nextBlocks = appendThinkingDelta(blocks, sessionId, runId, text, sequence(frame))
+    return withEstimatedTokenUsage(withSessionBlocks(state, sessionId, nextBlocks), sessionId, runId, nextBlocks)
   }
 
   if (frame.type === 'run.status' || frame.type === 'loop.state' || frame.type === 'silent.progress') {
@@ -267,6 +269,65 @@ function withSessionBlocks(state: ChatRenderState, sessionId: string, blocks: Ch
       [sessionId]: blocks,
     },
   }
+}
+
+function withEstimatedTokenUsage(state: ChatRenderState, sessionId: string, runId: string, blocks: ChatBlock[]): ChatRenderState {
+  if (!runId) return state
+  const previous = state.statusByRun[runId]
+  const tokens = estimatedTokenUsageForRun(blocks, runId, previous?.tokens)
+  if (tokenUsageTotal(tokens) <= 0) return state
+  const snapshot: RunStatusSnapshot = {
+    runId,
+    sessionId,
+    state: previous?.state ?? 'responding',
+    detail: previous?.detail ?? null,
+    elapsedMs: previous?.elapsedMs,
+    tokens,
+  }
+  return {
+    ...state,
+    tokenUsageByRun: {
+      ...state.tokenUsageByRun,
+      [runId]: tokens,
+    },
+    statusByRun: {
+      ...state.statusByRun,
+      [runId]: snapshot,
+    },
+  }
+}
+
+function estimatedTokenUsageForRun(blocks: ChatBlock[], runId: string, previous?: TokenUsage): TokenUsage {
+  let assistantText = ''
+  let reasoningText = ''
+  for (const block of blocks) {
+    if (block.runId !== runId) continue
+    if (block.kind === 'assistant_message') assistantText += '\n' + block.content
+    if (block.kind === 'thinking') reasoningText += '\n' + block.content
+  }
+  const estimatedOutput = estimateTextTokens(assistantText)
+  const estimatedReasoning = estimateTextTokens(reasoningText)
+  return {
+    input_tokens: positiveNumber(previous?.input_tokens),
+    output_tokens: positiveNumber(Math.max(previous?.output_tokens ?? 0, estimatedOutput)),
+    cache_read_tokens: positiveNumber(previous?.cache_read_tokens),
+    cache_write_tokens: positiveNumber(previous?.cache_write_tokens),
+    reasoning_tokens: positiveNumber(Math.max(previous?.reasoning_tokens ?? 0, estimatedReasoning)),
+    total_tokens: positiveNumber(previous?.total_tokens),
+  }
+}
+
+function estimateTextTokens(text: string): number {
+  const normalized = text.trim()
+  if (!normalized) return 0
+  const cjk = normalized.match(/[\u3400-\u9fff]/g)?.length ?? 0
+  const nonCjk = normalized.replace(/[\u3400-\u9fff]/g, '')
+  const wordLike = nonCjk.match(/[A-Za-z0-9_]+|[^\sA-Za-z0-9_]/g)?.length ?? 0
+  return Math.max(1, Math.ceil(cjk + wordLike * 0.75))
+}
+
+function positiveNumber(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
 function appendAssistantDelta(blocks: ChatBlock[], sessionId: string, runId: string, text: string, timestamp: number): ChatBlock[] {

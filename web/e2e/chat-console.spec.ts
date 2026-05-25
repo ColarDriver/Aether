@@ -70,13 +70,12 @@ test('renders persisted chat blocks inside the real app shell', async ({ page })
   await expect(page.getByLabel('Workspace files')).toContainText('README.md')
 })
 
-test('resizes sidebar and workspace panels from the real app shell', async ({ page }) => {
-  await page.setViewportSize({ width: 1600, height: 900 })
+test('resizes sidebar, workspace tree, and dedicated file preview panels from the real app shell', async ({ page }) => {
+  await page.setViewportSize({ width: 2200, height: 900 })
   await page.goto('/')
 
-  const emptyPreview = page.locator('.workspace-rail-empty-preview')
-  await expect(emptyPreview).toBeVisible()
-  await expect(emptyPreview).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(page.locator('.workspace-rail-empty-preview')).toHaveCount(0)
+  await expect(page.getByText('Select a file')).toHaveCount(0)
 
   const sidebar = page.locator('.sidebar')
   const workspaceRail = page.getByLabel('Workspace files')
@@ -88,6 +87,32 @@ test('resizes sidebar and workspace panels from the real app shell', async ({ pa
 
   await dragHorizontalSeparator(page, page.getByRole('separator', { name: 'Resize workspace panel' }), -80)
   expect(await boxWidth(workspaceRail)).toBeGreaterThan(workspaceRailBefore + 48)
+
+  await workspaceRail.getByTitle('README.md').click()
+  const filePreview = page.getByRole('complementary', { name: 'Workspace file preview' })
+  await expect(filePreview).toContainText('Aether workspace readme')
+  await expect(filePreview).toContainText('Browser acceptance fixture')
+  await filePreview.getByRole('button', { name: 'Edit workspace file' }).click()
+  const fileEditor = filePreview.getByLabel('Workspace file editor')
+  expect(await boxHeight(fileEditor)).toBeGreaterThan(500)
+  await fileEditor.fill('# Aether workspace readme\n\nEdited from the file panel.')
+  await filePreview.getByRole('button', { name: 'Save workspace file' }).click()
+  await expect(filePreview).toContainText('Edited from the file panel.')
+
+  const previewPosition = await page.evaluate(() => {
+    const preview = document.querySelector('.workspace-file-panel')?.getBoundingClientRect()
+    const chat = document.querySelector('.chat-surface')?.getBoundingClientRect()
+    return { previewLeft: preview?.left ?? 0, previewRight: preview?.right ?? 0, chatLeft: chat?.left ?? 0 }
+  })
+  expect(previewPosition.previewLeft).toBeLessThan(previewPosition.chatLeft)
+  expect(previewPosition.previewRight).toBeLessThanOrEqual(previewPosition.chatLeft + 8)
+
+  const filePreviewBefore = await boxWidth(filePreview)
+  await dragHorizontalSeparator(page, page.getByRole('separator', { name: 'Resize workspace file preview' }), 420)
+  const filePreviewAfter = await boxWidth(filePreview)
+  const chatAfter = await boxWidth(page.locator('.chat-surface'))
+  expect(filePreviewAfter).toBeGreaterThan(filePreviewBefore + 240)
+  expect(filePreviewAfter).toBeGreaterThan(chatAfter)
   await expectNoDocumentHorizontalOverflow(page)
 })
 
@@ -551,6 +576,12 @@ async function boxWidth(locator: Locator): Promise<number> {
   return box?.width ?? 0
 }
 
+async function boxHeight(locator: Locator): Promise<number> {
+  const box = await locator.boundingBox()
+  expect(box).not.toBeNull()
+  return box?.height ?? 0
+}
+
 async function dragHorizontalSeparator(page: Page, locator: Locator, deltaX: number): Promise<void> {
   const box = await locator.boundingBox()
   expect(box).not.toBeNull()
@@ -864,17 +895,15 @@ async function mockAetherApi(page: Page) {
     if (method === 'GET' && path === '/api/tasks/task-1/result') return json(route, { task_id: 'task-1', result_path: rootTask.result_path, result: { summary: 'Task completed from artifact', files: ['src/auth.ts'] } })
     if (method === 'GET' && path === '/api/workspace/file') {
       const requestedPath = url.searchParams.get('path') || 'README.md'
-      return json(route, {
-        root: '/workspace/Aether',
-        path: requestedPath,
-        name: requestedPath.split('/').pop() || requestedPath,
-        content: '# Aether workspace readme\n\nBrowser acceptance fixture.',
-        size_bytes: 48,
-        updated_at: 1_800_000_000,
-        language: 'markdown',
-        truncated: false,
-        binary: false,
-      })
+      return json(route, workspaceFilePayload(requestedPath, '# Aether workspace readme\n\nBrowser acceptance fixture.'))
+    }
+    if (method === 'PUT' && path === '/api/workspace/file') {
+      const body = route.request().postDataJSON() as { path?: string; content?: string }
+      const requestedPath = body.path || 'README.md'
+      return json(route, workspaceFilePayload(requestedPath, body.content || ''))
+    }
+    if (method === 'GET' && path === '/api/workspace/raw') {
+      return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgo=', 'base64') })
     }
     if (method === 'GET' && path === '/api/workspace/search') {
       return json(route, {
@@ -899,6 +928,21 @@ async function mockAetherApi(page: Page) {
     }
     return json(route, {})
   })
+}
+
+function workspaceFilePayload(requestedPath: string, content: string) {
+  return {
+    root: '/workspace/Aether',
+    path: requestedPath,
+    name: requestedPath.split('/').pop() || requestedPath,
+    content,
+    size_bytes: content.length,
+    updated_at: 1_800_000_000,
+    language: requestedPath.endsWith('.md') ? 'markdown' : 'text',
+    mime_type: requestedPath.endsWith('.md') ? 'text/markdown' : 'text/plain',
+    truncated: false,
+    binary: false,
+  }
 }
 
 function currentScenarioMessages(page: Page) {

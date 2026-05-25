@@ -237,6 +237,43 @@ describe('Composer', () => {
     rerender(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} sessionId="session-b" />)
     await waitFor(() => expect(textbox.value).toBe('draft for b'))
   })
+  it("preserves workspace-reference drafts independently while switching sessions", async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, "workspaceSearch").mockImplementation(async (query) => ({
+      root: "/workspace/Aether",
+      query,
+      entries: query.toLowerCase().includes("read")
+        ? [{ kind: "file", name: "README.md", path: "README.md" }]
+        : [{ kind: "file", name: "app.ts", path: "src/app.ts" }],
+    }))
+    const { rerender } = render(
+      <Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} sessionId="session-a" />
+    )
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: "@app", selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole("option", { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: "Enter" })
+    await waitFor(() => expect(textbox.value).toBe("@src/app.ts "))
+
+    rerender(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} sessionId="session-b" />)
+    await waitFor(() => expect(textbox.value).toBe(""))
+
+    fireEvent.change(textbox, { target: { value: "@read", selectionStart: 5 } })
+    await waitFor(() => expect(screen.getByRole("option", { name: /README.md/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: "Enter" })
+    await waitFor(() => expect(textbox.value).toBe("@README.md "))
+
+    rerender(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} sessionId="session-a" />)
+    await waitFor(() => expect(textbox.value).toBe("@src/app.ts "))
+    expect(screen.getByText("src/app.ts")).toBeTruthy()
+    expect(screen.queryByText("README.md")).toBeNull()
+
+    rerender(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} sessionId="session-b" />)
+    await waitFor(() => expect(textbox.value).toBe("@README.md "))
+    expect(screen.getAllByText("README.md").length).toBeGreaterThan(0)
+  })
+
   it('sends absolute paths as normal prompts', () => {
     const onSend = vi.fn()
     const onSlashCommand = vi.fn()
@@ -315,6 +352,197 @@ describe('Composer', () => {
     ])
   })
 
+  it('drills into workspace directories before attaching files', async () => {
+    const onSend = vi.fn()
+    const workspaceTree = vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => {
+      if (path === '') {
+        return {
+          root: '/workspace/Aether',
+          path: '',
+          parent_path: null,
+          entries: [{ kind: 'directory', name: 'src', path: 'src' }],
+        }
+      }
+      if (path === 'src') {
+        return {
+          root: '/workspace/Aether',
+          path: 'src',
+          parent_path: '',
+          entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+        }
+      }
+      throw new Error('unexpected tree path: ' + path)
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@', selectionStart: 1 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /src\// })).toBeTruthy())
+    fireEvent.click(screen.getByRole('option', { name: /src\// }))
+
+    await waitFor(() => expect(workspaceTree).toHaveBeenCalledWith('src'))
+    expect(textbox.value).toBe('@src/')
+    expect(screen.queryByLabelText('Workspace context')).toBeNull()
+
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.click(screen.getByRole('option', { name: /app.ts/ }))
+
+    expect(textbox.value).toBe('@src/app.ts ')
+    expect(screen.getByText('src/app.ts')).toBeTruthy()
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('@src/app.ts', [
+      expect.objectContaining({ type: 'text', name: 'app.ts', path: 'src/app.ts' }),
+    ])
+  })
+
+  it('shows clickable workspace browser breadcrumbs while drilling into directories', async () => {
+    const onSend = vi.fn()
+    const workspaceTree = vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => {
+      if (path === '') {
+        return {
+          root: '/workspace/Aether',
+          path: '',
+          parent_path: null,
+          entries: [{ kind: 'directory', name: 'src', path: 'src' }],
+        }
+      }
+      if (path === 'src') {
+        return {
+          root: '/workspace/Aether',
+          path: 'src',
+          parent_path: '',
+          entries: [
+            { kind: 'directory', name: 'components', path: 'src/components' },
+            { kind: 'file', name: 'app.ts', path: 'src/app.ts' },
+          ],
+        }
+      }
+      if (path === 'src/components') {
+        return {
+          root: '/workspace/Aether',
+          path: 'src/components',
+          parent_path: 'src',
+          entries: [{ kind: 'file', name: 'Button.tsx', path: 'src/components/Button.tsx' }],
+        }
+      }
+      throw new Error('unexpected tree path: ' + path)
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@', selectionStart: 1 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /src\// })).toBeTruthy())
+    expect(screen.getByText('1 item / 1 dir')).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: /src\// }))
+
+    await waitFor(() => expect(textbox.value).toBe('@src/'))
+    const srcBreadcrumb = screen.getByRole('navigation', { name: 'Workspace reference path' })
+    expect(within(srcBreadcrumb).getByRole('button', { name: 'root' })).toBeTruthy()
+    expect(within(srcBreadcrumb).getByRole('button', { name: 'src' })).toBeTruthy()
+    expect(screen.getByText('2 items / 1 dir')).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: /components\// }))
+
+    await waitFor(() => expect(textbox.value).toBe('@src/components/'))
+    const nestedBreadcrumb = screen.getByRole('navigation', { name: 'Workspace reference path' })
+    fireEvent.click(within(nestedBreadcrumb).getByRole('button', { name: 'src' }))
+    await waitFor(() => expect(textbox.value).toBe('@src/'))
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Workspace reference path' })).getByRole('button', { name: 'root' }))
+    await waitFor(() => expect(textbox.value).toBe('@'))
+
+    expect(workspaceTree).toHaveBeenCalledWith('src/components')
+    expect(workspaceTree).toHaveBeenCalledWith('src')
+    expect(workspaceTree).toHaveBeenCalledWith('')
+    expect(screen.queryByLabelText('Workspace context')).toBeNull()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('navigates search-result directories with keyboard before applying a file', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
+      root: '/workspace/Aether',
+      query: 'src',
+      entries: [{ kind: 'directory', name: 'src', path: 'src' }],
+    })
+    vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => {
+      if (path === '') {
+        return { root: '/workspace/Aether', path: '', parent_path: null, entries: [] }
+      }
+      if (path === 'src') {
+        return {
+          root: '/workspace/Aether',
+          path: 'src',
+          parent_path: '',
+          entries: [{ kind: 'file', name: 'index.ts', path: 'src/index.ts' }],
+        }
+      }
+      throw new Error('unexpected tree path: ' + path)
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@src', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /src\// })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    await waitFor(() => expect(textbox.value).toBe('@src/'))
+    expect(screen.queryByLabelText('Workspace context')).toBeNull()
+
+    await waitFor(() => expect(screen.getByRole('option', { name: /index.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(textbox.value).toBe('@src/index.ts ')
+    expect(screen.getByText('src/index.ts')).toBeTruthy()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('supports file-browser arrow key navigation for workspace folders', async () => {
+    const onSend = vi.fn()
+    const workspaceTree = vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => {
+      if (path === '') {
+        return {
+          root: '/workspace/Aether',
+          path: '',
+          parent_path: null,
+          entries: [
+            { kind: 'directory', name: 'src', path: 'src' },
+            { kind: 'file', name: 'README.md', path: 'README.md' },
+          ],
+        }
+      }
+      if (path === 'src') {
+        return {
+          root: '/workspace/Aether',
+          path: 'src',
+          parent_path: '',
+          entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+        }
+      }
+      throw new Error('unexpected tree path: ' + path)
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@', selectionStart: 1 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /src\// })).toBeTruthy())
+
+    fireEvent.keyDown(textbox, { key: 'ArrowRight' })
+    await waitFor(() => expect(textbox.value).toBe('@src/'))
+    expect(workspaceTree).toHaveBeenCalledWith('src')
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+
+    fireEvent.keyDown(textbox, { key: 'ArrowLeft' })
+    await waitFor(() => expect(textbox.value).toBe('@'))
+    await waitFor(() => expect(screen.getByRole('option', { name: /README.md/ })).toBeTruthy())
+
+    fireEvent.keyDown(textbox, { key: 'End' })
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(textbox.value).toBe('@README.md ')
+    expect(screen.getByLabelText('Workspace context')).toBeTruthy()
+    expect(screen.getAllByText('README.md').length).toBeGreaterThan(0)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
   it('shows workspace references as managed context chips and removes matching text tokens', async () => {
     const onSend = vi.fn()
     vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
@@ -339,6 +567,141 @@ describe('Composer', () => {
     fireEvent.click(screen.getByLabelText('Remove workspace reference app.ts'))
     await waitFor(() => expect(screen.queryByLabelText('Workspace context')).toBeNull())
     expect(textbox.value).toBe('')
+  })
+
+  it("syncs selected workspace references when their visible @path token is edited away", async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, "workspaceSearch").mockResolvedValue({
+      root: "/workspace/Aether",
+      query: "app",
+      entries: [{ kind: "file", name: "app.ts", path: "src/app.ts" }],
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: "@app", selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole("option", { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: "Enter" })
+
+    expect(screen.getByLabelText("Workspace context")).toBeTruthy()
+    fireEvent.change(textbox, { target: { value: "summarize", selectionStart: 9 } })
+
+    await waitFor(() => expect(screen.queryByLabelText("Workspace context")).toBeNull())
+    fireEvent.keyDown(textbox, { key: "Enter" })
+    expect(onSend).toHaveBeenCalledWith("summarize")
+  })
+
+  it('previews and copies selected workspace references from the context strip', async () => {
+    const onSend = vi.fn()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
+      root: '/workspace/Aether',
+      query: 'app',
+      entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+    })
+    const workspaceFile = vi.spyOn(api, 'workspaceFile').mockResolvedValue({
+      root: '/workspace/Aether',
+      path: 'src/app.ts',
+      name: 'app.ts',
+      content: 'export const app = 1',
+      size_bytes: 20,
+      updated_at: 0,
+      language: 'typescript',
+      truncated: false,
+      binary: false,
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@app', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    const context = screen.getByLabelText('Workspace context')
+    fireEvent.click(within(context).getByRole('button', { name: 'Copy workspace reference app.ts' }))
+    fireEvent.click(within(context).getByRole('button', { name: 'Preview workspace reference app.ts' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('src/app.ts'))
+    await waitFor(() => expect(workspaceFile).toHaveBeenCalledWith('src/app.ts'))
+    const preview = screen.getByLabelText('Workspace reference preview')
+    expect(within(preview).getByText('src/app.ts')).toBeTruthy()
+    expect(within(preview).getByText('export const app = 1')).toBeTruthy()
+  })
+
+  it('reorders selected workspace references from the context strip', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'workspaceSearch').mockImplementation(async (query) => ({
+      root: '/workspace/Aether',
+      query,
+      entries: query.toLowerCase().includes('read')
+        ? [{ kind: 'file', name: 'README.md', path: 'README.md' }]
+        : [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+    }))
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@app', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    const nextValue = textbox.value + '@read'
+    fireEvent.change(textbox, { target: { value: nextValue, selectionStart: nextValue.length } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /README.md/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    const context = screen.getByLabelText('Workspace context')
+    const groupLabels = () => within(context)
+      .getAllByRole('group')
+      .map((item) => item.getAttribute('aria-label'))
+    expect(groupLabels()).toEqual(['Workspace reference app.ts', 'Workspace reference README.md'])
+
+    fireEvent.click(within(context).getByRole('button', { name: 'Move workspace reference README.md earlier' }))
+    expect(groupLabels()).toEqual(['Workspace reference README.md', 'Workspace reference app.ts'])
+
+    fireEvent.click(within(context).getByRole('button', { name: 'Move workspace reference README.md later' }))
+    expect(groupLabels()).toEqual(['Workspace reference app.ts', 'Workspace reference README.md'])
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('supports keyboard preview and removal for selected workspace references', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'workspaceSearch').mockResolvedValue({
+      root: '/workspace/Aether',
+      query: 'app',
+      entries: [{ kind: 'file', name: 'app.ts', path: 'src/app.ts' }],
+    })
+    const workspaceFile = vi.spyOn(api, 'workspaceFile').mockResolvedValue({
+      root: '/workspace/Aether',
+      path: 'src/app.ts',
+      name: 'app.ts',
+      content: 'export const app = 1',
+      size_bytes: 20,
+      updated_at: 0,
+      language: 'typescript',
+      truncated: false,
+      binary: false,
+    })
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '@app', selectionStart: 4 } })
+    await waitFor(() => expect(screen.getByRole('option', { name: /app.ts/ })).toBeTruthy())
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    const context = screen.getByLabelText('Workspace context')
+    const chip = within(context).getByRole('group', { name: 'Workspace reference app.ts' })
+    fireEvent.keyDown(chip, { key: 'Enter' })
+    await waitFor(() => expect(workspaceFile).toHaveBeenCalledWith('src/app.ts'))
+    expect(screen.getByLabelText('Workspace reference preview')).toBeTruthy()
+
+    fireEvent.keyDown(chip, { key: 'Backspace' })
+    await waitFor(() => expect(screen.queryByLabelText('Workspace context')).toBeNull())
+    expect(textbox.value).toBe('')
+    expect(onSend).not.toHaveBeenCalled()
   })
 
   it('renders command-surface metadata in the footer', () => {

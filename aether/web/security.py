@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 
 SESSION_HEADER_NAME = "X-Aether-Session-Token"
-PUBLIC_API_PATHS: frozenset[str] = frozenset({"/api/status", "/api/health"})
+PUBLIC_API_PATHS: frozenset[str] = frozenset({"/api/status", "/api/health", "/api/bootstrap"})
 _LOOPBACK_HOST_VALUES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 

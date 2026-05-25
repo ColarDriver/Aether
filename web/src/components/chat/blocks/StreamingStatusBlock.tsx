@@ -1,21 +1,22 @@
 import { Brain, Loader2, MessageSquareText, Wrench } from 'lucide-react'
 import type { StreamingStatusBlock as StreamingStatus } from '../../../chat-rendering'
+import { tokenUsageSummary } from '../../../chat-rendering'
 
 type Props = {
   block: StreamingStatus
 }
 
 export function StreamingStatusBlock({ block }: Props) {
-  const outputTokens = block.tokens?.output_tokens ?? 0
+  const tokenSummary = tokenUsageSummary(block.tokens)
   const Icon = statusIcon(block.state)
   return (
     <div className={'chat-block chat-block-status chat-block-status-' + statusTone(block.state)} role="status">
       <span className="status-icon" aria-hidden="true">
         <Icon size={14} />
       </span>
-      <strong>{statusLabel(block.state)}</strong>
+      <strong className="aether-shimmer-text">{statusLabel(block.state)}</strong>
       {block.detail ? <span className="status-detail">{block.detail}</span> : null}
-      {outputTokens > 0 ? <span className="status-meta">{outputTokens.toLocaleString()} out</span> : null}
+      {tokenSummary ? <span className="status-meta">{tokenSummary}</span> : null}
     </div>
   )
 }

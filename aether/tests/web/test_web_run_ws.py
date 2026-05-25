@@ -18,6 +18,7 @@ from aether.services.runs import (
     ToolFinished,
     ToolStarted,
 )
+from aether.services.workspace import WorkspaceService
 from aether.web.app import create_app
 
 
@@ -117,6 +118,47 @@ def test_run_websocket_streams_service_events() -> None:
     ]
 
 
+def test_run_websocket_enriches_workspace_reference_attachments(tmp_path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "notes.md").write_text("# Notes\n\nUse workspace context.", encoding="utf-8")
+    service = _FakeRunService()
+    app = create_app(
+        auth_enabled=False,
+        run_service=cast(AgentRunService, service),
+        workspace_service=WorkspaceService(root=tmp_path),
+    )
+    client = TestClient(app)
+
+    with client.websocket_connect("/api/runs/ws") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json(
+            {
+                "type": "run.start",
+                "id": "run-workspace",
+                "payload": {
+                    "session_id": "ses",
+                    "user_message": "summarize",
+                    "attachments": [
+                        {
+                            "type": "text",
+                            "name": "notes.md",
+                            "path": "docs/notes.md",
+                            "note": "workspace reference",
+                        }
+                    ],
+                },
+            }
+        )
+        assert ws.receive_json()["type"] == "run.accepted"
+        assert ws.receive_json()["type"] == "run.started"
+
+    attachment = service.requests[0].attachments[0]
+    assert attachment["path"] == "docs/notes.md"
+    assert attachment["_llm_language"] == "markdown"
+    assert attachment["_llm_content"] == "# Notes\n\nUse workspace context."
+
+
 def test_run_websocket_cancel_and_ping() -> None:
     service = _FakeRunService()
     app = create_app(auth_enabled=False, run_service=cast(AgentRunService, service))
@@ -157,7 +199,59 @@ def test_run_websocket_permission_and_approval_prompt_round_trip() -> None:
         assert ws.receive_json()["type"] == "run.accepted"
         permission = ws.receive_json()
         assert permission["type"] == "permission.requested"
+        assert permission["payload"]["session_id"] == "ses"
+        assert permission["payload"]["request"]["session_id"] == "ses"
         prompt_id = permission["payload"]["prompt_id"]
+        ws.send_json(
+            {
+                "type": "permission.respond",
+                "payload": {"prompt_id": prompt_id, "decision": {"type": "allow_once"}},
+            }
+        )
+        resolved = ws.receive_json()
+        assert resolved["type"] == "prompt.resolved"
+        assert resolved["payload"]["result"]["decision"] == {"type": "allow_once"}
+        approval = ws.receive_json()
+        assert approval["type"] == "approval.requested"
+        approval_prompt_id = approval["payload"]["prompt_id"]
+        ws.send_json(
+            {
+                "type": "approval.respond",
+                "payload": {"prompt_id": approval_prompt_id, "confirmed": True},
+            }
+        )
+        resolved = ws.receive_json()
+        assert resolved["type"] == "prompt.resolved"
+        assert resolved["payload"]["result"]["confirmed"] is True
+        assert ws.receive_json()["type"] == "run.finished"
+        assert ws.receive_json()["type"] == "run.result"
+
+
+def test_run_websocket_replays_pending_prompt_after_reconnect() -> None:
+    service = _PromptRunService()
+    app = create_app(auth_enabled=False, run_service=cast(AgentRunService, service))
+    client = TestClient(app)
+
+    with client.websocket_connect("/api/runs/ws") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json(
+            {
+                "type": "run.start",
+                "id": "run-reconnect",
+                "payload": {"session_id": "ses", "user_message": "needs reconnect"},
+            }
+        )
+        assert ws.receive_json()["type"] == "run.accepted"
+        permission = ws.receive_json()
+        assert permission["type"] == "permission.requested"
+        prompt_id = permission["payload"]["prompt_id"]
+
+    with client.websocket_connect("/api/runs/ws") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        replayed = ws.receive_json()
+        assert replayed["type"] == "permission.requested"
+        assert replayed["payload"]["prompt_id"] == prompt_id
+        assert replayed["payload"]["session_id"] == "ses"
         ws.send_json(
             {
                 "type": "permission.respond",

@@ -11,6 +11,7 @@ describe('PermissionDialog', () => {
       <PermissionDialog
         prompt={{
           promptId: 'p1',
+          sessionId: 's1',
           runId: 'r1',
           request: {
             tool_name: 'shell',
@@ -35,6 +36,7 @@ describe('PermissionDialog', () => {
       <PermissionDialog
         prompt={{
           promptId: 'p1',
+          sessionId: 's1',
           runId: 'r1',
           request: {
             tool_name: 'write_file',

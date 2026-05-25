@@ -20,6 +20,7 @@ from aether.cli.sessions import (
 )
 from aether.runtime.session.plan_artifact import clear_plan
 from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
+from aether.runtime.tools.tool_result_storage import cleanup_session_spills
 from aether.services.common import (
     ServiceConflictError,
     ServiceNotFoundError,
@@ -160,6 +161,10 @@ class SessionService:
         deleted = delete_session(session_id, base=self._session_dir)
         if deleted and self._current_getter() == session_id:
             self._current_setter(None)
+        if deleted:
+            clear_mode(session_id)
+            clear_plan(session_id)
+            cleanup_session_spills(session_id=session_id, max_age_seconds=0)
         return deleted
 
     def set_session_mode(self, session_id_or_prefix: str, mode: str) -> SessionInfo:

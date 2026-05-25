@@ -22,6 +22,7 @@ describe('Sidebar', () => {
     const onSelectSession = vi.fn()
     const onSelectView = vi.fn()
     const onNewSession = vi.fn()
+    const onDeleteSession = vi.fn()
 
     render(
       <Sidebar
@@ -31,6 +32,7 @@ describe('Sidebar', () => {
         onSelectSession={onSelectSession}
         onSelectView={onSelectView}
         onNewSession={onNewSession}
+        onDeleteSession={onDeleteSession}
       />,
     )
 
@@ -49,8 +51,14 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Plan auth flow.*gpt-5.4.*plan.*3 msgs/ }))
     fireEvent.click(screen.getByRole('button', { name: 'New session' }))
 
+    fireEvent.click(screen.getByRole('button', { name: 'Delete session Plan auth flow' }))
+    expect(screen.getByRole('dialog', { name: 'Delete session' })).toBeTruthy()
+    expect(screen.getByText('Delete session "Plan auth flow"? This removes its conversation context.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
     expect(onSelectView).toHaveBeenCalledWith('models')
     expect(onSelectSession).toHaveBeenCalledWith('session-12345678')
     expect(onNewSession).toHaveBeenCalledOnce()
+    expect(onDeleteSession).toHaveBeenCalledWith('session-12345678')
   })
 })

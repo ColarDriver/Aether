@@ -1,20 +1,22 @@
-import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, CircleGauge, Command, FileText, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
+import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, ChevronLeft, ChevronRight, CircleGauge, Command, Eye, FileText, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { KeyboardEvent, RefObject } from 'react'
 import { api } from '../../api/client'
-import type { SlashCommandInfo } from '../../api/types'
-import type { WorkspaceEntry } from '../../api/types'
-import type { ChatAttachment } from '../../chat-rendering'
+import type { SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
+import type { ChatAttachment, TokenUsage } from '../../chat-rendering'
+import { tokenUsageBreakdown, tokenUsageTotal } from '../../chat-rendering'
 import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { Button } from '../shared/Button'
+import { CopyButton } from '../shared/CopyButton'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ComposerInspectorPanel, type ComposerInspectorKind } from './ComposerInspectorPanel'
+import { MarkdownRenderer } from './MarkdownRenderer'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
 import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
 import { isSlashCommandInput } from './slashExecute'
-import { mergeWorkspaceAttachment } from './workspaceReferences'
+import { mergeWorkspaceAttachment, syncWorkspaceReferenceAttachmentsForValue, workspaceReferenceTokenExists } from './workspaceReferences'
 
 type ComposerDraft = {
   value: string
@@ -31,6 +33,12 @@ export type ComposerDraftPatch = {
 
 const NEW_SESSION_DRAFT_KEY = '__aether_new_session__'
 
+type WorkspacePreviewState =
+  | { status: 'idle' }
+  | { status: 'loading'; path: string }
+  | { status: 'ready'; path: string; file: WorkspaceFile }
+  | { status: 'error'; path: string; message: string }
+
 type Props = {
   disabled: boolean
   running: boolean
@@ -44,6 +52,7 @@ type Props = {
   mode?: string | null
   inputTokens?: number | null
   outputTokens?: number | null
+  tokens?: TokenUsage | null
   sessionSummary?: string | null
   messageCount?: number | null
   draftPatch?: ComposerDraftPatch | null
@@ -62,6 +71,7 @@ export function Composer({
   mode,
   inputTokens,
   outputTokens,
+  tokens,
   sessionSummary,
   messageCount,
   draftPatch,
@@ -75,6 +85,7 @@ export function Composer({
   const [controlMenuOpen, setControlMenuOpen] = useState(false)
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
   const [workspaceRootError, setWorkspaceRootError] = useState<string | null>(null)
+  const [workspacePreview, setWorkspacePreview] = useState<WorkspacePreviewState>({ status: 'idle' })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const controlMenuRef = useRef<HTMLDivElement>(null)
@@ -148,7 +159,7 @@ export function Composer({
     let cancelled = false
     api.commands()
       .then((result) => {
-        if (!cancelled) setLoadedCommands(result.commands)
+        if (!cancelled) setLoadedCommands(Array.isArray(result.commands) ? result.commands : [])
       })
       .catch(() => {
         if (!cancelled) setLoadedCommands([])
@@ -220,6 +231,15 @@ export function Composer({
     })
   }
 
+  const browseWorkspaceReference = (nextValue: string, nextCursorPosition: number) => {
+    setValue(nextValue)
+    setCursorPosition(nextCursorPosition)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }
+
   const updateCursorPosition = () => {
     setCursorPosition(textareaRef.current?.selectionStart ?? value.length)
   }
@@ -228,6 +248,14 @@ export function Composer({
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }
+
+  const syncWorkspaceContextForValue = (nextValue: string) => {
+    setAttachments((current) => syncWorkspaceReferenceAttachmentsForValue(current, nextValue))
+    setWorkspacePreview((current) => {
+      if (current.status === 'idle') return current
+      return workspaceReferenceTokenExists(nextValue, current.path) ? current : { status: 'idle' }
     })
   }
 
@@ -255,6 +283,7 @@ export function Composer({
     removeAttachmentAt(index)
     if (attachment?.path) {
       setValue((current) => removeWorkspaceReferenceTokens(current, [attachment.path || '']))
+      setWorkspacePreview((current) => current.status !== 'idle' && current.path === attachment.path ? { status: 'idle' } : current)
     }
   }
 
@@ -266,6 +295,39 @@ export function Composer({
     if (paths.length > 0) {
       setValue((current) => removeWorkspaceReferenceTokens(current, paths))
     }
+    setWorkspacePreview({ status: 'idle' })
+  }
+
+  const moveWorkspaceReferenceAt = (index: number, direction: -1 | 1) => {
+    setAttachments((current) => {
+      const workspaceIndices = current
+        .map((attachment, itemIndex) => ({ attachment, itemIndex }))
+        .filter((item) => item.attachment.note === 'workspace reference')
+        .map((item) => item.itemIndex)
+      const position = workspaceIndices.indexOf(index)
+      const swapIndex = workspaceIndices[position + direction]
+      if (position < 0 || swapIndex == null) return current
+      const next = [...current]
+      const currentItem = next[index]
+      next[index] = next[swapIndex]!
+      next[swapIndex] = currentItem!
+      return next
+    })
+  }
+
+  const previewWorkspaceReference = (attachment: ChatAttachment) => {
+    const path = attachment.path
+    if (!path || attachment.isDirectory) return
+    if (workspacePreview.status === 'ready' && workspacePreview.path === path) {
+      setWorkspacePreview({ status: 'idle' })
+      return
+    }
+    setWorkspacePreview({ status: 'loading', path })
+    api.workspaceFile(path)
+      .then((file) => setWorkspacePreview({ status: 'ready', path, file }))
+      .catch((error: unknown) => {
+        setWorkspacePreview({ status: 'error', path, message: error instanceof Error ? error.message : String(error) })
+      })
   }
 
   const openInspector = (kind: ComposerInspectorKind) => {
@@ -330,6 +392,7 @@ export function Composer({
         cursorPosition={cursorPosition}
         disabled={disabled || running}
         onApply={applyWorkspaceReference}
+        onBrowse={browseWorkspaceReference}
         ref={workspaceReferencePopoverRef}
         value={value}
       />
@@ -344,6 +407,7 @@ export function Composer({
           mode={mode}
           inputTokens={inputTokens}
           outputTokens={outputTokens}
+          tokens={tokens}
           onClose={() => setInspectorKind(null)}
         />
       ) : null}
@@ -355,7 +419,10 @@ export function Composer({
         disabled={disabled || running}
         items={workspaceReferenceItems}
         onClear={clearWorkspaceReferences}
+        onMove={moveWorkspaceReferenceAt}
+        onPreview={previewWorkspaceReference}
         onRemove={removeWorkspaceReferenceAt}
+        preview={workspacePreview}
       />
       {manualAttachmentItems.length > 0 ? (
         <div className="composer-attachments">
@@ -374,8 +441,10 @@ export function Composer({
         disabled={disabled}
         placeholder={disabled ? 'Select a session' : 'Ask Aether'}
         onChange={(event) => {
-          setValue(event.target.value)
+          const nextValue = event.target.value
+          setValue(nextValue)
           setCursorPosition(event.target.selectionStart)
+          syncWorkspaceContextForValue(nextValue)
         }}
         onClick={updateCursorPosition}
         onPaste={(event) => {
@@ -450,7 +519,7 @@ export function Composer({
         </div>
         <div className="composer-runbar">
           <ModelChip provider={provider} model={model} disabled={disabled || running} sessionId={sessionId} />
-          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} />
+          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} tokens={tokens} />
           <div className="composer-actions">
             {running ? (
               <Button aria-label="Stop run" title="Stop run" onClick={onCancel}>
@@ -481,10 +550,11 @@ const LOCAL_INSPECTOR_COMMANDS: SlashCommandInfo[] = [
   { name: '/mcp', description: 'Show MCP integration status', category: 'local' },
 ]
 
-function mergeLocalInspectorCommands(commands: SlashCommandInfo[]): SlashCommandInfo[] {
+function mergeLocalInspectorCommands(commands: SlashCommandInfo[] | undefined): SlashCommandInfo[] {
+  const remoteCommands = Array.isArray(commands) ? commands : []
   const seen = new Set<string>()
   const merged: SlashCommandInfo[] = []
-  for (const command of [...LOCAL_INSPECTOR_COMMANDS, ...commands]) {
+  for (const command of [...LOCAL_INSPECTOR_COMMANDS, ...remoteCommands]) {
     if (seen.has(command.name)) continue
     seen.add(command.name)
     merged.push(command)
@@ -635,11 +705,17 @@ function WorkspaceContextStrip({
   disabled,
   onRemove,
   onClear,
+  onMove,
+  onPreview,
+  preview,
 }: {
   items: Array<{ attachment: ChatAttachment; index: number }>
   disabled: boolean
   onRemove: (index: number) => void
   onClear: () => void
+  onMove: (index: number, direction: -1 | 1) => void
+  onPreview: (attachment: ChatAttachment) => void
+  preview: WorkspacePreviewState
 }) {
   if (items.length === 0) return null
   return (
@@ -653,24 +729,127 @@ function WorkspaceContextStrip({
         <button type="button" disabled={disabled} onClick={onClear}>Clear</button>
       </header>
       <div className="composer-workspace-context-list">
-        {items.map(({ attachment, index }) => {
+        {items.map(({ attachment, index }, itemPosition) => {
           const Icon = attachment.isDirectory ? Folder : FileText
           const label = attachment.name || attachment.path || 'workspace reference'
+          const canPreview = !attachment.isDirectory && Boolean(attachment.path)
+          const handleChipKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
+            if (event.currentTarget !== event.target || disabled) return
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+              event.preventDefault()
+              onRemove(index)
+            }
+            if ((event.key === 'Enter' || event.key === ' ') && canPreview) {
+              event.preventDefault()
+              onPreview(attachment)
+            }
+          }
           return (
-            <span className="composer-workspace-context-chip" key={(attachment.path || label) + '-' + index}>
+            <span
+              aria-label={'Workspace reference ' + label}
+              className="composer-workspace-context-chip"
+              key={(attachment.path || label) + '-' + index}
+              onKeyDown={handleChipKeyDown}
+              role="group"
+              tabIndex={disabled ? -1 : 0}
+              title="Enter previews, Delete removes"
+            >
               <Icon size={14} aria-hidden="true" />
               <span>
                 <strong>{label}</strong>
                 {attachment.path ? <small>{attachment.path}</small> : null}
               </span>
-              <button type="button" aria-label={'Remove workspace reference ' + label} disabled={disabled} onClick={() => onRemove(index)}>
-                <X size={12} aria-hidden="true" />
-              </button>
+              <span className="composer-workspace-context-actions">
+                <button
+                  type="button"
+                  aria-label={'Move workspace reference ' + label + ' earlier'}
+                  disabled={disabled || itemPosition === 0}
+                  onClick={() => onMove(index, -1)}
+                >
+                  <ChevronLeft size={12} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={'Move workspace reference ' + label + ' later'}
+                  disabled={disabled || itemPosition === items.length - 1}
+                  onClick={() => onMove(index, 1)}
+                >
+                  <ChevronRight size={12} aria-hidden="true" />
+                </button>
+                {attachment.path ? (
+                  <CopyButton
+                    text={attachment.path}
+                    label={'Copy workspace reference ' + label}
+                    displayLabel="Copy"
+                    className="composer-workspace-context-copy"
+                    disabled={disabled}
+                  />
+                ) : null}
+                {canPreview ? (
+                  <button type="button" aria-label={'Preview workspace reference ' + label} disabled={disabled} onClick={() => onPreview(attachment)}>
+                    <Eye size={12} aria-hidden="true" />
+                  </button>
+                ) : null}
+                <button type="button" aria-label={'Remove workspace reference ' + label} disabled={disabled} onClick={() => onRemove(index)}>
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </span>
             </span>
           )
         })}
       </div>
+      <WorkspaceContextPreview preview={preview} />
     </section>
+  )
+}
+
+function WorkspaceContextPreview({ preview }: { preview: WorkspacePreviewState }) {
+  if (preview.status === 'idle') return null
+  if (preview.status === 'loading') {
+    return (
+      <div className="composer-workspace-preview" aria-label="Workspace reference preview">
+        <header>
+          <FileText size={14} aria-hidden="true" />
+          <strong>{preview.path}</strong>
+          <em>Loading</em>
+        </header>
+      </div>
+    )
+  }
+  if (preview.status === 'error') {
+    return (
+      <div className="composer-workspace-preview composer-workspace-preview-error" aria-label="Workspace reference preview">
+        <header>
+          <FileText size={14} aria-hidden="true" />
+          <strong>{preview.path}</strong>
+        </header>
+        <p>{preview.message}</p>
+      </div>
+    )
+  }
+
+  const file = preview.file
+  return (
+    <div className="composer-workspace-preview" aria-label="Workspace reference preview">
+      <header>
+        <FileText size={14} aria-hidden="true" />
+        <strong>{file.path}</strong>
+        <span>
+          <em>{file.language}</em>
+          <em>{formatBytes(file.size_bytes)}</em>
+          {file.truncated ? <em>truncated</em> : null}
+        </span>
+      </header>
+      {file.binary ? (
+        <p>Binary file preview is disabled.</p>
+      ) : file.language === 'markdown' ? (
+        <div className="composer-workspace-preview-markdown">
+          <MarkdownRenderer text={file.content} />
+        </div>
+      ) : (
+        <pre>{file.content}</pre>
+      )}
+    </div>
   )
 }
 
@@ -717,13 +896,25 @@ function workspaceRootName(root: string): string {
   return clean.split(/[\\/]/).filter(Boolean).pop() || root || 'Workspace'
 }
 
-function ContextRing({ inputTokens, outputTokens }: { inputTokens?: number | null; outputTokens?: number | null }) {
-  const total = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value)) return '0 B'
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + ' MB'
+  if (value >= 1_000) return (value / 1_000).toFixed(1) + ' KB'
+  return Math.max(0, value) + ' B'
+}
+
+function ContextRing({ inputTokens, outputTokens, tokens }: { inputTokens?: number | null; outputTokens?: number | null; tokens?: TokenUsage | null }) {
+  const fallbackTotal = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+  const total = tokenUsageTotal(tokens) || fallbackTotal
+  const breakdown = tokenUsageBreakdown(tokens)
+  const detail = breakdown.length > 0
+    ? breakdown.join(' / ')
+    : (inputTokens ?? 0).toLocaleString() + ' in / ' + (outputTokens ?? 0).toLocaleString() + ' out'
   const percent = total > 0 ? Math.min(99, Math.max(1, Math.round(total / 2000))) : 0
   const circumference = 61.261
   const offset = circumference - (circumference * percent) / 100
   const title = total > 0
-    ? `${total.toLocaleString()} active-run tokens (${inputTokens ?? 0} in / ${outputTokens ?? 0} out)`
+    ? total.toLocaleString() + ' active-run tokens (' + detail + ')'
     : 'No active-run token usage yet'
 
   return (

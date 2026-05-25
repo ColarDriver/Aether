@@ -72,6 +72,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
 
     if (message.role === 'assistant') {
       const text = message.text ?? ''
+      const metadata = recordFromUnknown(message.metadata)
       if (text.trim() || !message.tool_calls?.length) {
         blocks.push({
           id: 'persisted-' + index + '-assistant',
@@ -82,6 +83,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           kind: 'assistant_message',
           content: text,
           isError: Boolean(message.is_error),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         })
       }
 
@@ -146,7 +148,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
     }
   })
 
-  return blocks
+  return applyPersistedToolResultStatuses(blocks)
 }
 
 function toolCallBlock(input: {
@@ -189,4 +191,21 @@ function toolCallBlock(input: {
 
 function isAskUserQuestionTool(toolName: string): boolean {
   return toolName.toLowerCase() === 'ask_user_question' || toolName === 'AskUserQuestion'
+}
+
+function applyPersistedToolResultStatuses(blocks: ChatBlock[]): ChatBlock[] {
+  const results = new Map<string, boolean>()
+  for (const block of blocks) {
+    if (block.kind === 'tool_result') results.set(block.toolCallId, block.isError)
+  }
+  if (results.size === 0) return blocks
+  return blocks.map((block) => {
+    if (block.kind !== 'tool_call') return block
+    const isError = results.get(block.toolCallId)
+    if (isError === undefined) return block
+    return {
+      ...block,
+      status: isError ? 'failed' : 'finished',
+    }
+  })
 }

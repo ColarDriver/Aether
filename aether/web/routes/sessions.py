@@ -108,6 +108,7 @@ async def delete_session(request: Request, session_id: str) -> Response:
             f"session not found: {session_id}",
             details={"session_id": session_id},
         )
+    services.tasks.delete_session_tasks(session_id)
     return Response(status_code=204)
 
 

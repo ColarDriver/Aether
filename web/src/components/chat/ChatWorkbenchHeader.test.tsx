@@ -9,6 +9,7 @@ afterEach(cleanup)
 describe('ChatWorkbenchHeader', () => {
   it('renders session metadata and toggles the workspace panel', () => {
     const onToggleWorkspaceRail = vi.fn()
+    const onSwapPanels = vi.fn()
 
     render(
       <ChatWorkbenchHeader
@@ -25,12 +26,16 @@ describe('ChatWorkbenchHeader', () => {
         online
         workspaceRailOpen
         onToggleWorkspaceRail={onToggleWorkspaceRail}
+        onSwapPanels={onSwapPanels}
       />,
     )
 
     expect(screen.getByText('Refine web UI')).toBeTruthy()
     expect(screen.getByText('4 messages')).toBeTruthy()
     expect(screen.getByText('online')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Swap sessions and workspace panels' }))
+    expect(onSwapPanels).toHaveBeenCalledOnce()
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide workspace panel' }))
     expect(onToggleWorkspaceRail).toHaveBeenCalledOnce()

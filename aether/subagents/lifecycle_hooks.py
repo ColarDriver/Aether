@@ -101,6 +101,8 @@ class TaskStoreFanoutHooks(EngineHooks):
         request_char_count: int,
         max_tokens: int | None,
         context_metadata: dict[str, Any],
+        transport: str | None = None,
+        transport_api_mode: str | None = None,
     ) -> None:
         return self._inner.pre_api_request(
             session_id=session_id,
@@ -108,6 +110,8 @@ class TaskStoreFanoutHooks(EngineHooks):
             model=model,
             provider=provider,
             api_mode=api_mode,
+            transport=transport,
+            transport_api_mode=transport_api_mode,
             api_call_count=api_call_count,
             message_count=message_count,
             tool_count=tool_count,
@@ -130,6 +134,8 @@ class TaskStoreFanoutHooks(EngineHooks):
         response_finish_reason: str | None,
         error: Exception | None,
         context_metadata: dict[str, Any],
+        transport: str | None = None,
+        transport_api_mode: str | None = None,
     ) -> None:
         return self._inner.post_api_request(
             session_id=session_id,
@@ -137,6 +143,8 @@ class TaskStoreFanoutHooks(EngineHooks):
             model=model,
             provider=provider,
             api_mode=api_mode,
+            transport=transport,
+            transport_api_mode=transport_api_mode,
             api_call_count=api_call_count,
             elapsed_ms=elapsed_ms,
             response_finish_reason=response_finish_reason,

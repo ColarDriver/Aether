@@ -60,5 +60,7 @@ tui/dist/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
+web/test-results/
+web/playwright-report/
 web/vite.config.js
 web/vite.config.d.ts

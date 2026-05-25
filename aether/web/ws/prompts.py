@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future, TimeoutError
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 import itertools
+from threading import RLock
 from typing import Any, Callable, cast
 
 from aether.runtime.tools.tool_permissions import (
@@ -26,11 +27,24 @@ class WebPromptDisconnected(Exception):
     """Raised when the browser socket disappears while a prompt is pending."""
 
 
+@dataclass(slots=True)
+class _PendingPrompt:
+    future: Future[dict[str, Any]]
+    frame: dict[str, Any]
+
+
 class WebPromptBroker:
     def __init__(self, *, send_frame: FrameSender) -> None:
         self._send_frame = send_frame
         self._counter = itertools.count(1)
-        self._pending: dict[str, Future[dict[str, Any]]] = {}
+        self._lock = RLock()
+        self._pending: dict[str, _PendingPrompt] = {}
+
+    def replay_pending(self, send_frame: FrameSender) -> None:
+        with self._lock:
+            frames = [dict(prompt.frame) for prompt in self._pending.values()]
+        for frame in frames:
+            send_frame(frame)
 
     def request_approval(
         self,
@@ -45,22 +59,20 @@ class WebPromptBroker:
     ) -> dict[str, Any]:
         prompt_id = self._new_prompt_id("approval")
         future: Future[dict[str, Any]] = Future()
-        self._pending[prompt_id] = future
-        self._send_frame(
-            {
-                "type": "approval.requested",
-                "payload": {
-                    "prompt_id": prompt_id,
-                    "kind": kind,
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "plan_text": plan_text,
-                    "plan_path": plan_path,
-                    "questions": questions or [],
-                    "deadline_ms": int(timeout * 1000),
-                },
-            }
-        )
+        frame = {
+            "type": "approval.requested",
+            "payload": {
+                "prompt_id": prompt_id,
+                "kind": kind,
+                "session_id": session_id,
+                "run_id": run_id,
+                "plan_text": plan_text,
+                "plan_path": plan_path,
+                "questions": questions or [],
+                "deadline_ms": int(timeout * 1000),
+            },
+        }
+        self._remember_and_send(prompt_id, future, frame)
         return self._wait(prompt_id, future, timeout=timeout)
 
     def request_permission(
@@ -72,18 +84,17 @@ class WebPromptBroker:
     ) -> ToolPermissionDecision:
         prompt_id = self._new_prompt_id("permission")
         future: Future[dict[str, Any]] = Future()
-        self._pending[prompt_id] = future
-        self._send_frame(
-            {
-                "type": "permission.requested",
-                "payload": {
-                    "prompt_id": prompt_id,
-                    "run_id": run_id,
-                    "request": _permission_request_to_payload(request),
-                    "deadline_ms": int(timeout * 1000),
-                },
-            }
-        )
+        frame = {
+            "type": "permission.requested",
+            "payload": {
+                "prompt_id": prompt_id,
+                "session_id": request.session_id,
+                "run_id": run_id,
+                "request": _permission_request_to_payload(request),
+                "deadline_ms": int(timeout * 1000),
+            },
+        }
+        self._remember_and_send(prompt_id, future, frame)
         try:
             payload = self._wait(prompt_id, future, timeout=timeout)
         except TimeoutError:
@@ -101,18 +112,42 @@ class WebPromptBroker:
         return _decision_from_payload(payload.get("decision", payload))
 
     def resolve(self, prompt_id: str, payload: dict[str, Any]) -> bool:
-        future = self._pending.pop(prompt_id, None)
-        if future is None:
+        with self._lock:
+            pending = self._pending.pop(prompt_id, None)
+        if pending is None:
             return False
-        future.set_result(payload)
+        pending.future.set_result(payload)
         return True
 
     def reject_all(self, message: str = "browser disconnected") -> None:
-        pending = list(self._pending.values())
-        self._pending.clear()
-        for future in pending:
-            if not future.done():
-                future.set_exception(WebPromptDisconnected(message))
+        with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for prompt in pending:
+            if not prompt.future.done():
+                prompt.future.set_exception(WebPromptDisconnected(message))
+
+    def reject_run(self, run_id: str, message: str = "run cancelled") -> None:
+        with self._lock:
+            matching = [
+                prompt_id
+                for prompt_id, prompt in self._pending.items()
+                if _payload_run_id(prompt.frame) == run_id
+            ]
+            pending = [self._pending.pop(prompt_id) for prompt_id in matching]
+        for prompt in pending:
+            if not prompt.future.done():
+                prompt.future.set_exception(WebPromptDisconnected(message))
+
+    def _remember_and_send(
+        self,
+        prompt_id: str,
+        future: Future[dict[str, Any]],
+        frame: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            self._pending[prompt_id] = _PendingPrompt(future=future, frame=frame)
+        self._send_frame(frame)
 
     def _new_prompt_id(self, prefix: str) -> str:
         return f"{prefix}-{next(self._counter)}"
@@ -127,7 +162,8 @@ class WebPromptBroker:
         try:
             return future.result(timeout=timeout)
         finally:
-            self._pending.pop(prompt_id, None)
+            with self._lock:
+                self._pending.pop(prompt_id, None)
 
 
 class WebApprovalPrompter:
@@ -267,6 +303,14 @@ def _rule_from_payload(payload: Any) -> ToolPermissionRule | None:
         command_prefix=payload.get("command_prefix") if isinstance(payload.get("command_prefix"), str) else None,
         reason=payload.get("reason") if isinstance(payload.get("reason"), str) else None,
     )
+
+
+def _payload_run_id(frame: dict[str, Any]) -> str | None:
+    payload = frame.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    run_id = payload.get("run_id")
+    return run_id if isinstance(run_id, str) else None
 
 
 async def sleep_forever() -> None:

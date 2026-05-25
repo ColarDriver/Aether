@@ -26,6 +26,20 @@ def test_create_app_status_and_health_public() -> None:
     assert "services" in health.json()
 
 
+def test_bootstrap_route_is_public_and_returns_session_token() -> None:
+    app = create_app(auth_enabled=True, session_token="bootstrap-token")
+    client = TestClient(app)
+
+    response = client.get("/api/bootstrap")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_token": "bootstrap-token",
+        "auth_enabled": True,
+        "web": {"enabled": True},
+    }
+
+
 def test_auth_middleware_rejects_and_accepts_protected_api_route() -> None:
     app = create_app(auth_enabled=True, session_token="test-token")
     _add_private_route(app)

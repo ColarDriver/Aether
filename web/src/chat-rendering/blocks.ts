@@ -103,6 +103,7 @@ export type AssistantMessageBlock = ChatBlockBase & {
   isStreaming?: boolean
   isError?: boolean
   model?: string | null
+  metadata?: Record<string, unknown>
 }
 
 export type ThinkingBlock = ChatBlockBase & {

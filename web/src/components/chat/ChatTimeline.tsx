@@ -1,4 +1,4 @@
-import type { AssistantMessageBlock as AssistantMessage, ChatBlock, DiffBlock as DiffChatBlock, ToolResultBlock as ToolResultChatBlock, UserMessageBlock as UserMessage } from '../../chat-rendering'
+import type { AssistantMessageBlock as AssistantMessage, ChatBlock, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock, ToolResultBlock as ToolResultChatBlock, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { buildChatRenderModel, type ChatRenderItem } from '../../chat-rendering/renderModel'
 import {
   ApprovalRequestBlock,
@@ -56,11 +56,19 @@ export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespond
               diffs={model.diffsByToolCallId}
             />
           ))}
-          <CurrentTurnChangeCard diffs={diffsForTurn(turn, model.diffsByToolCallId)} />
+          <CurrentTurnChangeCard diffs={diffsForTurn(turn, model.diffsByToolCallId)} diagnostics={diagnosticsForTurn(turn)} />
         </section>
       ))}
     </div>
   )
+}
+
+function diagnosticsForTurn(turn: ChatTurn): DiagnosticsChatBlock[] {
+  const collected: DiagnosticsChatBlock[] = []
+  for (const item of turn.items) {
+    if (item.kind === 'block' && item.block.kind === 'diagnostics') collected.push(item.block)
+  }
+  return collected
 }
 
 function diffsForTurn(turn: ChatTurn, diffs: Map<string, DiffChatBlock[]>): DiffChatBlock[] {

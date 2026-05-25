@@ -1,19 +1,20 @@
-import { ChevronLeft, ChevronRight, ExternalLink, File, FileSearch, Folder, FolderTree, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink, File, Folder, FolderTree, RefreshCw, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
-import type { WorkspaceEntry, WorkspaceFile, WorkspaceTree } from '../../api/types'
+import type { WorkspaceEntry, WorkspaceTree } from '../../api/types'
 import { Button } from '../shared/Button'
 import { Spinner } from '../shared/Spinner'
-import { MarkdownRenderer } from './MarkdownRenderer'
 
 type Props = {
+  side?: 'left' | 'right'
+  selectedFilePath?: string | null
+  onSelectFile?: (path: string) => void
   onClose?: () => void
   onOpenWorkspace?: () => void
 }
 
-export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
+export function WorkspaceRail({ side = 'right', selectedFilePath = null, onSelectFile, onClose, onOpenWorkspace }: Props) {
   const [tree, setTree] = useState<WorkspaceTree | null>(null)
-  const [activeFile, setActiveFile] = useState<WorkspaceFile | null>(null)
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<WorkspaceEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -26,15 +27,6 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
   const breadcrumbs = useMemo(() => buildBreadcrumbs(tree?.path ?? ''), [tree?.path])
   const directoryCount = visibleEntries.filter((entry) => entry.kind === 'directory').length
   const fileCount = visibleEntries.length - directoryCount
-
-  const openFile = useCallback((path: string) => {
-    setLoading(true)
-    setError(null)
-    return api.workspaceFile(path)
-      .then(setActiveFile)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
-  }, [])
 
   const loadTree = useCallback((path = '') => {
     setLoading(true)
@@ -69,11 +61,11 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
       loadTree(entry.path)
       return
     }
-    void openFile(entry.path)
+    onSelectFile?.(entry.path)
   }
 
   return (
-    <aside className="workspace-rail" aria-label="Workspace files">
+    <aside className={'workspace-rail workspace-rail-side-' + side} aria-label="Workspace files">
       <header className="workspace-rail-header">
         <div className="workspace-rail-title">
           <span className="workspace-rail-icon" aria-hidden="true">
@@ -161,7 +153,7 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
             <button
               type="button"
               key={entry.path || '__root__'}
-              className={activeFile?.path === entry.path ? 'workspace-rail-entry active' : 'workspace-rail-entry'}
+              className={selectedFilePath === entry.path ? 'workspace-rail-entry active' : 'workspace-rail-entry'}
               onClick={() => openEntry(entry)}
               title={entry.path || '.'}
             >
@@ -173,39 +165,6 @@ export function WorkspaceRail({ onClose, onOpenWorkspace }: Props) {
           ))}
         </div>
       </div>
-
-      <section className="workspace-rail-preview" aria-label="Workspace preview">
-        {loading && activeFile ? <div className="workspace-rail-loading">Updating preview...</div> : null}
-        {activeFile ? (
-          <>
-            <div className="workspace-rail-preview-header">
-              <div>
-                <File size={15} />
-                <strong>{activeFile.path}</strong>
-              </div>
-              <span>
-                <em>{activeFile.language}</em>
-                <em>{formatBytes(activeFile.size_bytes)}</em>
-                {activeFile.truncated ? <em>truncated</em> : null}
-              </span>
-            </div>
-            {activeFile.binary ? (
-              <div className="empty-chat">Binary file preview is disabled.</div>
-            ) : activeFile.language === 'markdown' ? (
-              <div className="workspace-rail-markdown"><MarkdownRenderer text={activeFile.content} /></div>
-            ) : (
-              <pre className="workspace-rail-code">{activeFile.content}</pre>
-            )}
-            {activeFile.truncated ? <div className="workspace-rail-note">Preview truncated.</div> : null}
-          </>
-        ) : (
-          <div className="workspace-rail-empty-preview">
-            <FileSearch size={20} />
-            <strong>Select a file</strong>
-            <span>Preview source, markdown, and attached context without leaving the chat.</span>
-          </div>
-        )}
-      </section>
     </aside>
   )
 }

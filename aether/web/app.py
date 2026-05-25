@@ -23,6 +23,7 @@ from aether.services.tools import ToolService
 from aether.services.workspace import WorkspaceService
 from aether.web.errors import install_error_handlers
 from aether.web.routes.analytics import router as analytics_router
+from aether.web.routes.bootstrap import router as bootstrap_router
 from aether.web.routes.commands import router as commands_router
 from aether.web.routes.config import router as config_router
 from aether.web.routes.diagnostics import router as diagnostics_router
@@ -40,6 +41,8 @@ from aether.web.routes.tools import router as tools_router
 from aether.web.routes.workspace import router as workspace_router
 from aether.web.security import create_session_token, install_security
 from aether.web.static import mount_spa
+from aether.web.ws.hub import WebRunSocketHub
+from aether.web.ws.prompts import WebPromptBroker
 from aether.web.ws.runs import router as run_ws_router
 
 
@@ -99,6 +102,9 @@ def create_app(
     app.state.aether_session_token = token
     app.state.aether_auth_enabled = bool(auth_enabled)
     app.state.aether_bound_host = bound_host
+    app.state.aether_run_socket_hub = WebRunSocketHub()
+    app.state.aether_web_prompt_broker = WebPromptBroker(send_frame=app.state.aether_run_socket_hub.broadcast)
+    app.state.aether_run_tasks = set()
     app.state.aether_services = WebServices(
         health=health_service or HealthService(),
         sessions=sessions,
@@ -127,6 +133,7 @@ def create_app(
     install_error_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(bootstrap_router)
     app.include_router(analytics_router)
     app.include_router(commands_router)
     app.include_router(docs_router)

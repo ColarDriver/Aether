@@ -31,9 +31,16 @@ export function createChatRenderState(): ChatRenderState {
 }
 
 export function frameSessionId(frame: RunSocketFrame): string {
-  return typeof frame.payload?.session_id === 'string' ? frame.payload.session_id : ''
+  if (typeof frame.payload?.session_id === 'string') return frame.payload.session_id
+  const request = frame.payload?.request
+  if (isRecord(request) && typeof request.session_id === 'string') return request.session_id
+  return ''
 }
 
 export function frameRunId(frame: RunSocketFrame): string {
   return typeof frame.payload?.run_id === 'string' ? frame.payload.run_id : ''
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

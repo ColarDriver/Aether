@@ -17,6 +17,22 @@ const base = {
 } as const
 
 describe('ToolCallBlock todo rendering', () => {
+  it('shimmers active tool calls while they are pending or running', () => {
+    const block: ToolCall = {
+      ...base,
+      kind: 'tool_call',
+      toolCallId: 'tc-running',
+      toolName: 'web_search',
+      status: 'running',
+      arguments: { query: 'Aether web UI' },
+    }
+
+    render(<ToolCallBlock block={block} />)
+
+    expect(screen.getByText('web_search').className).toContain('aether-shimmer-text')
+    expect(screen.getByText('running')).toBeTruthy()
+  })
+
   it('renders todo_write arguments as a checklist instead of raw JSON', () => {
     const block: ToolCall = {
       ...base,
@@ -50,6 +66,33 @@ describe('ToolCallBlock todo rendering', () => {
     expect(screen.getByText('Inspect web renderer')).toBeTruthy()
     expect(screen.getByText('in progress')).toBeTruthy()
     expect(screen.queryByText('"todos"')).toBeNull()
+  })
+
+  it('surfaces completed tool duration metadata in the header', () => {
+    const block: ToolCall = {
+      ...base,
+      kind: 'tool_call',
+      toolCallId: 'tc-read',
+      toolName: 'read_file',
+      status: 'finished',
+      arguments: { path: 'README.md' },
+    }
+    const result: ToolResult = {
+      ...base,
+      id: 'tool-result-read',
+      kind: 'tool_result',
+      toolCallId: 'tc-read',
+      toolName: 'read_file',
+      content: '# Readme',
+      isError: false,
+      metadata: { duration_ms: 1234 },
+    }
+
+    render(<ToolCallBlock block={block} result={result} />)
+
+    const header = screen.getByRole('button', { name: /read_file/ })
+    expect(within(header).getByText('1.2s')).toBeTruthy()
+    expect(within(header).getByText('finished')).toBeTruthy()
   })
 
   it('renders shell results in terminal chrome', () => {

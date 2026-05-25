@@ -19,15 +19,18 @@ export function ToolCallBlock({ block, result, diffs = [] }: Props) {
   const hasDetails = showRawInput || Boolean(result) || diffs.length > 0
   const detailsVisible = expanded || Boolean(result) || diffs.length > 0
   const summary = toolSummary(block)
+  const status = effectiveToolStatus(block, result)
+  const meta = toolCallMeta(result)
   const ToolIcon = toolIconForName(block.toolName)
   return (
-    <article className={'tool-call-block tool-call-' + block.status}>
+    <article className={'tool-call-block tool-call-' + status}>
       <button type="button" className="tool-call-header" onClick={() => setExpanded((value) => !value)}>
         {hasDetails ? detailsVisible ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <Wrench size={14} />}
         <span className="tool-call-kind-icon" aria-hidden="true"><ToolIcon size={14} /></span>
-        <strong>{block.toolName}</strong>
+        <strong className={isRunningToolCall(status) ? 'aether-shimmer-text' : undefined}>{block.toolName}</strong>
         {summary ? <span className="tool-call-summary">{summary}</span> : null}
-        <em>{block.status}</em>
+        {meta.length > 0 ? <span className="tool-call-meta">{meta.join(' · ')}</span> : null}
+        <em>{status}</em>
       </button>
       {detailsVisible ? (
         <div className="tool-call-body">
@@ -41,6 +44,46 @@ export function ToolCallBlock({ block, result, diffs = [] }: Props) {
       ) : null}
     </article>
   )
+}
+
+function effectiveToolStatus(block: ToolCall, result?: ToolResult | null): ToolCall['status'] {
+  if (!result) return block.status
+  return result.isError ? 'failed' : 'finished'
+}
+
+function isRunningToolCall(status: string): boolean {
+  return status === 'running' || status === 'pending'
+}
+
+function toolCallMeta(result?: ToolResult | null): string[] {
+  if (!result) return []
+  const durationMs = numberMetadata(result.metadata, 'duration_ms')
+    ?? numberMetadata(result.metadata, 'durationMs')
+    ?? secondsToMillis(numberMetadata(result.metadata, 'duration_seconds') ?? numberMetadata(result.metadata, 'durationSeconds'))
+  return [durationMs != null ? formatDurationMs(durationMs) : null].filter((item): item is string => Boolean(item))
+}
+
+function numberMetadata(metadata: Record<string, unknown>, key: string): number | null {
+  const value = metadata[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function secondsToMillis(value: number | null): number | null {
+  return value == null ? null : value * 1000
+}
+
+function formatDurationMs(ms: number): string {
+  const seconds = Math.max(0, ms / 1000)
+  if (seconds < 10) return seconds.toFixed(1) + 's'
+  if (seconds < 60) return Math.round(seconds) + 's'
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return minutes + 'm ' + rest + 's'
 }
 
 function toolSummary(block: ToolCall): string {

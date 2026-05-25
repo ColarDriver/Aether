@@ -30,6 +30,7 @@ describe('runtime status blocks', () => {
     )
 
     expect(screen.getByText('thinking')).toBeTruthy()
+    expect(screen.getByText('thinking').className).toContain('aether-shimmer-text')
     expect(screen.getByText('active')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /thinking/ }))
     expect(screen.getByText('Need to inspect the renderer before editing.')).toBeTruthy()
@@ -43,15 +44,16 @@ describe('runtime status blocks', () => {
           kind: 'streaming_status',
           state: 'responding',
           detail: 'writing final answer',
-          tokens: { output_tokens: 1200 },
+          tokens: { output_tokens: 1200, reasoning_tokens: 80 },
         }}
       />,
     )
 
     expect(screen.getByRole('status')).toBeTruthy()
     expect(screen.getByText('Responding')).toBeTruthy()
+    expect(screen.getByText('Responding').className).toContain('aether-shimmer-text')
     expect(screen.getByText('writing final answer')).toBeTruthy()
-    expect(screen.getByText('1,200 out')).toBeTruthy()
+    expect(screen.getByText('1.3k tokens (1.2k out / 80 reasoning)')).toBeTruthy()
   })
 
   it('renders task notification metadata and opens task details', () => {

@@ -47,6 +47,7 @@ describe('SessionTaskBar', () => {
     expect(screen.getByRole('region', { name: 'Session tasks' })).toBeTruthy()
     expect(screen.getByText('1/2 · 1 active')).toBeTruthy()
     expect(screen.getByText('Inspect renderer')).toBeTruthy()
+    expect(screen.getByText('running').className).toContain('aether-shimmer-text')
     expect(screen.getByText('Patch files')).toBeTruthy()
     expect(screen.getByText('patched')).toBeTruthy()
   })

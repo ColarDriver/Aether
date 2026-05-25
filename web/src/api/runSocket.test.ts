@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { setBaseUrl, setSessionToken } from './client'
+import { getSessionToken, setBaseUrl, setSessionToken } from './client'
 import { buildRunSocketUrl, RunSocketClient } from './runSocket'
 import type { RunSocketFrame } from './types'
 
@@ -35,6 +35,11 @@ class FakeWebSocket {
   }
 
   serverClose() {
+    this.readyState = FakeWebSocket.CLOSED
+    this.onclose?.()
+  }
+
+  serverReject() {
     this.readyState = FakeWebSocket.CLOSED
     this.onclose?.()
   }
@@ -87,12 +92,81 @@ describe('run socket client', () => {
     client.disconnect()
   })
 
+  it('refreshes the bootstrap token after a pre-open websocket rejection', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ session_token: 'fresh-token', auth_enabled: true, web: { enabled: true } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )))
+    setSessionToken('stale-token')
+    const client = new RunSocketClient()
+
+    client.connect()
+    expect(fakeSockets[0].url).toBe('ws://127.0.0.1:9120/api/runs/ws?token=stale-token')
+    fakeSockets[0].serverReject()
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(getSessionToken()).toBe('fresh-token')
+    expect(fakeSockets).toHaveLength(2)
+    expect(fakeSockets[1].url).toBe('ws://127.0.0.1:9120/api/runs/ws?token=fresh-token')
+
+    client.disconnect()
+  })
+
+  it('keeps a queued run start while refreshing a rejected websocket token', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ session_token: 'fresh-token', auth_enabled: true, web: { enabled: true } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )))
+    setSessionToken('stale-token')
+    const client = new RunSocketClient()
+
+    client.startRun('session-1', 'hello after restart')
+    expect(fakeSockets[0].sent).toEqual([])
+    fakeSockets[0].serverReject()
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fakeSockets).toHaveLength(2)
+    fakeSockets[1].open()
+
+    expect(JSON.parse(fakeSockets[1].sent[0])).toMatchObject({
+      type: 'run.start',
+      payload: { session_id: 'session-1', user_message: 'hello after restart' },
+    })
+
+    client.disconnect()
+  })
+
+  it('bootstraps a token after a pre-open rejection without an existing token', async () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ session_token: 'fresh-token', auth_enabled: true, web: { enabled: true } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )))
+    const client = new RunSocketClient()
+
+    client.connect()
+    expect(fakeSockets[0].url).toBe('ws://127.0.0.1:9120/api/runs/ws')
+    fakeSockets[0].serverReject()
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(getSessionToken()).toBe('fresh-token')
+    expect(fakeSockets).toHaveLength(2)
+    expect(fakeSockets[1].url).toBe('ws://127.0.0.1:9120/api/runs/ws?token=fresh-token')
+
+    client.disconnect()
+  })
+
   it('reconnects after an unexpected close', () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const client = new RunSocketClient()
 
     client.connect()
+    fakeSockets[0].open()
     fakeSockets[0].serverClose()
 
     expect(fakeSockets).toHaveLength(1)

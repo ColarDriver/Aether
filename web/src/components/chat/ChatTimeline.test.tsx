@@ -161,6 +161,13 @@ describe('ChatTimeline', () => {
       { ...base, id: 'tc-change', kind: 'tool_call', toolCallId: 'call-change', toolName: 'file_edit', arguments: { path: 'src/auth.ts' }, status: 'finished' },
       { ...base, id: 'tr-change', kind: 'tool_result', toolCallId: 'call-change', toolName: 'file_edit', content: 'edited', isError: false, metadata: {} },
       { ...base, id: 'diff-call-change', kind: 'diff', origin: 'tool_result', path: 'src/auth.ts', diff: '@@ -1,1 +1,2 @@\n-old auth\n+new auth\n+guard' },
+      {
+        ...base,
+        id: 'diag-change',
+        kind: 'diagnostics',
+        content: '<diagnostics />',
+        files: [{ path: '/workspace/Aether/src/auth.ts', diagnostics: [{ severity: 'error', line: 4, column: 8, source: 'pyright', message: 'bad auth type' }] }],
+      },
     ]
 
     render(<ChatTimeline blocks={blocks} />)
@@ -170,6 +177,7 @@ describe('ChatTimeline', () => {
     expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('+2').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('-1').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('1 error').length).toBeGreaterThanOrEqual(1)
   })
   it('groups multiple consecutive tool calls behind an activity summary', () => {
     const blocks: ChatBlock[] = [

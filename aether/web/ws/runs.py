@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
@@ -27,13 +28,15 @@ from aether.web.ws.prompts import (
 
 router = APIRouter()
 
+FrameSender = Callable[[dict[str, Any]], None]
+
 
 class _SocketEventSink:
-    def __init__(self, outbound: "_OutboundQueue") -> None:
-        self._outbound = outbound
+    def __init__(self, send_frame: "FrameSender") -> None:
+        self._send_frame = send_frame
 
     def emit(self, event: RunEvent) -> None:
-        self._outbound.send(run_event_to_frame(event))
+        self._send_frame(run_event_to_frame(event))
 
 
 class _OutboundQueue:
@@ -69,12 +72,16 @@ async def run_websocket(websocket: WebSocket) -> None:
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     outbound = _OutboundQueue(loop, queue)
-    broker = WebPromptBroker(send_frame=outbound.send)
-    sink = _SocketEventSink(outbound)
-    run_tasks: set[asyncio.Task[Any]] = set()
+    run_hub = websocket.app.state.aether_run_socket_hub
+    broker = websocket.app.state.aether_web_prompt_broker
+    run_tasks = websocket.app.state.aether_run_tasks
+    socket_sender = outbound.send
+    run_hub.attach(socket_sender)
+    sink = _SocketEventSink(run_hub.broadcast)
 
     sender = asyncio.create_task(_send_loop(websocket, queue))
     await outbound.send_async({"type": "ready", "payload": {"protocol": "aether.run.v1"}})
+    broker.replay_pending(socket_sender)
 
     try:
         while True:
@@ -91,11 +98,7 @@ async def run_websocket(websocket: WebSocket) -> None:
                 run_tasks=run_tasks,
             )
     finally:
-        broker.reject_all()
-        for task in list(run_tasks):
-            if task.done():
-                continue
-            task.cancel()
+        run_hub.detach(socket_sender)
         await outbound.close()
         await sender
 
@@ -126,7 +129,7 @@ async def _handle_message(
     outbound: _OutboundQueue,
     broker: WebPromptBroker,
     sink: RunEventSink,
-    run_tasks: set[asyncio.Task[Any]],
+    run_tasks: set[Any],
 ) -> None:
     try:
         message = json.loads(raw)
@@ -168,11 +171,15 @@ async def _start_run(
     outbound: _OutboundQueue,
     broker: WebPromptBroker,
     sink: RunEventSink,
-    run_tasks: set[asyncio.Task[Any]],
+    run_tasks: set[Any],
 ) -> None:
     session_id = _required_str(payload, "session_id")
     user_message = _optional_str(payload, "user_message") or ""
     attachments = _run_attachments(payload.get("attachments"))
+    attachments = _enrich_workspace_reference_attachments(
+        attachments,
+        getattr(websocket.app.state.aether_services, "workspace", None),
+    )
     if not session_id or (not user_message and not attachments):
         await outbound.send_async(_error_frame("invalid_run_start", "run.start requires session_id and user_message or attachments."))
         return
@@ -185,52 +192,69 @@ async def _start_run(
             "payload": {"session_id": session_id, "run_id": run_id},
         }
     )
-    task = asyncio.create_task(
-        asyncio.to_thread(
-            _run_start_sync,
-            websocket.app.state.aether_services.runs,
-            AgentRunRequest(
-                session_id=session_id,
-                user_message=user_message,
-                attachments=attachments,
-                run_id=run_id,
-                options=options,
-                approval_prompter=WebApprovalPrompter(
-                    broker=broker,
-                    session_id=session_id,
-                    run_id=run_id,
-                ),
-                tool_permission_prompter=WebToolPermissionPrompter(
-                    broker=broker,
-                    run_id=run_id,
-                ),
-            ),
-            sink,
-            outbound,
-        )
+    request = AgentRunRequest(
+        session_id=session_id,
+        user_message=user_message,
+        attachments=attachments,
+        run_id=run_id,
+        options=options,
+        approval_prompter=WebApprovalPrompter(
+            broker=broker,
+            session_id=session_id,
+            run_id=run_id,
+        ),
+        tool_permission_prompter=WebToolPermissionPrompter(
+            broker=broker,
+            run_id=run_id,
+        ),
     )
-    run_tasks.add(task)
-    task.add_done_callback(run_tasks.discard)
+    thread = threading.Thread(
+        target=_run_start_thread,
+        args=(
+            websocket.app.state.aether_services.runs,
+            request,
+            sink,
+            websocket.app.state.aether_run_socket_hub.broadcast,
+            run_tasks,
+        ),
+        name=f"aether-web-run-{run_id}",
+        daemon=True,
+    )
+    run_tasks.add(thread)
+    thread.start()
+
+
+def _run_start_thread(
+    service: Any,
+    request: AgentRunRequest,
+    sink: RunEventSink,
+    send_frame: FrameSender,
+    run_tasks: set[Any],
+) -> None:
+    try:
+        _run_start_sync(service, request, sink, send_frame)
+    finally:
+        run_tasks.discard(threading.current_thread())
 
 
 def _run_start_sync(
     service: Any,
     request: AgentRunRequest,
     sink: RunEventSink,
-    outbound: _OutboundQueue,
+    send_frame: FrameSender,
 ) -> None:
     try:
         result = service.start(request, sink=sink)
     except ServiceConflictError as exc:
-        outbound.send(_error_frame(exc.code, exc.message, details=exc.details))
+        send_frame(_error_frame(exc.code, exc.message, details=exc.details))
     except ServiceError as exc:
-        outbound.send(_error_frame(exc.code, exc.message, details=exc.details))
+        send_frame(_error_frame(exc.code, exc.message, details=exc.details))
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        outbound.send(_error_frame("run_failed", str(exc) or type(exc).__name__))
+        send_frame(_error_frame("run_failed", str(exc) or type(exc).__name__))
     else:
-        outbound.send(
+        send_frame(
             {
                 "type": "run.result",
                 "payload": {
@@ -265,6 +289,8 @@ async def _cancel_run(
             reason=_optional_str(payload, "reason"),
         )
     )
+    if cancelled and run_id:
+        websocket.app.state.aether_web_prompt_broker.reject_run(run_id)
     await outbound.send_async(
         {
             "type": "run.cancel.accepted",
@@ -283,11 +309,12 @@ async def _resolve_prompt(
     if not prompt_id:
         await outbound.send_async(_error_frame("invalid_prompt_response", "prompt response requires prompt_id."))
         return
-    resolved = broker.resolve(prompt_id, _prompt_resolution_payload(payload))
+    resolution = _prompt_resolution_payload(payload)
+    resolved = broker.resolve(prompt_id, resolution)
     await outbound.send_async(
         {
             "type": "prompt.resolved" if resolved else "prompt.missing",
-            "payload": {"prompt_id": prompt_id, "result": payload.get("result")},
+            "payload": {"prompt_id": prompt_id, "result": resolution},
         }
     )
 
@@ -302,6 +329,38 @@ def _run_options(raw: Any) -> AgentRunOptions:
         disable_builtin_tools=_optional_bool(raw, "disable_builtin_tools"),
         system_override=_optional_str(raw, "system_override"),
     )
+
+
+def _enrich_workspace_reference_attachments(
+    attachments: list[dict[str, Any]],
+    workspace: Any,
+) -> list[dict[str, Any]]:
+    if workspace is None or not attachments:
+        return attachments
+    enriched: list[dict[str, Any]] = []
+    for attachment in attachments:
+        if attachment.get("note") != "workspace reference":
+            enriched.append(attachment)
+            continue
+        path = attachment.get("path")
+        if not isinstance(path, str) or not path or attachment.get("isDirectory") is True:
+            enriched.append(attachment)
+            continue
+        next_attachment = dict(attachment)
+        try:
+            workspace_file = workspace.read_file(path)
+        except Exception as exc:  # noqa: BLE001 - surface context miss to the model
+            next_attachment["_llm_error"] = str(exc) or type(exc).__name__
+        else:
+            next_attachment.setdefault("name", workspace_file.name)
+            next_attachment["path"] = workspace_file.path
+            next_attachment["_llm_language"] = workspace_file.language
+            next_attachment["_llm_truncated"] = bool(workspace_file.truncated)
+            next_attachment["_llm_binary"] = bool(workspace_file.binary)
+            if not workspace_file.binary:
+                next_attachment["_llm_content"] = workspace_file.content
+        enriched.append(next_attachment)
+    return enriched
 
 
 def _run_attachments(raw: Any) -> list[dict[str, Any]]:

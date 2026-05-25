@@ -24,6 +24,9 @@ ProviderFactory = Callable[[SessionRecord], ModelProvider]
 ConfigFactory = Callable[[AgentRunOptions], EngineConfig]
 ToolRegistryFactory = Callable[[], ToolRegistry | None]
 
+_ATTACHMENT_CONTEXT_TOTAL_CHAR_LIMIT = 120_000
+_ATTACHMENT_CONTEXT_ITEM_CHAR_LIMIT = 40_000
+
 
 class RunDependencyBuilder:
     """Build the runtime pieces needed for one agent run."""
@@ -105,8 +108,15 @@ class RunDependencyBuilder:
     ) -> EngineRequest:
         options = request.options
         user_message_metadata: dict[str, Any] = {}
-        if request.attachments:
-            user_message_metadata["displayAttachments"] = list(request.attachments)
+        attachments = list(request.attachments)
+        attachment_context = _render_attachment_context(attachments)
+        if attachments:
+            user_message_metadata["displayAttachments"] = [
+                _display_attachment(attachment) for attachment in attachments
+            ]
+        metadata: dict[str, Any] = {"run_id": run_id, "_loop_state_callback": loop_state_callback}
+        if attachment_context:
+            metadata["_llm_attachment_context"] = attachment_context
         return EngineRequest(
             session_id=record.session_id,
             user_message=request.user_message,
@@ -123,7 +133,7 @@ class RunDependencyBuilder:
                 temperature=options.temperature,
                 max_tokens=options.max_tokens,
             ),
-            metadata={"run_id": run_id, "_loop_state_callback": loop_state_callback},
+            metadata=metadata,
             approval_prompter=request.approval_prompter,
             tool_permission_prompter=request.tool_permission_prompter,
             interrupt_signal=handle.interrupt_signal,
@@ -153,6 +163,122 @@ class RunDependencyBuilder:
             subagent_manager=subagent_manager,
             task_store=task_store,
         )
+
+
+def _render_attachment_context(attachments: list[dict[str, Any]]) -> str:
+    rendered: list[str] = []
+    remaining = _ATTACHMENT_CONTEXT_TOTAL_CHAR_LIMIT
+    for index, attachment in enumerate(attachments, start=1):
+        if remaining <= 0:
+            break
+        item = _render_attachment_item(index, attachment, remaining)
+        if not item:
+            continue
+        rendered.append(item)
+        remaining -= len(item)
+    if not rendered:
+        return ""
+    return (
+        "<attached_context>\n"
+        "The user attached the following files or workspace context for this turn. "
+        "Treat this as user-provided context when answering.\n\n"
+        + "\n\n".join(rendered)
+        + "\n</attached_context>"
+    )
+
+
+def _render_attachment_item(index: int, attachment: dict[str, Any], remaining: int) -> str:
+    label = _attachment_label(attachment)
+    attachment_type = str(attachment.get("type") or "file")
+    language = _attachment_language(attachment)
+    content = _attachment_content(attachment)
+    metadata = [f"## {index}. {label}", f"type: {attachment_type}"]
+    for key, label_name in (("path", "path"), ("mimeType", "mime_type"), ("url", "url"), ("note", "note")):
+        value = attachment.get(key)
+        if isinstance(value, str) and value.strip():
+            metadata.append(f"{label_name}: {value.strip()}")
+    error = attachment.get("_llm_error")
+    if isinstance(error, str) and error.strip():
+        metadata.append("content_error: " + error.strip())
+    if bool(attachment.get("_llm_binary")) or bool(attachment.get("isDirectory")):
+        metadata.append("content: omitted")
+    if bool(attachment.get("_llm_truncated")):
+        metadata.append("content_truncated: true")
+    header = "\n".join(metadata)
+    if not content:
+        if attachment_type == "image":
+            return _truncate_item(header + "\ncontent: image data is attached for UI display but is not text-rendered here.", remaining)
+        if error:
+            return _truncate_item(header, remaining)
+        return ""
+    limited_content = content[:_ATTACHMENT_CONTEXT_ITEM_CHAR_LIMIT]
+    suffix = ""
+    if len(content) > len(limited_content):
+        suffix = "\n...[attachment content truncated]"
+    body = header + "\n\n```" + language + "\n" + limited_content.rstrip() + suffix + "\n```"
+    return _truncate_item(body, remaining)
+
+
+def _attachment_content(attachment: dict[str, Any]) -> str:
+    for key in ("_llm_content", "data", "quote"):
+        value = attachment.get(key)
+        if isinstance(value, str) and value.strip():
+            if key == "data" and value.startswith("data:"):
+                return ""
+            return value
+    return ""
+
+
+def _attachment_label(attachment: dict[str, Any]) -> str:
+    for key in ("name", "path", "url"):
+        value = attachment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(attachment.get("type") or "attachment")
+
+
+def _attachment_language(attachment: dict[str, Any]) -> str:
+    value = attachment.get("_llm_language") or attachment.get("language")
+    if isinstance(value, str) and value.strip():
+        return value.strip().replace("`", "") or "text"
+    mime_type = attachment.get("mimeType")
+    if isinstance(mime_type, str):
+        if "json" in mime_type:
+            return "json"
+        if "markdown" in mime_type:
+            return "markdown"
+        if mime_type.startswith("text/"):
+            return "text"
+    name = attachment.get("name") or attachment.get("path")
+    if isinstance(name, str):
+        suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        return {
+            "md": "markdown",
+            "markdown": "markdown",
+            "py": "python",
+            "ts": "typescript",
+            "tsx": "tsx",
+            "js": "javascript",
+            "jsx": "jsx",
+            "json": "json",
+            "yaml": "yaml",
+            "yml": "yaml",
+            "toml": "toml",
+            "sh": "shell",
+        }.get(suffix, "text")
+    return "text"
+
+
+def _truncate_item(value: str, remaining: int) -> str:
+    if len(value) <= remaining:
+        return value
+    if remaining <= 40:
+        return ""
+    return value[: remaining - 34].rstrip() + "\n...[attached context limit reached]"
+
+
+def _display_attachment(attachment: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in attachment.items() if not str(key).startswith("_llm_")}
 
 
 __all__ = [

@@ -91,6 +91,7 @@ function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task:
   const Icon = iconForTask(task)
   const tone = toneForTask(task)
   const detail = task.error || task.summary || activityDetail(task)
+  const active = !isTaskTerminal(task)
   return (
     <li className={'session-task-item session-task-' + tone} style={{ marginLeft: taskIndent(task) }}>
       <button
@@ -108,7 +109,7 @@ function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task:
           {detail ? <p>{detail}</p> : null}
         </div>
         <span className="session-task-meta">
-          <span>{task.status}</span>
+          <span className={active ? 'aether-shimmer-text' : undefined}>{task.status}</span>
           {task.model ? <em>{task.model}</em> : null}
         </span>
       </button>

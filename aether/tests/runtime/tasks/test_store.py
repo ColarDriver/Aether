@@ -13,10 +13,10 @@ from aether.runtime.tasks.contracts import TaskRecord, TaskStatus
 from aether.runtime.tasks.store import TaskStore
 
 
-def _record(task_id: str, *, status: TaskStatus = TaskStatus.RUNNING) -> TaskRecord:
+def _record(task_id: str, *, status: TaskStatus = TaskStatus.RUNNING, parent_session_id: str = "s") -> TaskRecord:
     return TaskRecord(
         task_id=task_id,
-        parent_session_id="s",
+        parent_session_id=parent_session_id,
         subagent_type="general-purpose",
         prompt="do work",
         status=status,
@@ -153,6 +153,14 @@ class TaskStoreStreamsTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[0])["role"], "assistant")
         self.assertEqual(json.loads(lines[1])["name"], "ping")
 
+    def test_read_messages_returns_recent_jsonl_entries_with_indexes(self) -> None:
+        self.store.append_message("t1", {"role": "assistant", "content": "first"})
+        self.store.append_message("t1", {"role": "tool", "name": "ping"})
+        messages = self.store.read_messages("t1", limit=1)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["index"], 1)
+        self.assertEqual(messages[0]["name"], "ping")
+
 
 class TaskStorePendingTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -167,6 +175,28 @@ class TaskStorePendingTests(unittest.TestCase):
         self.assertEqual(self.store.drain_pending_messages("t1"), ["first", "second"])
         self.assertEqual(self.store.drain_pending_messages("t1"), [])
 
+    def test_read_pending_messages_is_non_destructive(self) -> None:
+        self.store.enqueue_pending_message("t1", "first")
+        self.store.enqueue_pending_message("t1", "second")
+        pending = self.store.read_pending_messages("t1", limit=1)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["index"], 1)
+        self.assertEqual(pending[0]["message"], "second")
+        self.assertEqual(self.store.drain_pending_messages("t1"), ["first", "second"])
+
+    def test_drain_persists_delivered_history(self) -> None:
+        self.store.enqueue_pending_message("t1", "first")
+        self.store.enqueue_pending_message("t1", "second")
+
+        self.assertEqual(self.store.drain_pending_messages("t1"), ["first", "second"])
+
+        delivered = self.store.read_delivered_messages("t1")
+        self.assertEqual([item["message"] for item in delivered], ["first", "second"])
+        self.assertEqual(delivered[0]["index"], 0)
+        self.assertEqual(delivered[1]["pending_index"], 1)
+        self.assertIsInstance(delivered[0]["delivered_at"], float)
+        self.assertEqual(self.store.read_pending_messages("t1"), [])
+
     def test_drain_unknown_task_returns_empty(self) -> None:
         self.assertEqual(self.store.drain_pending_messages("nope"), [])
 
@@ -179,6 +209,10 @@ class TaskStorePendingTests(unittest.TestCase):
         self.store.enqueue_pending_message("t1", "also good")
         drained = self.store.drain_pending_messages("t1")
         self.assertEqual(drained, ["good", "also good"])
+        self.assertEqual(
+            [item["message"] for item in self.store.read_delivered_messages("t1")],
+            ["good", "also good"],
+        )
 
 
 class TaskStoreResultTests(unittest.TestCase):
@@ -197,6 +231,16 @@ class TaskStoreResultTests(unittest.TestCase):
         record = self.store.read("t1")
         assert record is not None
         self.assertEqual(record.result_path, str(path))
+
+    def test_read_result_returns_json_payload(self) -> None:
+        self.store.write_result("t1", {"status": "completed", "summary": "ok"})
+
+        result = self.store.read_result("t1")
+
+        self.assertEqual(result, {"status": "completed", "summary": "ok"})
+
+    def test_read_result_missing_returns_none(self) -> None:
+        self.assertIsNone(self.store.read_result("missing"))
 
     def test_write_result_atomic_no_partial_on_corruption(self) -> None:
         # write_result writes via .tmp + os.replace — if we manually
@@ -247,6 +291,18 @@ class TaskStoreQueriesTests(unittest.TestCase):
         (Path(self._tmp.name) / "stray.txt").write_text("noise")
         recent = self.store.list_recent()
         self.assertEqual([r.task_id for r in recent], ["t1"])
+
+    def test_delete_session_tasks_removes_only_matching_task_dirs(self) -> None:
+        self.store.create(_record("task-a", parent_session_id="session-a"))
+        self.store.create(_record("task-b", parent_session_id="session-a"))
+        self.store.create(_record("task-c", parent_session_id="session-b"))
+
+        removed = self.store.delete_session_tasks("session-a")
+
+        self.assertEqual(removed, 2)
+        self.assertIsNone(self.store.read("task-a"))
+        self.assertIsNone(self.store.read("task-b"))
+        self.assertIsNotNone(self.store.read("task-c"))
 
 
 class TaskStoreOrphanTests(unittest.TestCase):

@@ -21,7 +21,10 @@ import type {
   SessionInfo,
   SkillSummary,
   StatusResponse,
+  TaskChildMessagesResult,
   TaskListResult,
+  TaskMessagesResult,
+  TaskResultArtifact,
   TaskSummary,
   ToolGroup,
   ToolSummary,
@@ -66,7 +69,70 @@ export function getSessionToken() {
   return sessionToken
 }
 
+export async function refreshSessionTokenFromBootstrapDocument(): Promise<string | null> {
+  const apiToken = await refreshSessionTokenFromBootstrapApi().catch(() => null)
+  if (apiToken) return apiToken
+
+  const url = bootstrapDocumentUrl()
+  const response = await fetch(url, {
+    method: 'GET',
+    cache: 'no-store',
+    headers: { Accept: 'text/html' },
+  })
+  if (!response.ok) return null
+  const html = await response.text()
+  return applySessionToken(extractSessionToken(html))
+}
+
+async function refreshSessionTokenFromBootstrapApi(): Promise<string | null> {
+  const response = await fetch(baseUrl + '/api/bootstrap', {
+    method: 'GET',
+    cache: 'no-store',
+    headers: { Accept: 'application/json' },
+  })
+  if (!response.ok) return null
+  const payload = await response.json().catch(() => null)
+  if (!payload || typeof payload !== 'object') return null
+  return applySessionToken((payload as { session_token?: unknown }).session_token)
+}
+
+function applySessionToken(token: unknown): string | null {
+  if (typeof token !== 'string') return null
+  const trimmed = token.trim()
+  if (!trimmed || trimmed === sessionToken) return null
+  setSessionToken(trimmed)
+  window.__AETHER_SESSION_TOKEN__ = trimmed
+  return trimmed
+}
+
+function bootstrapDocumentUrl(): string {
+  const base = normalizeBaseUrl(baseUrl || window.location.origin) || window.location.origin
+  const url = new URL(base, window.location.origin)
+  if (!url.pathname || url.pathname === '/') {
+    url.pathname = window.location.pathname || '/'
+  }
+  url.search = ''
+  url.hash = ''
+  return url.toString()
+}
+
+function extractSessionToken(html: string): string | null {
+  const marker = 'window.__AETHER_SESSION_TOKEN__='
+  const index = html.indexOf(marker)
+  if (index < 0) return null
+  const start = index + marker.length
+  const quote = html[start]
+  if (quote !== '\'' && quote !== '"') return null
+  const end = html.indexOf(quote, start + 1)
+  if (end < 0) return null
+  return html.slice(start + 1, end)
+}
+
 export async function request<T>(method: string, path: string, body?: unknown, options?: { timeoutMs?: number }): Promise<T> {
+  return requestWithTokenRetry<T>(method, path, body, options, false)
+}
+
+async function requestWithTokenRetry<T>(method: string, path: string, body: unknown, options: { timeoutMs?: number } | undefined, didRefreshToken: boolean): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 30_000)
   try {
@@ -78,14 +144,11 @@ export async function request<T>(method: string, path: string, body?: unknown, o
     })
     clearTimeout(timeout)
     if (!response.ok) {
-      const raw = await response.text().catch(() => '')
-      let errorBody: unknown = raw
-      try {
-        errorBody = JSON.parse(raw)
-      } catch {
-        // body is not JSON; keep the raw text
+      if (response.status === 401 && !didRefreshToken) {
+        const refreshed = await refreshSessionTokenFromBootstrapDocument().catch(() => null)
+        if (refreshed) return requestWithTokenRetry<T>(method, path, body, options, true)
       }
-      throw new ApiError(response.status, errorBody)
+      throw await buildApiError(response)
     }
     if (response.status === 204) return undefined as T
     return response.json() as Promise<T>
@@ -96,6 +159,17 @@ export async function request<T>(method: string, path: string, body?: unknown, o
     }
     throw error
   }
+}
+
+async function buildApiError(response: Response): Promise<ApiError> {
+  const raw = await response.text().catch(() => '')
+  let errorBody: unknown = raw
+  try {
+    errorBody = JSON.parse(raw)
+  } catch {
+    // body is not JSON; keep the raw text
+  }
+  return new ApiError(response.status, errorBody)
 }
 
 function buildHeaders(): Record<string, string> {
@@ -156,6 +230,8 @@ export const api = {
     request<PlanCurrent>('GET', '/api/plan/' + encodeURIComponent(sessionId)),
   setPlanMode: (sessionId: string, mode: 'agent' | 'plan') =>
     request<PlanCurrent>('PUT', '/api/plan/' + encodeURIComponent(sessionId) + '/mode', { mode }),
+  clearPlan: (sessionId: string) =>
+    request<PlanCurrent>('POST', '/api/plan/' + encodeURIComponent(sessionId) + '/clear'),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
   providerModels: (provider: string) => request<ProviderModelList>('GET', '/api/providers/' + encodeURIComponent(provider) + '/models'),
@@ -173,6 +249,18 @@ export const api = {
     return request<TaskListResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/tasks' + query)
   },
   taskDetail: (taskId: string) => request<TaskSummary>('GET', '/api/tasks/' + encodeURIComponent(taskId)),
+  taskMessages: (taskId: string, params: { limit?: number } = {}) => {
+    const query = params.limit ? '?limit=' + encodeURIComponent(String(params.limit)) : ''
+    return request<TaskMessagesResult>('GET', '/api/tasks/' + encodeURIComponent(taskId) + '/messages' + query)
+  },
+  taskChildMessages: (taskId: string, params: { limit?: number; perTaskLimit?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.limit) query.set('limit', String(params.limit))
+    if (params.perTaskLimit) query.set('per_task_limit', String(params.perTaskLimit))
+    const suffix = query.toString() ? '?' + query.toString() : ''
+    return request<TaskChildMessagesResult>('GET', '/api/tasks/' + encodeURIComponent(taskId) + '/children/messages' + suffix)
+  },
+  taskResult: (taskId: string) => request<TaskResultArtifact>('GET', '/api/tasks/' + encodeURIComponent(taskId) + '/result'),
   diagnostics: () => request<HealthStatus>('GET', '/api/health'),
   logFiles: () => request<{ files: LogFileSummary[] }>('GET', '/api/logs/files'),
   logs: (params: { file?: string; lines?: number; level?: string; component?: string; search?: string }) => {

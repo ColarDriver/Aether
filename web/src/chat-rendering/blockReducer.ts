@@ -9,6 +9,7 @@ import type {
 } from './blocks'
 import { answersFromMetadata, extractDiffFromMetadata, parseAskUserQuestions, recordFromUnknown, stringFromUnknown } from './content'
 import type { ChatRenderState, RunStatusSnapshot } from './runState'
+import { tokenUsageFromRecord } from './tokens'
 import { frameRunId, frameSessionId } from './runState'
 
 export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): ChatRenderState {
@@ -20,6 +21,21 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
     return {
       ...state,
       activeRunId: runId || state.activeRunId,
+    }
+  }
+
+  if (frame.type === 'prompt.resolved') {
+    const promptId = stringFromUnknown(payload.prompt_id)
+    const result = recordFromUnknown(payload.result)
+    return {
+      ...state,
+      blocksBySession: resolvePromptInBlocks(
+        state.blocksBySession,
+        promptId,
+        Object.keys(result).length > 0 ? result : payload,
+      ),
+      pendingPermissionBlock: state.pendingPermissionBlock?.promptId === promptId ? null : state.pendingPermissionBlock,
+      pendingApprovalBlock: state.pendingApprovalBlock?.promptId === promptId ? null : state.pendingApprovalBlock,
     }
   }
 
@@ -134,6 +150,7 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
     }
     return {
       ...withSessionBlocks(state, sessionId, upsertBlockById(blocks, block)),
+      activeRunId: runId || state.activeRunId,
       pendingPermissionBlock: block,
     }
   }
@@ -155,15 +172,44 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
     }
     return {
       ...withSessionBlocks(state, sessionId, upsertBlockById(blocks, block)),
+      activeRunId: runId || state.activeRunId,
       pendingApprovalBlock: block,
     }
   }
 
-  if (frame.type === 'prompt.resolved') {
+  if (frame.type === 'run.result') {
+    const metadata = recordFromUnknown(payload.metadata)
+    const usage = tokenUsageFromRecord(recordFromUnknown(payload.usage))
+    const hasUsage = Object.values(usage).some((value) => typeof value === 'number')
+    const nextBlocks = applyRunResultBlocks(
+      blocks,
+      sessionId,
+      runId,
+      stringFromUnknown(payload.final_text),
+      metadata,
+      timestampFor(frame),
+    )
+    const previous = state.statusByRun[runId]
     return {
-      ...state,
-      pendingPermissionBlock: null,
-      pendingApprovalBlock: null,
+      ...withSessionBlocks(state, sessionId, nextBlocks),
+      activeRunId: state.activeRunId === runId ? null : state.activeRunId,
+      ...(hasUsage ? {
+        tokenUsageByRun: {
+          ...state.tokenUsageByRun,
+          [runId]: usage,
+        },
+        statusByRun: {
+          ...state.statusByRun,
+          [runId]: {
+            runId,
+            sessionId,
+            state: 'idle',
+            detail: previous?.detail ?? null,
+            elapsedMs: previous?.elapsedMs,
+            tokens: usage,
+          },
+        },
+      } : {}),
     }
   }
 
@@ -194,7 +240,8 @@ export function resolvePromptInBlocks(
   for (const [sessionId, blocks] of Object.entries(blocksBySession)) {
     next[sessionId] = blocks.map((block) => {
       if (block.kind === 'permission_request' && block.promptId === promptId) {
-        const rawType = stringFromUnknown(result.type || result.decision)
+        const decision = recordFromUnknown(result.decision)
+        const rawType = stringFromUnknown(result.type || decision.type || result.decision)
         const state = rawType.includes('deny') ? 'denied' : rawType.includes('abort') ? 'aborted' : 'allowed'
         return { ...block, state }
       }
@@ -398,6 +445,49 @@ function upsertStreamingStatus(blocks: ChatBlock[], snapshot: RunStatusSnapshot)
   return upsertBlockById(blocks, block)
 }
 
+function applyRunResultBlocks(
+  blocks: ChatBlock[],
+  sessionId: string,
+  runId: string,
+  finalText: string,
+  metadata: Record<string, unknown>,
+  timestamp: number,
+): ChatBlock[] {
+  const hasMetadata = Object.keys(metadata).length > 0
+  const finished = finishRunBlocks(blocks, runId)
+  const assistantIndex = findLastIndex(finished, (block) => block.kind === 'assistant_message' && block.runId === runId)
+  if (assistantIndex >= 0) {
+    const block = finished[assistantIndex]
+    if (block?.kind !== 'assistant_message') return finished
+    const content = finalText && (!block.content || finalText.startsWith(block.content)) ? finalText : block.content
+    return replaceAt(finished, assistantIndex, {
+      ...block,
+      content,
+      isStreaming: false,
+      ...(hasMetadata ? { metadata: mergeMetadata(block.metadata, metadata) } : {}),
+    })
+  }
+  if (!finalText) return finished
+  return [
+    ...finished,
+    {
+      id: 'assistant-' + (runId || timestamp),
+      sessionId,
+      runId,
+      timestamp,
+      source: 'live',
+      kind: 'assistant_message',
+      content: finalText,
+      isStreaming: false,
+      ...(hasMetadata ? { metadata } : {}),
+    },
+  ]
+}
+
+function mergeMetadata(current: Record<string, unknown> | undefined, incoming: Record<string, unknown>): Record<string, unknown> {
+  return { ...(current ?? {}), ...incoming }
+}
+
 function finishRunBlocks(blocks: ChatBlock[], runId: string): ChatBlock[] {
   return blocks
     .map((block) => {
@@ -470,14 +560,7 @@ function statusSnapshotFromFrame(
 }
 
 function tokenUsageFromPayload(payload: Record<string, unknown>): TokenUsage {
-  return {
-    input_tokens: numberOrUndefined(payload.input_tokens),
-    output_tokens: numberOrUndefined(payload.output_tokens),
-    cache_read_tokens: numberOrUndefined(payload.cache_read_tokens),
-    cache_write_tokens: numberOrUndefined(payload.cache_write_tokens),
-    reasoning_tokens: numberOrUndefined(payload.reasoning_tokens),
-    total_tokens: numberOrUndefined(payload.total_tokens),
-  }
+  return tokenUsageFromRecord(payload)
 }
 
 function upsertBlockById(blocks: ChatBlock[], block: ChatBlock): ChatBlock[] {

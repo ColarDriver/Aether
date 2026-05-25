@@ -7,6 +7,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTaskStore } from '../../stores/taskStore'
+import { ActivityBar } from './ActivityBar'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
 import { Composer, type ComposerDraftPatch } from './Composer'
@@ -33,10 +34,12 @@ export function ChatView({ session }: Props) {
   const loadTranscript = useChatStore((state) => state.loadTranscript)
   const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? EMPTY_CHAT_BLOCKS : EMPTY_CHAT_BLOCKS))
   const tokenUsageByRun = useChatStore((state) => state.tokenUsageByRun)
+  const statusByRun = useChatStore((state) => state.statusByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
   const appendLocalNotice = useChatStore((state) => state.appendLocalNotice)
   const appendLocalError = useChatStore((state) => state.appendLocalError)
+  const clearSession = useChatStore((state) => state.clearSession)
   const activeRunId = useChatStore((state) => state.activeRunId)
   const pendingPermission = useChatStore((state) => state.pendingPermission)
   const pendingApproval = useChatStore((state) => state.pendingApproval)
@@ -139,6 +142,7 @@ export function ChatView({ session }: Props) {
   }, [blocks, scrollToBottom, session])
 
   const usage = activeRunId ? tokenUsageByRun[activeRunId] : undefined
+  const activeStatus = activeRunId ? statusByRun[activeRunId] : undefined
   const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
   const fallbackModel = currentProvider?.model || 'gpt-5.4'
 
@@ -223,6 +227,10 @@ export function ChatView({ session }: Props) {
           appendLocalError(session.session_id, result.message)
           return
         }
+        if (result.type === 'clear') {
+          clearSession(session.session_id)
+          return
+        }
         startRun(session.session_id, result.message)
       })
       .catch((error) => {
@@ -254,6 +262,13 @@ export function ChatView({ session }: Props) {
           </button>
         ) : null}
       </div>
+      <ActivityBar
+        activeRunId={activeRunId}
+        status={activeStatus}
+        tokens={usage}
+        sessionId={session.session_id}
+        model={session.model}
+      />
       <Composer
         disabled={!session}
         running={Boolean(activeRunId)}
@@ -265,6 +280,7 @@ export function ChatView({ session }: Props) {
         messageCount={session.message_count}
         inputTokens={usage?.input_tokens}
         outputTokens={usage?.output_tokens}
+        tokens={usage}
         onSend={(message, attachments) => startRun(session.session_id, message, attachments)}
         onSlashCommand={handleSlashCommand}
         onCancel={() => cancelRun(session.session_id)}

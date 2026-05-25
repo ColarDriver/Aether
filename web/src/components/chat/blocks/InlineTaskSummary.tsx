@@ -38,6 +38,7 @@ export function InlineTaskSummary({
   const Icon = iconForStatus(status)
   const tone = toneForStatus(status)
   const normalizedStatus = status || 'unknown'
+  const active = isActiveTaskStatus(normalizedStatus)
   const stats = taskStats({ durationSeconds, inputTokens, outputTokens, model, outputFile })
   return (
     <section className={'inline-task-summary inline-task-summary-' + tone + (className ? ' ' + className : '')} aria-label={ariaLabel}>
@@ -47,7 +48,7 @@ export function InlineTaskSummary({
           <strong>{title || 'Subagent task'}</strong>
           <small>{[subagentType, model].filter(Boolean).join(' / ') || 'subagent'}</small>
         </span>
-        <em>{normalizedStatus}</em>
+        <em className={active ? 'aether-shimmer-text' : undefined}>{normalizedStatus}</em>
       </header>
       {taskId ? (
         <div className="inline-task-summary-task-id">
@@ -124,6 +125,11 @@ function iconForStatus(status: string) {
   if (normalized === 'interrupted' || normalized === 'stopped' || normalized === 'cancelled') return AlertTriangle
   if (normalized === 'running' || normalized === 'pending') return Clock3
   return Bot
+}
+
+function isActiveTaskStatus(status: string): boolean {
+  const normalized = status.toLowerCase()
+  return normalized === 'running' || normalized === 'pending'
 }
 
 function toneForStatus(status: string): string {

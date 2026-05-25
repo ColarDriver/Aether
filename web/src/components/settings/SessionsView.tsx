@@ -4,9 +4,12 @@ import { api } from "../../api/client"
 import type { SessionInfo, TranscriptMessage } from "../../api/types"
 import { normalizeTranscript } from "../../chat-rendering"
 import { useAppStore } from "../../stores/appStore"
+import { useChatStore } from "../../stores/chatStore"
 import { useSessionStore } from "../../stores/sessionStore"
+import { useTaskStore } from "../../stores/taskStore"
 import { useToastStore } from "../../stores/toastStore"
 import { ChatTimeline } from "../chat/ChatTimeline"
+import { ConfirmDialog } from "../shared/ConfirmDialog"
 import { Spinner } from "../shared/Spinner"
 
 type SessionDetail = {
@@ -15,10 +18,17 @@ type SessionDetail = {
   messages: TranscriptMessage[]
 }
 
+type PendingDeleteSession = {
+  sessionId: string
+  title: string
+}
+
 export function SessionsView() {
-  const { sessions, activeSessionId, setActiveSession, loadSessions } = useSessionStore()
+  const { sessions, activeSessionId, setActiveSession, deleteSession, loadSessions } = useSessionStore()
   const setActiveView = useAppStore((state) => state.setActiveView)
   const notify = useToastStore((state) => state.notify)
+  const clearChatSession = useChatStore((state) => state.clearSession)
+  const clearSessionTasks = useTaskStore((state) => state.clearSessionTasks)
   const [query, setQuery] = useState("")
   const [searchResults, setSearchResults] = useState<SessionInfo[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(activeSessionId ?? sessions[0]?.session_id ?? null)
@@ -27,6 +37,7 @@ export function SessionsView() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<PendingDeleteSession | null>(null)
 
   useEffect(() => {
     if (sessions.length === 0) void loadSessions()
@@ -116,11 +127,19 @@ export function SessionsView() {
 
   const deleteSelected = () => {
     if (!selectedId) return
-    const id = selectedId
+    setDeleteTarget({ sessionId: selectedId, title: detail?.info.summary || selectedId.slice(0, 8) })
+  }
+
+  const confirmDeleteSelected = () => {
+    if (!deleteTarget) return
+    const id = deleteTarget.sessionId
+    setDeleteTarget(null)
     setSaving(true)
-    api.deleteSession(id)
+    deleteSession(id)
       .then(() => {
-        if (activeSessionId === id) setActiveSession(null)
+        clearChatSession(id)
+        clearSessionTasks(id)
+        setSearchResults((results) => results ? results.filter((session) => session.session_id !== id) : results)
         setSelectedId(null)
         setDetail(null)
         notify("Deleted " + id.slice(0, 8), "success")
@@ -205,6 +224,16 @@ export function SessionsView() {
           ) : null}
         </section>
       </div>
+      {deleteTarget ? (
+        <ConfirmDialog
+          title="Delete session"
+          description={'Delete session "' + deleteTarget.title + '"? This removes its conversation context.'}
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={confirmDeleteSelected}
+        />
+      ) : null}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { getBaseUrl, getSessionToken } from './client'
+import { getBaseUrl, getSessionToken, refreshSessionTokenFromBootstrapDocument } from './client'
 import type { RunAttachment, RunSocketFrame } from './types'
 
 type FrameHandler = (frame: RunSocketFrame) => void
@@ -11,6 +11,7 @@ export class RunSocketClient {
   private reconnectAttempt = 0
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
+  private tokenRefresh: Promise<void> | null = null
 
   connect() {
     if (
@@ -22,7 +23,9 @@ export class RunSocketClient {
     this.closed = false
     const ws = new WebSocket(buildRunSocketUrl())
     this.ws = ws
+    let opened = false
     ws.onopen = () => {
+      opened = true
       this.reconnectAttempt = 0
       this.startPing()
       while (this.pending.length > 0 && ws.readyState === WebSocket.OPEN) {
@@ -36,7 +39,12 @@ export class RunSocketClient {
     }
     ws.onclose = () => {
       this.stopPing()
-      if (!this.closed) this.scheduleReconnect()
+      if (this.closed) return
+      if (!opened) {
+        this.recoverSessionTokenAndReconnect()
+        return
+      }
+      this.scheduleReconnect()
     }
   }
 
@@ -100,6 +108,27 @@ export class RunSocketClient {
   private stopPing() {
     if (this.pingTimer) clearInterval(this.pingTimer)
     this.pingTimer = null
+  }
+
+  private recoverSessionTokenAndReconnect() {
+    if (this.tokenRefresh) return
+    const previousToken = getSessionToken()
+    this.tokenRefresh = refreshSessionTokenFromBootstrapDocument()
+      .then((nextToken) => {
+        if (this.closed) return
+        if (nextToken && nextToken !== previousToken) {
+          this.reconnectAttempt = 0
+          this.connect()
+          return
+        }
+        this.scheduleReconnect()
+      })
+      .catch(() => {
+        if (!this.closed) this.scheduleReconnect()
+      })
+      .finally(() => {
+        this.tokenRefresh = null
+      })
   }
 
   private scheduleReconnect() {

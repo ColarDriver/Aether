@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from 'vitest'
-import { executeWebSlashCommand, isSlashCommandInput, parseSlashCommand } from './slashExecute'
+import { executeWebSlashCommand, isSlashCommandInput, parseSlashCommand, type WebSlashResult } from './slashExecute'
 
 const session = {
   session_id: 'session-123456',
@@ -15,8 +15,14 @@ const session = {
 
 const commands = [
   { name: '/help', description: 'Show help', category: 'local' },
+  { name: '/clear', description: 'Clear conversation history', category: 'local' },
   { name: '/plan', description: 'Plan mode', category: 'session' },
 ]
+
+function messageOf(result: WebSlashResult): string {
+  if ('message' in result) return result.message
+  throw new Error('Expected slash result with message, got ' + result.type)
+}
 
 describe('slashExecute', () => {
   it('parses slash commands without treating file paths as commands', () => {
@@ -30,9 +36,9 @@ describe('slashExecute', () => {
     const current = await executeWebSlashCommand('/session', { session, commands })
 
     expect(help).toMatchObject({ type: 'notice' })
-    expect(help.message).toContain('`/plan`')
+    expect(messageOf(help)).toContain('`/plan`')
     expect(current).toMatchObject({ type: 'notice' })
-    expect(current.message).toContain('session-123456')
+    expect(messageOf(current)).toContain('session-123456')
   })
 
   it('loads sessions and tools for catalog commands', async () => {
@@ -40,10 +46,25 @@ describe('slashExecute', () => {
     const tools = vi.fn().mockResolvedValue({ groups: [{ name: 'filesystem', tools: [{ name: 'read_file' }] }] })
     const openView = vi.fn()
 
-    expect((await executeWebSlashCommand('/sessions', { session, commands, loadSessions: sessions, openView })).message).toContain('session-')
-    expect((await executeWebSlashCommand('/tools', { session, commands, loadToolGroups: tools, openView })).message).toContain('filesystem')
+    expect(messageOf(await executeWebSlashCommand('/sessions', { session, commands, loadSessions: sessions, openView }))).toContain('session-')
+    expect(messageOf(await executeWebSlashCommand('/tools', { session, commands, loadToolGroups: tools, openView }))).toContain('filesystem')
     expect(openView).toHaveBeenCalledWith('sessions')
     expect(openView).toHaveBeenCalledWith('tools')
+  })
+
+  it('clears plan state for web clear commands without starting a run', async () => {
+    const clearPlan = vi.fn().mockResolvedValue({
+      session_id: session.session_id,
+      mode: 'agent',
+      has_plan: false,
+      plan_path: '/tmp/plan.md',
+      plan_content: null,
+    })
+    const onSessionMode = vi.fn()
+
+    await expect(executeWebSlashCommand('/clear', { session: { ...session, mode: 'plan' }, commands, clearPlan, onSessionMode })).resolves.toEqual({ type: 'clear' })
+    expect(clearPlan).toHaveBeenCalledWith(session.session_id)
+    expect(onSessionMode).toHaveBeenCalledWith(session.session_id, 'agent')
   })
 
   it('returns clear errors for unsupported or unknown commands', async () => {
@@ -96,8 +117,8 @@ describe('slashExecute', () => {
     })
 
     expect(result.type).toBe('notice')
-    expect(result.message).toContain('# Plan')
-    expect(result.message).toContain('Inspect')
+    expect(messageOf(result)).toContain('# Plan')
+    expect(messageOf(result)).toContain('Inspect')
   })
 
   it('creates and resumes sessions through web callbacks', async () => {
@@ -105,10 +126,10 @@ describe('slashExecute', () => {
     const resumeSession = vi.fn().mockResolvedValue({ ...session, session_id: 'old-session' })
     const openView = vi.fn()
 
-    expect((await executeWebSlashCommand('/new', { session, commands, createSession, openView })).message).toContain('new-session')
+    expect(messageOf(await executeWebSlashCommand('/new', { session, commands, createSession, openView }))).toContain('new-session')
     expect(createSession).toHaveBeenCalledWith({ provider: 'openai', model: 'gpt-5.4' })
 
-    expect((await executeWebSlashCommand('/resume old', { session, commands, resumeSession, openView })).message).toContain('old-session')
+    expect(messageOf(await executeWebSlashCommand('/resume old', { session, commands, resumeSession, openView }))).toContain('old-session')
     expect(resumeSession).toHaveBeenCalledWith('old')
     expect(openView).toHaveBeenCalledWith('chat')
   })
@@ -119,13 +140,13 @@ describe('slashExecute', () => {
       .mockResolvedValueOnce({ ...session, model: 'gpt-5.4-mini' })
       .mockResolvedValueOnce({ ...session, system_prompt: 'Be concise' })
 
-    expect((await executeWebSlashCommand('/resume', { session, commands, openView })).message).toContain('Opened Sessions')
+    expect(messageOf(await executeWebSlashCommand('/resume', { session, commands, openView }))).toContain('Opened Sessions')
     expect(openView).toHaveBeenCalledWith('sessions')
 
-    expect((await executeWebSlashCommand('/model gpt-5.4-mini', { session, commands, updateSession })).message).toContain('gpt-5.4-mini')
+    expect(messageOf(await executeWebSlashCommand('/model gpt-5.4-mini', { session, commands, updateSession }))).toContain('gpt-5.4-mini')
     expect(updateSession).toHaveBeenCalledWith(session.session_id, { model: 'gpt-5.4-mini' })
 
-    expect((await executeWebSlashCommand('/system Be concise', { session, commands, updateSession })).message).toContain('Updated system prompt')
+    expect(messageOf(await executeWebSlashCommand('/system Be concise', { session, commands, updateSession }))).toContain('Updated system prompt')
     expect(updateSession).toHaveBeenCalledWith(session.session_id, { system_prompt: 'Be concise' })
   })
 })

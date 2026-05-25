@@ -10,6 +10,7 @@ export type WebSlashResult =
   | { type: 'notice'; message: string }
   | { type: 'error'; message: string }
   | { type: 'send'; message: string }
+  | { type: 'clear' }
 
 type SlashExecutionContext = {
   session: SessionInfo
@@ -19,6 +20,7 @@ type SlashExecutionContext = {
   loadToolGroups?: () => Promise<{ groups: ToolGroup[] }>
   loadPlanCurrent?: (sessionId: string) => Promise<PlanCurrent>
   setPlanMode?: (sessionId: string, mode: 'agent' | 'plan') => Promise<PlanCurrent>
+  clearPlan?: (sessionId: string) => Promise<PlanCurrent>
   onSessionMode?: (sessionId: string, mode: 'agent' | 'plan') => void
   openView?: (view: ConsoleView) => void
   createSession?: (input: { provider: string; model: string }) => Promise<SessionInfo>
@@ -56,6 +58,8 @@ export async function executeWebSlashCommand(
       return { type: 'notice', message: formatHelp(await loadCommandCatalog(context)) }
     case 'new':
       return executeNewCommand(context)
+    case 'clear':
+      return executeClearCommand(context)
     case 'session':
       return { type: 'notice', message: formatSession(context.session) }
     case 'sessions':
@@ -106,6 +110,19 @@ async function setPlanMode(context: SlashExecutionContext, mode: 'agent' | 'plan
   const result = await (context.setPlanMode ?? api.setPlanMode)(context.session.session_id, mode)
   context.onSessionMode?.(context.session.session_id, result.mode)
   return result
+}
+
+async function clearPlan(context: SlashExecutionContext): Promise<PlanCurrent> {
+  const result = await (context.clearPlan ?? api.clearPlan)(context.session.session_id)
+  context.onSessionMode?.(context.session.session_id, result.mode)
+  return result
+}
+
+async function executeClearCommand(context: SlashExecutionContext): Promise<WebSlashResult> {
+  await clearPlan(context).catch(() => {
+    context.onSessionMode?.(context.session.session_id, 'agent')
+  })
+  return { type: 'clear' }
 }
 
 async function executeNewCommand(context: SlashExecutionContext): Promise<WebSlashResult> {

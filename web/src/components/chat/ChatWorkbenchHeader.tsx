@@ -1,4 +1,4 @@
-import { Bot, Circle, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { ArrowLeftRight, Bot, Circle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { SessionInfo } from '../../api/types'
 import { AppearanceControls } from '../shared/AppearanceControls'
 
@@ -6,17 +6,24 @@ type Props = {
   session: SessionInfo | null
   online: boolean
   workspaceRailOpen: boolean
+  panelsSwapped?: boolean
   onToggleWorkspaceRail: () => void
+  onSwapPanels?: () => void
 }
 
 export function ChatWorkbenchHeader({
   session,
   online,
   workspaceRailOpen,
+  panelsSwapped = false,
   onToggleWorkspaceRail,
+  onSwapPanels,
 }: Props) {
   const title = session?.summary || session?.session_id.slice(0, 8) || 'New chat'
   const messageCount = session?.message_count ?? 0
+  const WorkspaceToggleIcon = workspaceRailOpen
+    ? (panelsSwapped ? PanelLeftClose : PanelRightClose)
+    : (panelsSwapped ? PanelLeftOpen : PanelRightOpen)
 
   return (
     <header className="chat-workbench-header">
@@ -42,6 +49,18 @@ export function ChatWorkbenchHeader({
       </div>
       <div className="chat-workbench-actions">
         <AppearanceControls compact />
+        {onSwapPanels ? (
+          <button
+            type="button"
+            className="workbench-icon-button"
+            onClick={onSwapPanels}
+            aria-pressed={panelsSwapped}
+            aria-label="Swap sessions and workspace panels"
+            title="Swap sessions and workspace panels"
+          >
+            <ArrowLeftRight size={16} />
+          </button>
+        ) : null}
         <button
           type="button"
           className="workbench-icon-button"
@@ -50,7 +69,7 @@ export function ChatWorkbenchHeader({
           aria-label={workspaceRailOpen ? 'Hide workspace panel' : 'Show workspace panel'}
           title={workspaceRailOpen ? 'Hide workspace panel' : 'Show workspace panel'}
         >
-          {workspaceRailOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+          <WorkspaceToggleIcon size={16} />
         </button>
       </div>
     </header>

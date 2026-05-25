@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -64,8 +65,9 @@ class TaskStore:
     def create(self, record: TaskRecord) -> None:
         """Create a fresh task directory and write the initial record.
 
-        Touches ``output.log`` / ``messages.jsonl`` / ``pending.jsonl``
-        so readers attaching mid-flight don't see ``FileNotFoundError``.
+        Touches ``output.log`` / ``messages.jsonl`` / ``pending.jsonl`` /
+        ``delivered.jsonl`` so readers attaching mid-flight don't see
+        ``FileNotFoundError``.
         """
         self._ensure_root()
         d = self._task_dir(record.task_id)
@@ -73,6 +75,7 @@ class TaskStore:
         (d / "output.log").touch(exist_ok=True)
         (d / "messages.jsonl").touch(exist_ok=True)
         (d / "pending.jsonl").touch(exist_ok=True)
+        (d / "delivered.jsonl").touch(exist_ok=True)
         record.last_heartbeat = time.time()
         with self._lock_for(record.task_id):
             self._write_record(record)
@@ -167,6 +170,39 @@ class TaskStore:
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(message, ensure_ascii=False) + "\n")
 
+    def read_messages(self, task_id: str, *, limit: int = 100) -> list[dict]:
+        """Read recent observer messages for a subagent task.
+
+        The lifecycle fanout writes one JSON object per line.  Readers should
+        tolerate missing or partially corrupt files because these logs are
+        observability data, not the source of truth for task state.
+        """
+        path = self._task_dir(task_id) / "messages.jsonl"
+        if not path.exists():
+            return []
+        try:
+            with self._lock_for(task_id):
+                lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            logger.warning("read_messages failed for %s: %s", task_id, exc)
+            return []
+
+        messages: list[dict] = []
+        start_index = max(0, len(lines) - max(1, limit))
+        for offset, line in enumerate(lines[start_index:], start=start_index):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.warning("read_messages skipping malformed line for %s", task_id)
+                continue
+            if isinstance(entry, dict):
+                entry.setdefault("index", offset)
+                messages.append(entry)
+        return messages
+
     # ------------------------------------------------------------------ pending
     def enqueue_pending_message(self, task_id: str, msg: str) -> None:
         path = self._task_dir(task_id) / "pending.jsonl"
@@ -174,6 +210,62 @@ class TaskStore:
         with self._lock_for(task_id):
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def read_pending_messages(self, task_id: str, *, limit: int = 100) -> list[dict]:
+        """Read queued parent-to-child messages without draining them."""
+        path = self._task_dir(task_id) / "pending.jsonl"
+        if not path.exists():
+            return []
+        try:
+            with self._lock_for(task_id):
+                lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            logger.warning("read_pending_messages failed for %s: %s", task_id, exc)
+            return []
+
+        pending: list[dict] = []
+        start_index = max(0, len(lines) - max(1, limit))
+        for offset, line in enumerate(lines[start_index:], start=start_index):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.warning("read_pending_messages skipping malformed line for %s", task_id)
+                continue
+            if isinstance(entry, dict):
+                entry.setdefault("index", offset)
+                pending.append(entry)
+        return pending
+
+    def read_delivered_messages(self, task_id: str, *, limit: int = 100) -> list[dict]:
+        """Read parent-to-child messages that were already drained by the task."""
+        path = self._task_dir(task_id) / "delivered.jsonl"
+        if not path.exists():
+            return []
+        try:
+            with self._lock_for(task_id):
+                lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            logger.warning("read_delivered_messages failed for %s: %s", task_id, exc)
+            return []
+
+        delivered: list[dict] = []
+        start_index = max(0, len(lines) - max(1, limit))
+        for offset, line in enumerate(lines[start_index:], start=start_index):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.warning("read_delivered_messages skipping malformed line for %s", task_id)
+                continue
+            if isinstance(entry, dict):
+                entry.setdefault("index", offset)
+                delivered.append(entry)
+        return delivered
 
     def drain_pending_messages(self, task_id: str) -> list[str]:
         path = self._task_dir(task_id) / "pending.jsonl"
@@ -186,18 +278,36 @@ class TaskStore:
                 logger.warning("drain_pending_messages read failed for %s: %s", task_id, exc)
                 return []
             path.write_text("", encoding="utf-8")
-        out: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                entry = json.loads(stripped)
-                out.append(str(entry.get("message", "")))
-            except json.JSONDecodeError:
-                logger.warning("drain_pending_messages skipping malformed line for %s", task_id)
-                continue
-        return out
+            out: list[str] = []
+            delivered_entries: list[dict] = []
+            delivered_at = time.time()
+            for offset, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    logger.warning("drain_pending_messages skipping malformed line for %s", task_id)
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                message = str(entry.get("message", ""))
+                out.append(message)
+                delivered_entries.append(
+                    {
+                        "pending_index": offset,
+                        "ts": entry.get("ts"),
+                        "delivered_at": delivered_at,
+                        "message": message,
+                    }
+                )
+            if delivered_entries:
+                delivered_path = self._task_dir(task_id) / "delivered.jsonl"
+                with delivered_path.open("a", encoding="utf-8") as fh:
+                    for entry in delivered_entries:
+                        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return out
 
     # ------------------------------------------------------------------ result
     def write_result(self, task_id: str, result_dump: dict) -> Path:
@@ -217,6 +327,21 @@ class TaskStore:
                 self._write_record(record)
         return target
 
+    def read_result(self, task_id: str) -> dict | None:
+        """Read a task's terminal result artifact, if it exists."""
+        path = self._task_dir(task_id) / "result.json"
+        if not path.exists():
+            return None
+        try:
+            with self._lock_for(task_id):
+                data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("read_result failed for %s: %s", task_id, exc)
+            return None
+        if isinstance(data, dict):
+            return data
+        return {"value": data}
+
     # ------------------------------------------------------------------ queries
     def read(self, task_id: str) -> Optional[TaskRecord]:
         with self._lock_for(task_id):
@@ -232,6 +357,38 @@ class TaskStore:
             reverse=True,
         )
         return records[:limit]
+
+    def delete_session_tasks(self, session_id: str) -> int:
+        """Delete all task artifacts owned by session_id.
+
+        Used when a web session is deleted so subagent observer logs and
+        result artifacts do not outlive the conversation context they belong to.
+        The operation is best-effort per task: one failed directory removal is
+        logged and does not prevent removing the rest.
+        """
+        normalized = session_id.strip()
+        if not normalized or not self.root.exists():
+            return 0
+        targets = [
+            record.task_id
+            for record in list(self._iter_records())
+            if record.parent_session_id == normalized
+        ]
+        removed = 0
+        for task_id in targets:
+            lock = self._lock_for(task_id)
+            with lock:
+                try:
+                    shutil.rmtree(self._task_dir(task_id))
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.warning("delete_session_tasks failed for %s: %s", task_id, exc)
+                    continue
+            with self._locks_lock:
+                self._locks.pop(task_id, None)
+        return removed
 
     def mark_orphaned(
         self, *, stale_after: float = _DEFAULT_HEARTBEAT_STALE_SECONDS

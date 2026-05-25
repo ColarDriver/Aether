@@ -19,6 +19,7 @@ from aether.runtime.core.contracts import (
 )
 from aether.runtime.core.exceptions import EngineInterrupted
 from aether.runtime.core.services import EngineServices
+from aether.runtime.credentials.pool import CredentialPoolSelection
 from aether.runtime.recovery.error_classifier import FailoverReason
 from aether.runtime.recovery.provider_errors import ProviderInvocationError
 from aether.runtime.recovery.rate_guard import RateGuardCheck
@@ -690,10 +691,11 @@ class RecoveryController:
         if pool is None:
             return False
         current = context.metadata.get("credential_pool_selection")
-        if not hasattr(current, "credential"):
+        if not isinstance(current, CredentialPoolSelection):
             return False
+        current_credential = current.credential
         provider_name = str(getattr(provider, "provider_name", "") or "")
-        selected_provider = str(getattr(current.credential, "provider", ""))
+        selected_provider = current_credential.provider
         if provider_name and selected_provider and provider_name != selected_provider:
             return False
         next_selection = pool.rotate_after_error(current, reason=decision.reason or str(error))
@@ -702,20 +704,21 @@ class RecoveryController:
             rotations.append(
                 {
                     "provider": selected_provider or provider_name,
-                    "from": getattr(current.credential, "name", ""),
+                    "from": current_credential.name,
                     "to": None,
                     "reason": decision.reason,
                     "exhausted": True,
                 }
             )
             return False
+        next_credential = next_selection.credential
         set_credential = getattr(provider, "set_credential", None)
         if not callable(set_credential):
             rotations.append(
                 {
-                    "provider": next_selection.credential.provider,
-                    "from": getattr(current.credential, "name", ""),
-                    "to": next_selection.credential.name,
+                    "provider": next_credential.provider,
+                    "from": current_credential.name,
+                    "to": next_credential.name,
                     "reason": decision.reason,
                     "exhausted": False,
                     "applied": False,
@@ -725,16 +728,16 @@ class RecoveryController:
             return False
         applied = bool(
             set_credential(
-                next_selection.credential.credential.value,
-                source=next_selection.credential.credential.source,
+                next_credential.credential.value,
+                source=next_credential.credential.source,
             )
         )
         context.metadata["credential_pool_selection"] = next_selection
         rotations.append(
             {
-                "provider": next_selection.credential.provider,
-                "from": getattr(current.credential, "name", ""),
-                "to": next_selection.credential.name,
+                "provider": next_credential.provider,
+                "from": current_credential.name,
+                "to": next_credential.name,
                 "reason": decision.reason,
                 "exhausted": False,
                 "applied": applied,

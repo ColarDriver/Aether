@@ -84,11 +84,12 @@ describe('MarkdownRenderer', () => {
 
 
   it('renders inline and display math without treating prices as formulas', () => {
-    render(<MarkdownRenderer text={'Inline $x^2 + y^2$ and price $5 and $10.\n\n\\[\nE = mc^2\n\\]'} />)
+    render(<MarkdownRenderer text={'Inline $x^2 + y^2$ and slash math \\(a + b\\) and price $5 and $10.\n\n\\[\nE = mc^2\n\\]'} />)
 
-    expect(document.querySelector('.math-renderer-inline')).toBeTruthy()
+    expect(document.querySelectorAll('.math-renderer-inline')).toHaveLength(2)
     expect(document.querySelector('.math-renderer-display')).toBeTruthy()
     expect(document.body.textContent).toContain('$5 and $10')
+    expect(document.body.textContent).not.toContain('slash math (a + b)')
   })
 
   it('does not render unsafe markdown image sources as images', () => {

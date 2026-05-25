@@ -143,6 +143,65 @@ export type TaskSummary = {
   metadata?: Record<string, unknown> | null
 }
 
+export type TaskMessage = {
+  index: number
+  role: string
+  content?: string | null
+  name?: string | null
+  tool_call_id?: string | null
+  is_error?: boolean
+  iteration?: number | null
+  elapsed_ms?: number | null
+  error?: string | null
+  raw?: Record<string, unknown> | null
+}
+
+export type TaskPendingMessage = {
+  index: number
+  message: string
+  ts?: number | null
+  raw?: Record<string, unknown> | null
+}
+
+export type TaskDeliveredMessage = {
+  index: number
+  message: string
+  ts?: number | null
+  delivered_at?: number | null
+  raw?: Record<string, unknown> | null
+}
+
+export type TaskMessagesResult = {
+  task_id: string
+  messages: TaskMessage[]
+  pending_messages: TaskPendingMessage[]
+  delivered_messages: TaskDeliveredMessage[]
+  total_count: number
+  truncated: boolean
+}
+
+export type TaskChildMessageStream = {
+  task: TaskSummary
+  messages: TaskMessage[]
+  pending_messages: TaskPendingMessage[]
+  delivered_messages: TaskDeliveredMessage[]
+  total_count: number
+  truncated: boolean
+}
+
+export type TaskChildMessagesResult = {
+  task_id: string
+  streams: TaskChildMessageStream[]
+  total_count: number
+  truncated: boolean
+}
+
+export type TaskResultArtifact = {
+  task_id: string
+  result_path?: string | null
+  result: Record<string, unknown>
+}
+
 export type TaskListResult = {
   tasks: TaskSummary[]
   active_count: number

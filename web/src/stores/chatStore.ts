@@ -3,10 +3,11 @@ import { api } from '../api/client'
 import { runSocket } from '../api/runSocket'
 import type { RunSocketFrame } from '../api/types'
 import type { ChatAttachment, ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
-import { normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
+import { frameSessionId, normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
 
 export type PermissionPrompt = {
   promptId: string
+  sessionId: string
   runId: string
   request: {
     tool_name?: string
@@ -47,12 +48,15 @@ type ChatState = {
   statusByRun: Record<string, RunStatusSnapshot>
   pendingPermission: PermissionPrompt | null
   pendingApproval: ApprovalPrompt | null
+  pendingPermissionQueue: PermissionPrompt[]
+  pendingApprovalQueue: ApprovalPrompt[]
   loadTranscript: (sessionId: string) => Promise<void>
   connect: () => void
   startRun: (sessionId: string, message: string, attachments?: ChatAttachment[]) => string
   cancelRun: (sessionId: string) => void
   appendLocalNotice: (sessionId: string, content: string) => void
   appendLocalError: (sessionId: string, message: string) => void
+  clearSession: (sessionId: string) => void
   respondPermission: (decision: Record<string, unknown>) => void
   respondApproval: (result: Record<string, unknown>) => void
 }
@@ -69,6 +73,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   statusByRun: {},
   pendingPermission: null,
   pendingApproval: null,
+  pendingPermissionQueue: [],
+  pendingApprovalQueue: [],
   loadTranscript: async (sessionId) => {
     const { messages } = await api.sessionMessages(sessionId)
     const blocks = normalizeTranscript(sessionId, messages)
@@ -142,29 +148,82 @@ export const useChatStore = create<ChatState>((set, get) => ({
       code: 'web_slash_command',
     }))
   },
+  clearSession: (sessionId) => {
+    set((state) => {
+      const permissionQueue = state.pendingPermissionQueue.filter((prompt) => prompt.sessionId !== sessionId)
+      const approvalQueue = state.pendingApprovalQueue.filter((prompt) => prompt.sessionId !== sessionId)
+      return {
+        blocksBySession: {
+          ...state.blocksBySession,
+          [sessionId]: [],
+        },
+        pendingPermissionQueue: permissionQueue,
+        pendingApprovalQueue: approvalQueue,
+        pendingPermission: permissionQueue[0] ?? null,
+        pendingApproval: approvalQueue[0] ?? null,
+        activeRunId: null,
+      }
+    })
+  },
   respondPermission: (decision) => {
     const prompt = get().pendingPermission
     if (!prompt) return
     runSocket.respondPermission(prompt.promptId, decision)
-    set((state) => ({
-      pendingPermission: null,
-      blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, decision),
-    }))
+    set((state) => {
+      const queue = state.pendingPermissionQueue.filter((item) => item.promptId !== prompt.promptId)
+      return {
+        pendingPermissionQueue: queue,
+        pendingPermission: queue[0] ?? null,
+        blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, decision),
+      }
+    })
   },
   respondApproval: (result) => {
     const prompt = get().pendingApproval
     if (!prompt) return
     runSocket.respondApproval(prompt.promptId, result)
-    set((state) => ({
-      pendingApproval: null,
-      blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, result),
-    }))
+    set((state) => {
+      const queue = state.pendingApprovalQueue.filter((item) => item.promptId !== prompt.promptId)
+      return {
+        pendingApprovalQueue: queue,
+        pendingApproval: queue[0] ?? null,
+        blocksBySession: resolvePromptInBlocks(state.blocksBySession, prompt.promptId, result),
+      }
+    })
   },
 }))
 
 function nextLocalBlockId(prefix: string): string {
   localBlockSequence += 1
   return prefix + '-' + Date.now() + '-' + localBlockSequence
+}
+
+function enqueuePermissionPrompt(state: ChatState, prompt: PermissionPrompt): Partial<ChatState> {
+  const queue = replaceOrAppendPrompt(state.pendingPermissionQueue, prompt)
+  return { pendingPermissionQueue: queue, pendingPermission: queue[0] ?? null }
+}
+
+function enqueueApprovalPrompt(state: ChatState, prompt: ApprovalPrompt): Partial<ChatState> {
+  const queue = replaceOrAppendPrompt(state.pendingApprovalQueue, prompt)
+  return { pendingApprovalQueue: queue, pendingApproval: queue[0] ?? null }
+}
+
+function replaceOrAppendPrompt<T extends { promptId: string }>(queue: T[], prompt: T): T[] {
+  const index = queue.findIndex((item) => item.promptId === prompt.promptId)
+  if (index < 0) return [...queue, prompt]
+  return queue.map((item, itemIndex) => itemIndex === index ? prompt : item)
+}
+
+function resolvePromptQueues(state: ChatState, promptId: string): Partial<ChatState> {
+  if (!promptId) return {}
+  const permissionQueue = state.pendingPermissionQueue.filter((prompt) => prompt.promptId !== promptId)
+  const approvalQueue = state.pendingApprovalQueue.filter((prompt) => prompt.promptId !== promptId)
+  return {
+    pendingPermissionQueue: permissionQueue,
+    pendingApprovalQueue: approvalQueue,
+    pendingPermission: permissionQueue[0] ?? null,
+    pendingApproval: approvalQueue[0] ?? null,
+  }
 }
 
 function appendLocalBlock(state: ChatState, block: ChatBlock): Partial<ChatState> {
@@ -181,48 +240,50 @@ function applyPromptFrame(
   set: (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void,
 ) {
   const payload = frame.payload ?? {}
-  const sessionId = asString(payload.session_id)
+
+  if (frame.type === 'prompt.resolved') {
+    const promptId = asString(payload.prompt_id)
+    set((state) => resolvePromptQueues(state, promptId))
+    return
+  }
+
+  const sessionId = frameSessionId(frame)
   const runId = asString(payload.run_id)
   if (!sessionId) return
 
   if (frame.type === 'permission.requested') {
     const request = asRecord(payload.request)
-    set({
-      pendingPermission: {
-        promptId: asString(payload.prompt_id),
-        runId,
-        request: {
-          tool_name: asString(request.tool_name),
-          tool_call_id: asString(request.tool_call_id),
-          arguments: asRecord(request.arguments),
-          category: asString(request.category),
-          risk: asString(request.risk),
-          reason: asString(request.reason) || null,
-          allow_session: Boolean(request.allow_session),
-          preview: previewFromUnknown(request.preview),
-        },
+    const prompt: PermissionPrompt = {
+      promptId: asString(payload.prompt_id),
+      sessionId,
+      runId,
+      request: {
+        tool_name: asString(request.tool_name),
+        tool_call_id: asString(request.tool_call_id),
+        arguments: asRecord(request.arguments),
+        category: asString(request.category),
+        risk: asString(request.risk),
+        reason: asString(request.reason) || null,
+        allow_session: Boolean(request.allow_session),
+        preview: previewFromUnknown(request.preview),
       },
-    })
+    }
+    set((state) => enqueuePermissionPrompt(state, prompt))
     return
   }
 
   if (frame.type === 'approval.requested') {
-    set({
-      pendingApproval: {
-        promptId: asString(payload.prompt_id),
-        kind: asString(payload.kind) || 'plan',
-        sessionId,
-        runId,
-        planText: asString(payload.plan_text) || null,
-        planPath: asString(payload.plan_path) || null,
-        questions: Array.isArray(payload.questions) ? payload.questions.filter(isRecord) : [],
-      },
-    })
+    const prompt: ApprovalPrompt = {
+      promptId: asString(payload.prompt_id),
+      kind: asString(payload.kind) || 'plan',
+      sessionId,
+      runId,
+      planText: asString(payload.plan_text) || null,
+      planPath: asString(payload.plan_path) || null,
+      questions: Array.isArray(payload.questions) ? payload.questions.filter(isRecord) : [],
+    }
+    set((state) => enqueueApprovalPrompt(state, prompt))
     return
-  }
-
-  if (frame.type === 'prompt.resolved') {
-    set({ pendingPermission: null, pendingApproval: null })
   }
 }
 

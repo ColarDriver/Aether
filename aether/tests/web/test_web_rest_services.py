@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from aether.cli.sessions import session_file
+from aether.runtime.session.plan_artifact import read_plan, write_plan
 from aether.runtime.tasks import TaskRecord, TaskStatus, TaskStore
 from aether.services.docs import DocsService
 from aether.services.environment import EnvironmentService
@@ -93,8 +95,37 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
     assert messages.status_code == 200
     assert messages.json() == {"session_id": "web_ses", "messages": []}
 
+    write_plan("web_ses", "# stale plan\n")
+    store = client.app.state.aether_services.tasks._store
+    assert isinstance(store, TaskStore)
+    store.create(
+        TaskRecord(
+            task_id="delete-task",
+            parent_session_id="web_ses",
+            subagent_type="worker",
+            prompt="delete me",
+            status=TaskStatus.COMPLETED,
+            started_at=1.0,
+            finished_at=2.0,
+        )
+    )
+
+    sessions_dir = client.app.state.aether_services.sessions._session_dir
+    assert session_file("web_ses", base=sessions_dir).is_file()
+
     deleted = client.delete("/api/sessions/web_ses")
     assert deleted.status_code == 204
+    assert not session_file("web_ses", base=sessions_dir).exists()
+    assert read_plan("web_ses") is None
+    assert store.read("delete-task") is None
+
+    relisted = client.get("/api/sessions")
+    assert relisted.status_code == 200
+    assert [item["session_id"] for item in relisted.json()["sessions"]] == []
+
+    current_after_delete = client.get("/api/sessions/current")
+    assert current_after_delete.status_code == 200
+    assert current_after_delete.json()["session"] is None
 
     missing = client.get("/api/sessions/web_ses/messages")
     assert missing.status_code == 404
@@ -191,7 +222,37 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
             agent_type_def_snapshot={"name": "explorer", "description": "Inspect code"},
         )
     )
+    store.write_result("task-running", {"status": "running", "summary": "partial result"})
     store.append_output("task-running", "first line\nsecond line\n")
+    store.append_message("task-running", {"role": "assistant", "content": "checking files", "iteration": 1})
+    store.append_message(
+        "task-running",
+        {
+            "role": "tool",
+            "name": "read_file",
+            "tool_call_id": "call-1",
+            "content": "file contents",
+            "elapsed_ms": 12.5,
+        },
+    )
+    store.enqueue_pending_message("task-running", "please inspect src/auth.ts")
+    store.create(
+        TaskRecord(
+            task_id="task-child",
+            parent_session_id="task_web",
+            subagent_type="verifier",
+            prompt="Verify renderer",
+            status=TaskStatus.COMPLETED,
+            started_at=21.0,
+            finished_at=23.0,
+            parent_task_id="task-running",
+            child_depth=2,
+            summary="verified",
+        )
+    )
+    store.append_message("task-child", {"role": "assistant", "content": "child checked it", "iteration": 1})
+    store.enqueue_pending_message("task-child", "parent follow-up for child")
+    assert store.drain_pending_messages("task-child") == ["parent follow-up for child"]
     store.create(
         TaskRecord(
             task_id="task-done",
@@ -208,15 +269,56 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
     session_tasks = client.get("/api/sessions/task_web/tasks")
     assert session_tasks.status_code == 200
     body = session_tasks.json()
-    assert body["total_count"] == 1
+    assert body["total_count"] == 2
     assert body["active_count"] == 1
-    assert body["tasks"][0]["task_id"] == "task-running"
-    assert body["tasks"][0]["metadata"]["agent_type"] == "explorer"
-    assert body["tasks"][0]["output_tail"] is None
+    by_task_id = {task["task_id"]: task for task in body["tasks"]}
+    assert by_task_id["task-running"]["metadata"]["agent_type"] == "explorer"
+    assert by_task_id["task-running"]["output_tail"] is None
+    assert by_task_id["task-child"]["parent_task_id"] == "task-running"
 
     detail = client.get("/api/tasks/task-running")
     assert detail.status_code == 200
     assert detail.json()["output_tail"] == "first line\nsecond line\n"
+
+    result = client.get("/api/tasks/task-running/result")
+    assert result.status_code == 200
+    result_body = result.json()
+    assert result_body["task_id"] == "task-running"
+    assert result_body["result_path"].endswith("result.json")
+    assert result_body["result"] == {"status": "running", "summary": "partial result"}
+
+    messages = client.get("/api/tasks/task-running/messages")
+    assert messages.status_code == 200
+    message_body = messages.json()
+    assert message_body["task_id"] == "task-running"
+    assert message_body["messages"][0]["role"] == "assistant"
+    assert message_body["messages"][0]["content"] == "checking files"
+    assert message_body["messages"][1]["name"] == "read_file"
+    assert message_body["messages"][1]["elapsed_ms"] == 12.5
+    assert message_body["pending_messages"][0]["message"] == "please inspect src/auth.ts"
+    assert message_body["delivered_messages"] == []
+
+    assert store.drain_pending_messages("task-running") == ["please inspect src/auth.ts"]
+    delivered_messages = client.get("/api/tasks/task-running/messages")
+    assert delivered_messages.status_code == 200
+    delivered_body = delivered_messages.json()
+    assert delivered_body["pending_messages"] == []
+    assert delivered_body["delivered_messages"][0]["message"] == "please inspect src/auth.ts"
+    assert isinstance(delivered_body["delivered_messages"][0]["delivered_at"], float)
+
+    invalid_messages = client.get("/api/tasks/task-running/messages?limit=0")
+    assert invalid_messages.status_code == 400
+
+    child_messages = client.get("/api/tasks/task-running/children/messages")
+    assert child_messages.status_code == 200
+    child_body = child_messages.json()
+    assert child_body["task_id"] == "task-running"
+    assert child_body["streams"][0]["task"]["task_id"] == "task-child"
+    assert child_body["streams"][0]["messages"][0]["content"] == "child checked it"
+    assert child_body["streams"][0]["delivered_messages"][0]["message"] == "parent follow-up for child"
+
+    invalid_child_messages = client.get("/api/tasks/task-running/children/messages?per_task_limit=0")
+    assert invalid_child_messages.status_code == 400
 
     global_active = client.get("/api/tasks?active_only=true")
     assert global_active.status_code == 200
@@ -224,6 +326,9 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
 
     missing = client.get("/api/tasks/missing")
     assert missing.status_code == 404
+
+    missing_result = client.get("/api/tasks/task-child/result")
+    assert missing_result.status_code == 404
 
     invalid = client.get("/api/tasks?limit=0")
     assert invalid.status_code == 400
@@ -247,9 +352,22 @@ def test_plan_routes_read_and_update_session_mode(client: TestClient) -> None:
     assert updated.json()["mode"] == "plan"
     assert updated.json()["info"]["mode"] == "plan"
 
+    write_plan("plan_web", "# Plan\n")
+    with_artifact = client.get("/api/plan/plan_web")
+    assert with_artifact.status_code == 200
+    assert with_artifact.json()["has_plan"] is True
+    assert with_artifact.json()["plan_content"] == "# Plan\n"
+
+    cleared = client.post("/api/plan/plan_web/clear")
+    assert cleared.status_code == 200
+    assert cleared.json()["mode"] == "agent"
+    assert cleared.json()["has_plan"] is False
+    assert cleared.json()["plan_content"] is None
+    assert cleared.json()["info"]["mode"] == "agent"
+
     listed = client.get("/api/sessions")
     assert listed.status_code == 200
-    assert listed.json()["sessions"][0]["mode"] == "plan"
+    assert listed.json()["sessions"][0]["mode"] == "agent"
 
     invalid = client.put("/api/plan/plan_web/mode", json={"mode": "invalid"})
     assert invalid.status_code == 400

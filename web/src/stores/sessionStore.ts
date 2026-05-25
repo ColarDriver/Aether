@@ -16,6 +16,7 @@ type SessionState = {
   createSession: (input: CreateSessionInput) => Promise<SessionInfo>
   resumeSession: (sessionId: string) => Promise<SessionInfo>
   updateSession: (sessionId: string, updates: Partial<Pick<SessionInfo, 'provider' | 'model' | 'base_url' | 'system_prompt'>>) => Promise<SessionInfo>
+  deleteSession: (sessionId: string) => Promise<void>
   setActiveSession: (sessionId: string | null) => void
   setSessionMode: (sessionId: string, mode: 'agent' | 'plan') => void
 }
@@ -29,11 +30,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const { sessions } = await api.sessions()
-      set((state) => ({
-        sessions,
-        activeSessionId: state.activeSessionId ?? sessions[0]?.session_id ?? null,
-        isLoading: false,
-      }))
+      set((state) => {
+        const activeStillExists = sessions.some((session) => session.session_id === state.activeSessionId)
+        return {
+          sessions,
+          activeSessionId: activeStillExists ? state.activeSessionId : sessions[0]?.session_id ?? null,
+          isLoading: false,
+        }
+      })
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error), isLoading: false })
     }
@@ -73,6 +77,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: state.activeSessionId === sessionId ? updated.session_id : state.activeSessionId,
     }))
     return updated
+  },
+  deleteSession: async (sessionId) => {
+    await api.deleteSession(sessionId)
+    set((state) => {
+      const sessions = state.sessions.filter((session) => session.session_id !== sessionId)
+      return {
+        sessions,
+        activeSessionId: state.activeSessionId === sessionId ? sessions[0]?.session_id ?? null : state.activeSessionId,
+      }
+    })
   },
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
   setSessionMode: (sessionId, mode) => set((state) => ({

@@ -294,6 +294,25 @@ class ProviderInvocationControllerTests(unittest.TestCase):
             },
         )
 
+    def test_default_engine_hooks_accept_transport_metadata(self) -> None:
+        provider = _ScriptedProvider(
+            NormalizedResponse(content="hello"),
+            transport_name="unit_transport",
+            transport_api_mode="unit_api",
+        )
+        controller, invocation, _context = _invocation(
+            response_provider=provider,
+            hooks=EngineHooks(),
+        )
+
+        result = controller.invoke(invocation)
+
+        self.assertIsNone(result.error)
+        assert result.response is not None
+        self.assertEqual(result.response.content, "hello")
+        self.assertEqual(result.transport, "unit_transport")
+        self.assertEqual(result.transport_api_mode, "unit_api")
+
 
 if __name__ == "__main__":
     unittest.main()

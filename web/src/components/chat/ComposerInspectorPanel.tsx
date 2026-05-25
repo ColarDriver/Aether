@@ -1,6 +1,8 @@
 import { Activity, BarChart3, Brain, CircleAlert, Server, Sparkles, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
+import type { TokenUsage } from '../../chat-rendering'
+import { tokenUsageBreakdown, tokenUsageTotal } from '../../chat-rendering'
 import type {
   AnalyticsReport,
   HealthStatus,
@@ -21,6 +23,7 @@ type Props = {
   mode?: string | null
   inputTokens?: number | null
   outputTokens?: number | null
+  tokens?: TokenUsage | null
   onClose: () => void
 }
 
@@ -59,6 +62,7 @@ export function ComposerInspectorPanel({
   mode,
   inputTokens,
   outputTokens,
+  tokens,
   onClose,
 }: Props) {
   const label = TITLES[kind]
@@ -95,6 +99,7 @@ export function ComposerInspectorPanel({
             messageCount={messageCount}
             inputTokens={inputTokens}
             outputTokens={outputTokens}
+            tokens={tokens}
           />
         ) : null}
         {kind === 'cost' ? <CostInspector /> : null}
@@ -172,6 +177,7 @@ function ContextInspector({
   messageCount,
   inputTokens,
   outputTokens,
+  tokens,
 }: {
   provider?: string | null
   model?: string | null
@@ -179,9 +185,15 @@ function ContextInspector({
   messageCount?: number | null
   inputTokens?: number | null
   outputTokens?: number | null
+  tokens?: TokenUsage | null
 }) {
   const [result, setResult] = useState<LoadState<ContextPanelData>>({ state: 'loading' })
-  const activeTokens = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+  const fallbackTokens = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
+  const activeTokens = tokenUsageTotal(tokens) || fallbackTokens
+  const activeBreakdown = tokenUsageBreakdown(tokens)
+  const activeDetail = activeBreakdown.length > 0
+    ? activeBreakdown.join(' / ')
+    : formatNumber(inputTokens ?? 0) + ' in / ' + formatNumber(outputTokens ?? 0) + ' out'
 
   useEffect(() => {
     let cancelled = false
@@ -218,7 +230,7 @@ function ContextInspector({
   return (
     <>
       <div className="composer-inspector-grid">
-        <Metric label="Active tokens" value={formatNumber(activeTokens)} detail={formatNumber(inputTokens ?? 0) + ' in / ' + formatNumber(outputTokens ?? 0) + ' out'} />
+        <Metric label="Active tokens" value={formatNumber(activeTokens)} detail={activeDetail} />
         <Metric label="Context window" value={contextWindow ? formatNumber(contextWindow) : 'unknown'} detail={percent === null ? 'Provider did not report a window' : percent + '% of reported window'} />
         <Metric label="Transcript" value={formatNumber(messageCount ?? 0)} detail="messages in current session metadata" />
         <Metric label="Mode" value={mode || 'agent'} detail={provider && model ? provider + ' / ' + model : 'No model selected'} />

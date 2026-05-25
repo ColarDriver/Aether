@@ -281,6 +281,10 @@ class ContextAssemblyPipeline:
             hook_outcome,
             context=context,
         )
+        outbound_messages = _append_attachment_context_for_provider(
+            outbound_messages,
+            context.metadata.get("_llm_attachment_context"),
+        )
         prepared_messages = self._services.middleware_pipeline.run_before_llm(
             outbound_messages,
             context,
@@ -295,3 +299,25 @@ class ContextAssemblyPipeline:
             hook_outcome=hook_outcome,
             preflight_compaction=preflight_compaction,
         )
+
+
+def _append_attachment_context_for_provider(
+    messages: list[dict[str, Any]],
+    attachment_context: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(attachment_context, str) or not attachment_context.strip():
+        return messages
+    outbound = copy.deepcopy(messages)
+    marker = "\n\n" + attachment_context.strip()
+    for message in reversed(outbound):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if isinstance(content, str):
+            message["content"] = content.rstrip() + marker
+        elif isinstance(content, list):
+            content.append({"type": "text", "text": attachment_context.strip()})
+        else:
+            message["content"] = str(content).rstrip() + marker
+        return outbound
+    return outbound

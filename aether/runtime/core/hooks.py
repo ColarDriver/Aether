@@ -55,6 +55,8 @@ class EngineHooks:
         request_char_count: int,
         max_tokens: int | None,
         context_metadata: dict[str, Any],
+        transport: str | None = None,
+        transport_api_mode: str | None = None,
     ) -> None:
         return None
 
@@ -71,6 +73,8 @@ class EngineHooks:
         response_finish_reason: str | None,
         error: Exception | None,
         context_metadata: dict[str, Any],
+        transport: str | None = None,
+        transport_api_mode: str | None = None,
     ) -> None:
         return None
 

@@ -50,6 +50,32 @@ export function replaceWorkspaceReferenceToken(
   }
 }
 
+export function replaceWorkspaceReferenceBrowseToken(
+  value: string,
+  cursorPosition: number,
+  path: string,
+): { value: string; cursorPosition: number } {
+  const cursor = clampCursor(value, cursorPosition)
+  const trigger = findWorkspaceReferenceTrigger(value, cursor)
+  const normalizedPath = path.trim().replace(/^\/+/, '').replace(/\/+$/g, '')
+  const token = '@' + (normalizedPath ? normalizedPath + '/' : '')
+
+  if (!trigger) {
+    const prefix = value && !/\s$/.test(value) ? value + ' ' : value
+    const nextValue = prefix + token
+    return { value: nextValue, cursorPosition: nextValue.length }
+  }
+
+  const before = value.slice(0, trigger.atPos)
+  const afterText = value.slice(cursor).replace(/^[ \t]+/, '')
+  const separator = afterText ? ' ' : ''
+  const nextValue = before + token + separator + afterText
+  return {
+    value: nextValue,
+    cursorPosition: before.length + token.length,
+  }
+}
+
 export function workspaceEntryToAttachment(entry: WorkspaceEntry): ChatAttachment {
   return {
     type: entry.kind === 'directory' ? 'file' : fileAttachmentType(entry.path),
@@ -68,10 +94,39 @@ export function mergeWorkspaceAttachment(
   return [...attachments, workspaceEntryToAttachment(entry)]
 }
 
+export function workspaceReferenceTokenExists(value: string, path: string): boolean {
+  const normalizedPath = path.trim().replace(/^@+/, "").replace(/\/+$/g, "")
+  if (!normalizedPath) return false
+  const escaped = escapeRegExp(normalizedPath)
+  return new RegExp("(^|\\s)@" + escaped + "/?(?=\\s|$)").test(value)
+}
+
+export function syncWorkspaceReferenceAttachmentsForValue(
+  attachments: ChatAttachment[],
+  value: string,
+): ChatAttachment[] {
+  let changed = false
+  const next = attachments.filter((attachment) => {
+    if (attachment.note !== "workspace reference") return true
+    if (!attachment.path) return true
+    const keep = workspaceReferenceTokenExists(value, attachment.path)
+    if (!keep) changed = true
+    return keep
+  })
+  return changed ? next : attachments
+}
+
 function fileAttachmentType(path: string): ChatAttachment['type'] {
   return /\.(md|markdown|txt|json|jsonl|yaml|yml|toml|csv|ts|tsx|js|jsx|py|rs|go|java|c|cc|cpp|h|hpp|css|html|xml|sh|bash|zsh)$/i.test(path)
     ? 'text'
     : 'file'
+}
+
+function escapeRegExp(value: string): string {
+  const special = new Set(["\\", ".", "*", "+", "?", "^", "$", "{", "}", "(", ")", "|", "[", "]"])
+  let escaped = ""
+  for (const char of value) escaped += special.has(char) ? "\\" + char : char
+  return escaped
 }
 
 function clampCursor(value: string, cursorPosition: number): number {

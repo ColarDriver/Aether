@@ -52,21 +52,185 @@ describe('ToolResultPreview', () => {
     expect(screen.getByText('const token = getToken()')).toBeTruthy()
   })
 
-  it('renders web search JSON as result cards', () => {
+  it('renders web search JSON as result cards with provider metadata', () => {
     render(
       <ToolResultBlock
         block={result({
           toolName: 'web_search',
           content: JSON.stringify({ results: [{ title: 'Aether docs', url: 'https://example.com/aether', snippet: 'Docs snippet' }] }),
+          metadata: { provider: 'brave', source_count: 1 },
+        })}
+        toolArguments={{ query: 'Aether provider' }}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Web results' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('Aether docs')).toBeTruthy()
+    expect(within(preview).getByText('Docs snippet')).toBeTruthy()
+    expect(within(preview).getByText('brave')).toBeTruthy()
+    expect(within(preview).getByText('Aether provider')).toBeTruthy()
+    expect(within(preview).getByText('1')).toBeTruthy()
+  })
+
+
+  it('does not make unsafe web result URLs clickable', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({ results: [{ title: 'Unsafe result', url: 'javascript:alert(1)', snippet: 'Do not link this' }] }),
         })}
       />,
     )
 
-    expect(screen.getByRole('region', { name: 'Web results' })).toBeTruthy()
-    expect(screen.getByText('Aether docs')).toBeTruthy()
-    expect(screen.getByText('Docs snippet')).toBeTruthy()
+    const preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('Unsafe result')).toBeTruthy()
+    expect(within(preview).getByText('Do not link this')).toBeTruthy()
+    expect(within(preview).queryByRole('link', { name: /Unsafe result/ })).toBeNull()
   })
 
+  it('renders Aether markdown web_search output as result cards', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: '# Web search: aether\n\nFound 2 results:\n\n1. **Aether docs**\n   https://example.com/aether\n   Documentation snippet\n\n2. **Aether issue**\n   https://github.com/example/aether/issues/1\n   Issue snippet\n',
+          metadata: { provider: 'brave', result_count: 2 },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Web results' })
+    expect(preview).toBeTruthy()
+    expect(within(preview).getByText('Aether docs')).toBeTruthy()
+    expect(within(preview).getByText('Documentation snippet')).toBeTruthy()
+    expect(within(preview).getByText('https://example.com/aether')).toBeTruthy()
+    expect(within(preview).getByText('Aether issue')).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+  })
+
+  it('renders hosted provider web-search sources from metadata', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: 'Found docs.\n\nSources:\n- [Aether Docs](https://docs.example/aether)',
+          metadata: {
+            hosted_web_search: {
+              provider: 'codex',
+              source_count: 1,
+              sources: [{ title: 'Aether Docs', url: 'https://docs.example/aether' }],
+            },
+          },
+        })}
+        toolArguments={{ query: 'Aether' }}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('codex')).toBeTruthy()
+    expect(within(preview).getByText('Aether')).toBeTruthy()
+    expect(within(preview).getByText('Aether Docs')).toBeTruthy()
+    expect(within(preview).getByText('https://docs.example/aether')).toBeTruthy()
+    expect(within(preview).queryByText((text) => text.includes('Found docs.'))).toBeNull()
+  })
+
+  it('extracts hosted provider query and source count from call metadata', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: 'Found docs.',
+          metadata: {
+            hosted_web_search: {
+              provider: 'codex',
+              calls: [{ id: 'ws_1', status: 'completed', action: { type: 'search', query: 'codex hosted query' } }],
+              sources: [
+                { title: 'First source', url: 'https://docs.example/first' },
+                { title: 'Second source', url: 'https://docs.example/second' },
+              ],
+            },
+          },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('codex')).toBeTruthy()
+    expect(within(preview).getByText('codex hosted query')).toBeTruthy()
+    expect(within(preview).getByText('2')).toBeTruthy()
+    expect(within(preview).getByText('First source')).toBeTruthy()
+    expect(within(preview).getByText('Second source')).toBeTruthy()
+  })
+
+  it('renders raw provider web-search payload variants', () => {
+    const { rerender } = render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({
+            answer: 'Aggregated answer',
+            results: [{ title: 'Tavily result', url: 'https://example.com/tavily', content: 'Tavily content body', score: 0.98 }],
+          }),
+          metadata: { provider: 'tavily' },
+        })}
+      />,
+    )
+
+    let preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('tavily')).toBeTruthy()
+    expect(within(preview).getByText('Tavily result')).toBeTruthy()
+    expect(within(preview).getByText('Tavily content body')).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({ web: { results: [{ title: 'Brave extra', url: 'https://example.com/brave-extra', extra_snippets: ['First extra', 'Second extra'] }] } }),
+          metadata: { provider: 'brave' },
+        })}
+      />,
+    )
+
+    preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('Brave extra')).toBeTruthy()
+    expect(within(preview).getByText('First extra Second extra')).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({
+            content: [
+              {
+                type: 'web_search_tool_result',
+                content: [{ type: 'web_search_result', title: 'Anthropic result', url: 'https://example.com/anthropic' }],
+              },
+            ],
+          }),
+          metadata: { hosted_web_search: { provider: 'anthropic', calls: [{ input: { query: 'anthropic query' } }] } },
+        })}
+      />,
+    )
+
+    preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getByText('anthropic')).toBeTruthy()
+    expect(within(preview).getByText('anthropic query')).toBeTruthy()
+    expect(within(preview).getByText('Anthropic result')).toBeTruthy()
+
+    rerender(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_search',
+          content: JSON.stringify({ citations: ['https://example.com/plain-citation'] }),
+        })}
+      />,
+    )
+
+    preview = screen.getByRole('region', { name: 'Web results' })
+    expect(within(preview).getAllByText('https://example.com/plain-citation').length).toBeGreaterThan(0)
+  })
 
   it('renders nested provider web-search payloads and web-fetch metadata', () => {
     const { rerender } = render(
@@ -238,6 +402,35 @@ describe('ToolResultPreview', () => {
     expect(document.querySelector('.diff-line-add')?.textContent).toContain('print("new")')
   })
 
+  it('renders notebook stdout errors and display images as cell outputs', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: JSON.stringify({
+            summary: 'executed cell',
+            outputs: [
+              { output_type: 'stream', name: 'stdout', text: ['hello', '\nworld'] },
+              { output_type: 'error', ename: 'ValueError', evalue: 'bad value', traceback: ['Traceback line', 'ValueError: bad value'] },
+              { output_type: 'display_data', data: { 'image/png': 'iVBORw0KGgo=' } },
+            ],
+          }),
+          metadata: { path: 'analysis.ipynb', edit_mode: 'execute', cell_count: 8 },
+        })}
+        toolArguments={{ cell_idx: 2, cell_type: 'code' }}
+      />,
+    )
+
+    const outputs = screen.getByLabelText('Notebook outputs')
+    expect(within(outputs).getByText('stdout')).toBeTruthy()
+    expect(within(outputs).getByText((text) => text.includes('hello') && text.includes('world'))).toBeTruthy()
+    expect(within(outputs).getByText('ValueError')).toBeTruthy()
+    expect(within(outputs).getByText(/Traceback line/)).toBeTruthy()
+    expect(within(outputs).getByRole('img', { name: 'image/png' }).getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=')
+    expect(screen.getByText('executed cell')).toBeTruthy()
+    expect(screen.queryByText(/display_data/)).toBeNull()
+  })
+
   it('renders LSP results as semantic navigation rows', () => {
     render(
       <ToolResultBlock
@@ -253,6 +446,118 @@ describe('ToolResultPreview', () => {
     expect(preview).toBeTruthy()
     expect(within(preview).getByText('findReferences')).toBeTruthy()
     expect(within(preview).getByText('/workspace/Aether/src/auth.ts:12:4')).toBeTruthy()
+  })
+
+  it('renders notebook execution-state metadata', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: JSON.stringify({ summary: 'executed cell', status: 'ok' }),
+          metadata: {
+            path: 'analysis.ipynb',
+            edit_mode: 'execute',
+            execution_count: 4,
+            duration_ms: 1250,
+            kernel_name: 'python3',
+            outputs_truncated: true,
+          },
+        })}
+        toolArguments={{ cell_idx: 2, cell_type: 'code' }}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Notebook edit' })
+    expect(within(preview).getAllByText('ok').length).toBeGreaterThan(0)
+    expect(within(preview).getByText('#4')).toBeTruthy()
+    expect(within(preview).getAllByText('1.3s').length).toBeGreaterThan(0)
+    expect(within(preview).getByText('python3')).toBeTruthy()
+    expect(within(preview).getByText('truncated')).toBeTruthy()
+  })
+
+  it('renders notebook lifecycle metadata as a timeline', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: JSON.stringify({ summary: 'executed cell', status: 'ok' }),
+          metadata: {
+            path: 'analysis.ipynb',
+            edit_mode: 'execute',
+            queued_at: '10:00:00',
+            started_at: '10:00:01',
+            finished_at: '10:00:03',
+            duration_ms: 2100,
+          },
+        })}
+        toolArguments={{ cell_idx: 2, cell_type: 'code' }}
+      />,
+    )
+
+    const lifecycle = screen.getByLabelText('Notebook lifecycle')
+    expect(within(lifecycle).getByText('queued')).toBeTruthy()
+    expect(within(lifecycle).getByText('10:00:00')).toBeTruthy()
+    expect(within(lifecycle).getByText('started')).toBeTruthy()
+    expect(within(lifecycle).getByText('finished')).toBeTruthy()
+    expect(within(lifecycle).getByText('2.1s')).toBeTruthy()
+  })
+
+  it('renders notebook lifecycle arrays and nested timing records', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'notebook_edit',
+          content: JSON.stringify({
+            summary: 'executed cell',
+            execution: { queued_at: '10:00:00', started_at: '10:00:01' },
+            lifecycle_events: [
+              { phase: 'kernel_start', at: '10:00:02' },
+              { phase: 'execute_cell', duration_ms: 800, status: 'running' },
+              { status: 'completed', at: '10:00:03' },
+            ],
+          }),
+          metadata: { path: 'analysis.ipynb', edit_mode: 'execute' },
+        })}
+        toolArguments={{ cell_idx: 2, cell_type: 'code' }}
+      />,
+    )
+
+    const lifecycle = screen.getByLabelText('Notebook lifecycle')
+    expect(within(lifecycle).getByText('queued')).toBeTruthy()
+    expect(within(lifecycle).getByText('10:00:00')).toBeTruthy()
+    expect(within(lifecycle).getByText('started')).toBeTruthy()
+    expect(within(lifecycle).getByText('10:00:01')).toBeTruthy()
+    expect(within(lifecycle).getByText('kernel start')).toBeTruthy()
+    expect(within(lifecycle).getByText('10:00:02')).toBeTruthy()
+    expect(within(lifecycle).getByText('execute cell')).toBeTruthy()
+    expect(within(lifecycle).getByText('0.8s')).toBeTruthy()
+    expect(within(lifecycle).getByText('completed')).toBeTruthy()
+    expect(within(lifecycle).getByText('10:00:03')).toBeTruthy()
+  })
+
+  it('renders browser screenshot URLs as inline visual previews', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_browser',
+          content: '# Browser screenshot saved',
+          metadata: {
+            operation: 'screenshot',
+            url: 'https://example.com',
+            screenshot_url: 'https://example.com/call.png',
+            screenshot_path: '/tmp/call.png',
+            screenshot_name: 'Checkout page',
+            bytes: 2048,
+          },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Browser result' })
+    expect(within(preview).getByRole('img', { name: 'Checkout page' }).getAttribute('src')).toBe('https://example.com/call.png')
+    expect(within(preview).getByText('/tmp/call.png')).toBeTruthy()
+    expect(within(preview).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('https://example.com/call.png')
+    expect(within(preview).queryByText('Screenshot saved')).toBeNull()
   })
 
   it('renders browser screenshot metadata as an artifact card', () => {
@@ -274,6 +579,37 @@ describe('ToolResultPreview', () => {
     expect(within(preview).getByText('/tmp/call.png')).toBeTruthy()
   })
 
+  it('renders structured browser image and artifact payloads inside the browser preview', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'web_browser',
+          content: JSON.stringify({
+            images: [
+              { title: 'After click viewport', url: 'https://example.com/after-click.png', caption: 'Captured after clicking submit' },
+            ],
+            artifacts: [
+              { name: 'trace.zip', path: '/tmp/aether/trace.zip', download_url: 'https://example.com/trace.zip', mime_type: 'application/zip', size_bytes: 4096 },
+            ],
+          }),
+          metadata: { operation: 'click', url: 'https://example.com/form' },
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Browser result' })
+    expect(within(preview).getByText('click')).toBeTruthy()
+    expect(within(preview).getByText('https://example.com/form')).toBeTruthy()
+    const images = within(preview).getByLabelText('Browser images')
+    expect(within(images).getByRole('img', { name: 'After click viewport' }).getAttribute('src')).toBe('https://example.com/after-click.png')
+    expect(within(images).getByText('Captured after clicking submit')).toBeTruthy()
+    const artifacts = within(preview).getByLabelText('Browser artifacts')
+    expect(within(artifacts).getByText('trace.zip')).toBeTruthy()
+    expect(within(artifacts).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('https://example.com/trace.zip')
+    expect(within(artifacts).getByRole('button', { name: 'Copy trace.zip path' })).toBeTruthy()
+    expect(screen.queryByText('Tool output')).toBeNull()
+  })
+
   it('renders structured non-image artifacts as an artifact bundle', () => {
     render(
       <ToolResultBlock
@@ -281,7 +617,7 @@ describe('ToolResultPreview', () => {
           toolName: 'artifact_tool',
           content: JSON.stringify({
             artifacts: [
-              { name: 'report.json', path: '/tmp/report.json', mime_type: 'application/json', size_bytes: 128, summary: 'Structured result' },
+              { name: 'report.json', path: '/tmp/report.json', mime_type: 'application/json', size_bytes: 128, summary: 'Structured result', content: { ok: true, count: 2 } },
             ],
           }),
         })}
@@ -294,7 +630,52 @@ describe('ToolResultPreview', () => {
     expect(within(preview).getByText((text) => text.includes('application/json'))).toBeTruthy()
     expect(within(preview).getByText('Structured result')).toBeTruthy()
     expect(within(preview).getByRole('button', { name: 'Copy report.json path' })).toBeTruthy()
+    expect(within(preview).getByRole('button', { name: 'Copy report.json contents' })).toBeTruthy()
+    expect(within(preview).getByLabelText('Preview report.json').textContent).toContain('"ok": true')
+    expect(within(preview).getByLabelText('Preview report.json').textContent).toContain('"count": 2')
     expect(screen.queryByText('Tool output')).toBeNull()
+  })
+
+  it('keeps local binary artifacts copy-only with an unavailable preview state', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'artifact_tool',
+          content: JSON.stringify({
+            artifacts: [
+              { name: 'weights.bin', path: '/tmp/aether/weights.bin', mime_type: 'application/octet-stream', size_bytes: 4096, binary: true },
+            ],
+          }),
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Tool artifacts' })
+    expect(within(preview).getByText('weights.bin')).toBeTruthy()
+    expect(within(preview).getByText((text) => text.includes('binary') && text.includes('application/octet-stream'))).toBeTruthy()
+    expect(within(preview).getByText('Binary preview unavailable. Copy the path or open the linked artifact if a URL is provided.')).toBeTruthy()
+    expect(within(preview).getByRole('button', { name: 'Copy weights.bin path' })).toBeTruthy()
+    expect(within(preview).queryByRole('link', { name: 'Open' })).toBeNull()
+  })
+
+  it('opens only explicit artifact URLs while local paths remain copy targets', () => {
+    render(
+      <ToolResultBlock
+        block={result({
+          toolName: 'artifact_tool',
+          content: JSON.stringify({
+            artifacts: [
+              { name: 'bundle.zip', path: '/tmp/aether/bundle.zip', download_url: 'https://example.com/bundle.zip', mime_type: 'application/zip', size_bytes: 1000 },
+            ],
+          }),
+        })}
+      />,
+    )
+
+    const preview = screen.getByRole('region', { name: 'Tool artifacts' })
+    expect(within(preview).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('https://example.com/bundle.zip')
+    expect(within(preview).getByRole('button', { name: 'Copy bundle.zip path' })).toBeTruthy()
+    expect(within(preview).getByText((text) => text.includes('/tmp/aether/bundle.zip'))).toBeTruthy()
   })
 
   it('renders standard spill notices as readable artifacts', () => {

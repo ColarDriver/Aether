@@ -45,6 +45,47 @@ describe('normalizeTranscript', () => {
     })
   })
 
+  it('keeps assistant metadata for provider-native side channels', () => {
+    const blocks = normalizeTranscript('session-meta', [
+      {
+        role: 'assistant',
+        text: 'Found docs.',
+        metadata: { hosted_web_search: { provider: 'codex', source_count: 1 } },
+      },
+    ])
+
+    expect(blocks[0]).toMatchObject({
+      kind: 'assistant_message',
+      content: 'Found docs.',
+      metadata: { hosted_web_search: { provider: 'codex', source_count: 1 } },
+    })
+  })
+
+  it('marks persisted tool calls failed when their persisted result is an error', () => {
+    const blocks = normalizeTranscript('session-failed-tool', [
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'call-write', name: 'write_file', arguments: { path: '/tmp/calc.py' } },
+        ],
+      },
+      {
+        role: 'tool',
+        name: 'write_file',
+        tool_call_id: 'call-write',
+        text: 'permission prompt aborted before executing tool: browser disconnected',
+        is_error: true,
+      },
+    ])
+
+    expect(blocks[0]).toMatchObject({
+      kind: 'tool_call',
+      toolCallId: 'call-write',
+      status: 'failed',
+    })
+    expect(blocks[1]).toMatchObject({ kind: 'tool_result', isError: true })
+  })
+
   it('keeps orphan tool results visible', () => {
     const blocks = normalizeTranscript('session-2', [
       { role: 'tool', name: 'shell', tool_call_id: 'missing', text: 'done', is_error: true },

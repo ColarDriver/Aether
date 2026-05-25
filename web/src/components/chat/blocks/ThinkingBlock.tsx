@@ -22,7 +22,7 @@ export function ThinkingBlock({ block }: Props) {
         <span className="thinking-icon" aria-hidden="true">
           {block.isActive ? <Loader2 size={14} /> : <Brain size={14} />}
         </span>
-        <strong>thinking</strong>
+        <strong className={block.isActive ? 'aether-shimmer-text' : undefined}>thinking</strong>
         {!expanded && preview ? <span className="thinking-preview">{preview}</span> : null}
         <em>{block.isActive ? 'active' : 'saved'}</em>
       </button>

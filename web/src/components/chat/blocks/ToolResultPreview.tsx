@@ -43,6 +43,22 @@ type ToolArtifact = {
   mimeType: string | null
   size: number | null
   note: string | null
+  preview: string | null
+  previewLanguage: string | null
+  binary: boolean
+}
+
+type NotebookOutput = {
+  kind: 'text' | 'error' | 'image'
+  label: string
+  text?: string
+  src?: string
+}
+
+type NotebookLifecycleStep = {
+  label: string
+  value: string
+  tone?: 'ok' | 'error' | 'active'
 }
 
 export function canPreviewToolResult(block: ToolResult): boolean {
@@ -67,7 +83,7 @@ export function ToolResultPreview({ block, toolArguments = {} }: Props) {
   if (isNotebookTool(toolName)) return <NotebookPreview block={block} toolArguments={toolArguments} />
   if (isLspTool(toolName)) return <LspPreview block={block} toolArguments={toolArguments} />
   if (isSearchTool(toolName)) return <SearchPreview content={block.content} />
-  if (isWebTool(toolName)) return <WebPreview block={block} toolName={block.toolName || 'web'} />
+  if (isWebTool(toolName)) return <WebPreview block={block} toolArguments={toolArguments} toolName={block.toolName || 'web'} />
   if (isTaskTool(toolName)) return <TaskPreview block={block} toolArguments={toolArguments} />
 
   const toolArtifacts = parseToolArtifacts(block)
@@ -119,26 +135,68 @@ function FileChangePreview({ block, toolArguments }: PreviewProps) {
 function NotebookPreview({ block, toolArguments }: PreviewProps) {
   const path = firstString(block.metadata.path, toolArguments.notebook_path, toolArguments.path) || 'Notebook'
   const mode = firstString(block.metadata.edit_mode, toolArguments.edit_mode) || 'edit'
+  const parsedContent = parseJson(block.content)
+  const contentRecord = isRecord(parsedContent) ? parsedContent : {}
+  const status = firstString(
+    block.metadata.execution_status,
+    block.metadata.executionStatus,
+    block.metadata.status,
+    toolArguments.execution_status,
+    toolArguments.executionStatus,
+    toolArguments.status,
+    contentRecord.execution_status,
+    contentRecord.executionStatus,
+    contentRecord.status,
+  )
   const cellRef = firstString(toolArguments.cell_id, block.metadata.cell_id, block.metadata.cellId)
     || numberLabel('cell', numberValue(toolArguments.cell_idx) ?? numberValue(toolArguments.cellIdx))
   const cellType = firstString(toolArguments.cell_type, block.metadata.cell_type, block.metadata.cellType) || 'code'
   const cellCount = numberValue(block.metadata.cell_count) ?? numberValue(block.metadata.cellCount)
+  const executionCount = numberValue(block.metadata.execution_count) ?? numberValue(block.metadata.executionCount) ?? numberValue(toolArguments.execution_count) ?? numberValue(toolArguments.executionCount) ?? numberValue(contentRecord.execution_count) ?? numberValue(contentRecord.executionCount)
+  const durationSeconds = durationSecondsFromMetadata(block.metadata) ?? durationSecondsFromMetadata(toolArguments) ?? durationSecondsFromMetadata(contentRecord)
+  const kernel = firstString(block.metadata.kernel, block.metadata.kernel_name, block.metadata.kernelName, toolArguments.kernel, toolArguments.kernel_name, toolArguments.kernelName, contentRecord.kernel, contentRecord.kernel_name, contentRecord.kernelName)
+  const outputsTruncated = booleanValue(block.metadata.outputs_truncated) ?? booleanValue(block.metadata.outputsTruncated) ?? booleanValue(toolArguments.outputs_truncated) ?? booleanValue(toolArguments.outputsTruncated) ?? booleanValue(contentRecord.outputs_truncated) ?? booleanValue(contentRecord.outputsTruncated)
+  const outputs = parseNotebookOutputs(block, toolArguments)
+  const lifecycle = notebookLifecycleSteps(block, toolArguments, contentRecord)
+  const summaryContent = notebookSummaryContent(block.content, outputs.length > 0)
   const stats = [
     { label: 'mode', value: mode },
+    status ? { label: 'status', value: status } : null,
     cellRef ? { label: 'cell', value: cellRef } : null,
     cellType ? { label: 'type', value: cellType } : null,
     cellCount != null ? { label: 'cells', value: cellCount.toLocaleString() } : null,
+    executionCount != null ? { label: 'exec', value: '#' + executionCount.toLocaleString() } : null,
+    durationSeconds != null ? { label: 'duration', value: formatDuration(durationSeconds) } : null,
+    kernel ? { label: 'kernel', value: kernel } : null,
+    outputs.length > 0 ? { label: 'outputs', value: outputs.length.toLocaleString() } : null,
+    outputsTruncated ? { label: 'outputs', value: 'truncated' } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item))
   return (
     <section className="tool-preview tool-preview-notebook" aria-label="Notebook edit">
       <header>
         <span><BookOpen size={14} /><strong>{path}</strong></span>
-        <em>{block.isError ? 'failed' : mode}</em>
+        <em>{block.isError ? 'failed' : status || mode}</em>
       </header>
       <PreviewStats stats={stats} />
+      <NotebookLifecycle steps={lifecycle} />
       <NotebookCellPreview block={block} toolArguments={toolArguments} cellType={cellType} mode={mode} />
-      {block.content ? <pre className="tool-preview-summary"><code>{block.content}</code></pre> : null}
+      <NotebookOutputsPreview outputs={outputs} />
+      {summaryContent ? <pre className="tool-preview-summary"><code>{summaryContent}</code></pre> : null}
     </section>
+  )
+}
+
+function NotebookLifecycle({ steps }: { steps: NotebookLifecycleStep[] }) {
+  if (steps.length === 0) return null
+  return (
+    <ol className="notebook-lifecycle" aria-label="Notebook lifecycle">
+      {steps.map((step) => (
+        <li className={step.tone ? 'notebook-lifecycle-' + step.tone : undefined} key={step.label}>
+          <strong>{step.label}</strong>
+          <span>{step.value}</span>
+        </li>
+      ))}
+    </ol>
   )
 }
 
@@ -168,6 +226,264 @@ function NotebookCellPreview({ block, toolArguments, cellType, mode }: PreviewPr
       <CodeBlock code={newSource || oldSource || ''} language={notebookLanguage(cellType)} title={title} wrap />
     </div>
   )
+}
+
+function NotebookOutputsPreview({ outputs }: { outputs: NotebookOutput[] }) {
+  if (outputs.length === 0) return null
+  return (
+    <div className="notebook-output-preview" aria-label="Notebook outputs">
+      <header>
+        <strong>Cell outputs</strong>
+        <span>{outputs.length.toLocaleString()} item{outputs.length === 1 ? '' : 's'}</span>
+      </header>
+      <div className="notebook-output-list">
+        {outputs.map((output, index) => (
+          <article className={'notebook-output-item notebook-output-' + output.kind} key={output.label + '-' + index}>
+            <header>
+              <strong>{output.label}</strong>
+              <span>{output.kind}</span>
+            </header>
+            {output.kind === 'image' && output.src ? (
+              <img src={output.src} alt={output.label} loading="lazy" />
+            ) : output.text ? (
+              <pre><code>{output.text}</code></pre>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function notebookLifecycleSteps(
+  block: ToolResult,
+  toolArguments: Record<string, unknown>,
+  contentRecord: Record<string, unknown>,
+): NotebookLifecycleStep[] {
+  const timingRecords = notebookLifecycleTimingRecords(block.metadata, toolArguments, contentRecord)
+  const queued = firstRecordDisplayValue(timingRecords, ['queued_at', 'queuedAt', 'queue_time', 'queueTime'])
+  const started = firstRecordDisplayValue(timingRecords, ['started_at', 'startedAt', 'start_time', 'startTime', 'execution_started_at', 'executionStartedAt'])
+  const finished = firstRecordDisplayValue(timingRecords, ['finished_at', 'finishedAt', 'completed_at', 'completedAt', 'execution_finished_at', 'executionFinishedAt'])
+  const state = firstRecordString(timingRecords, ['lifecycle_state', 'lifecycleState', 'execution_state', 'executionState', 'state', 'status'])
+  const durationSeconds = firstDurationSecondsFromRecords(timingRecords)
+  const steps: NotebookLifecycleStep[] = []
+  if (queued) steps.push({ label: 'queued', value: queued })
+  if (started) steps.push({ label: 'started', value: started, tone: finished ? undefined : 'active' })
+  if (finished) steps.push({ label: block.isError ? 'failed' : 'finished', value: finished, tone: block.isError ? 'error' : 'ok' })
+  if (!finished && state) steps.push({ label: 'state', value: state, tone: block.isError ? 'error' : stateTone(state) })
+
+  for (const step of notebookLifecycleEventSteps(block, notebookLifecycleEventSources(block.metadata, toolArguments, contentRecord))) {
+    if (steps.some((existing) => existing.label === step.label && existing.value === step.value)) continue
+    steps.push(step)
+  }
+
+  if ((steps.length > 0 || durationSeconds != null) && durationSeconds != null && !steps.some((step) => step.label === 'duration')) {
+    steps.push({ label: 'duration', value: formatDuration(durationSeconds) })
+  }
+  return steps
+}
+
+function notebookLifecycleTimingRecords(...records: Record<string, unknown>[]): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = []
+  const seen = new Set<Record<string, unknown>>()
+  const add = (record: Record<string, unknown>) => {
+    if (seen.has(record)) return
+    seen.add(record)
+    result.push(record)
+  }
+  for (const record of records) {
+    add(record)
+    for (const key of ['lifecycle', 'execution', 'timing', 'timestamps']) {
+      const nested = recordOrNull(record[key])
+      if (nested) add(nested)
+    }
+  }
+  return result
+}
+
+function firstRecordDisplayValue(records: Record<string, unknown>[], keys: string[]): string | null {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = firstDisplayValue(record[key])
+      if (value) return value
+    }
+  }
+  return null
+}
+
+function firstRecordString(records: Record<string, unknown>[], keys: string[]): string | null {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = firstString(record[key])
+      if (value) return value
+    }
+  }
+  return null
+}
+
+function firstDurationSecondsFromRecords(records: Record<string, unknown>[]): number | null {
+  for (const record of records) {
+    const value = durationSecondsFromMetadata(record)
+    if (value != null) return value
+  }
+  return null
+}
+
+function notebookLifecycleEventSources(...records: Record<string, unknown>[]): unknown[] {
+  const sources: unknown[] = []
+  for (const record of records) {
+    for (const key of ['lifecycle_events', 'lifecycleEvents', 'execution_events', 'executionEvents', 'events', 'timeline', 'steps']) {
+      const value = record[key]
+      if (Array.isArray(value)) sources.push(value)
+    }
+    for (const key of ['lifecycle', 'execution', 'timing']) {
+      const nested = recordOrNull(record[key])
+      if (!nested) continue
+      for (const nestedKey of ['events', 'timeline', 'steps', 'lifecycle_events', 'lifecycleEvents']) {
+        const value = nested[nestedKey]
+        if (Array.isArray(value)) sources.push(value)
+      }
+    }
+  }
+  return sources
+}
+
+function notebookLifecycleEventSteps(block: ToolResult, sources: unknown[]): NotebookLifecycleStep[] {
+  const steps: NotebookLifecycleStep[] = []
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue
+    for (const item of source) {
+      const step = notebookLifecycleEventStep(block, item)
+      if (step) steps.push(step)
+    }
+  }
+  return steps
+}
+
+function notebookLifecycleEventStep(block: ToolResult, value: unknown): NotebookLifecycleStep | null {
+  if (!isRecord(value)) return null
+  const rawLabel = firstString(value.label, value.name, value.phase, value.event, value.type, value.state, value.status)
+  if (!rawLabel) return null
+  const label = normalizeLifecycleLabel(rawLabel)
+  const explicitValue = firstDisplayValue(
+    value.value,
+    value.at,
+    value.timestamp,
+    value.ts,
+    value.time,
+    value.started_at,
+    value.startedAt,
+    value.finished_at,
+    value.finishedAt,
+    value.completed_at,
+    value.completedAt,
+  )
+  const durationSeconds = durationSecondsFromMetadata(value)
+  const status = firstString(value.status, value.state)
+  const detail = firstString(value.message, value.detail, value.description)
+  const fallbackValue = status && normalizeLifecycleLabel(status) !== label ? status : detail
+  const displayValue = explicitValue || (durationSeconds != null ? formatDuration(durationSeconds) : null) || fallbackValue
+  if (!displayValue) return null
+  const toneText = [rawLabel, status, detail].filter(Boolean).join(' ')
+  return { label, value: displayValue, tone: block.isError ? 'error' : stateTone(toneText) }
+}
+
+function normalizeLifecycleLabel(value: string): string {
+  return value.trim().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').toLowerCase()
+}
+
+
+function stateTone(value: string): NotebookLifecycleStep['tone'] {
+  const normalized = value.toLowerCase()
+  if (['ok', 'done', 'success', 'succeeded', 'completed', 'finished'].some((item) => normalized.includes(item))) return 'ok'
+  if (['error', 'failed', 'failure', 'cancelled', 'timeout'].some((item) => normalized.includes(item))) return 'error'
+  if (['running', 'executing', 'started', 'pending', 'queued'].some((item) => normalized.includes(item))) return 'active'
+  return undefined
+}
+
+function parseNotebookOutputs(block: ToolResult, toolArguments: Record<string, unknown>): NotebookOutput[] {
+  const parsedContent = parseJson(block.content)
+  const contentRecord = isRecord(parsedContent) ? parsedContent : {}
+  const candidates = [
+    block.metadata.outputs,
+    block.metadata.cell_outputs,
+    block.metadata.cellOutputs,
+    toolArguments.outputs,
+    toolArguments.cell_outputs,
+    toolArguments.cellOutputs,
+    contentRecord.outputs,
+    contentRecord.cell_outputs,
+    contentRecord.cellOutputs,
+  ]
+  const outputs: NotebookOutput[] = []
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const output = notebookOutputFromUnknown(item)
+        if (output) outputs.push(output)
+      }
+    }
+  }
+  return outputs.slice(0, 12)
+}
+
+function notebookOutputFromUnknown(value: unknown): NotebookOutput | null {
+  if (!isRecord(value)) return null
+  const outputType = firstString(value.output_type, value.outputType, value.type, value.name) || 'output'
+  const normalizedType = outputType.toLowerCase()
+  if (normalizedType === 'error' || value.ename || value.evalue || value.traceback) {
+    const label = firstString(value.ename, value.name) || 'error'
+    const traceback = Array.isArray(value.traceback) ? value.traceback.map(notebookDataText).filter(Boolean).join('\\n') : null
+    const text = traceback || [firstString(value.ename), firstString(value.evalue)].filter(Boolean).join(': ') || notebookDataText(value.text)
+    return text ? { kind: 'error', label, text } : null
+  }
+
+  const data = isRecord(value.data) ? value.data : null
+  const image = notebookImageFromData(data, value)
+  if (image) return image
+
+  const text = notebookDataText(data?.['text/plain'])
+    || notebookDataText(data?.['text/markdown'])
+    || notebookDataText(value.text)
+    || notebookDataText(value.content)
+    || notebookDataText(value.output)
+  if (!text) return null
+  const label = normalizedType === 'stream' ? firstString(value.name) || 'stream' : outputType
+  return { kind: 'text', label, text }
+}
+
+function notebookImageFromData(data: Record<string, unknown> | null, record: Record<string, unknown>): NotebookOutput | null {
+  const direct = firstString(record.src, record.url, record.image_url, record.imageUrl)
+  const directSrc = direct ? safeImageSrc(direct) : null
+  if (directSrc) return { kind: 'image', label: firstString(record.name, record.title) || imageNameFromSrc(directSrc), src: directSrc }
+  if (!data) return null
+  for (const mimeType of ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']) {
+    const raw = notebookDataText(data[mimeType])
+    if (!raw) continue
+    const src = raw.startsWith('data:') ? safeImageSrc(raw) : safeImageSrc('data:' + mimeType + ';base64,' + raw)
+    if (src) return { kind: 'image', label: mimeType, src }
+  }
+  return null
+}
+
+function notebookDataText(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() ? value : null
+  if (Array.isArray(value)) {
+    const text = value.map((item) => typeof item === 'string' ? item : '').join('')
+    return text.trim() ? text : null
+  }
+  return null
+}
+
+function notebookSummaryContent(content: string, hasOutputs: boolean): string {
+  if (!content) return ''
+  if (!hasOutputs) return content
+  const parsed = parseJson(content)
+  if (!isRecord(parsed)) return content
+  if (Array.isArray(parsed.outputs) || Array.isArray(parsed.cell_outputs) || Array.isArray(parsed.cellOutputs)) {
+    return firstString(parsed.summary, parsed.message, parsed.status) || ''
+  }
+  return content
 }
 
 function notebookLanguage(cellType: string): string {
@@ -206,7 +522,11 @@ function BrowserPreview({ block, toolArguments }: PreviewProps) {
   const operation = firstString(block.metadata.operation, toolArguments.operation) || 'browser'
   const url = firstString(block.metadata.url, toolArguments.url)
   const selector = firstString(block.metadata.selector, toolArguments.selector)
-  const screenshotPath = firstString(block.metadata.screenshot_path, block.metadata.screenshotPath)
+  const screenshotPath = firstString(block.metadata.screenshot_path, block.metadata.screenshotPath, block.metadata.path)
+  const screenshot = browserScreenshotImage(block, screenshotPath)
+  const structuredImages = screenshot || screenshotPath ? [] : parseToolImages(block)
+  const structuredArtifacts = parseToolArtifacts(block)
+  const hasVisualOrArtifact = Boolean(screenshot || screenshotPath || structuredImages.length > 0 || structuredArtifacts.length > 0)
   const stats = [
     url ? { label: 'url', value: url } : null,
     selector ? { label: 'selector', value: selector } : null,
@@ -219,7 +539,20 @@ function BrowserPreview({ block, toolArguments }: PreviewProps) {
         <em>{block.isError ? 'failed' : 'browser'}</em>
       </header>
       {stats.length > 0 ? <PreviewStats stats={stats} /> : null}
-      {screenshotPath ? (
+      {screenshot ? (
+        <figure className="tool-preview-browser-shot">
+          <img src={screenshot.src} alt={screenshot.name} loading="lazy" />
+          <figcaption>
+            <span>
+              <strong>{screenshot.name}</strong>
+              {screenshotPath ? <code>{screenshotPath}</code> : null}
+            </span>
+            {screenshot.href ? <a href={screenshot.href} target="_blank" rel="noreferrer">Open</a> : null}
+          </figcaption>
+        </figure>
+      ) : structuredImages.length > 0 ? (
+        <BrowserImageGallery images={structuredImages} />
+      ) : screenshotPath ? (
         <div className="tool-preview-artifact">
           <ImageIcon size={14} aria-hidden="true" />
           <span>
@@ -227,11 +560,99 @@ function BrowserPreview({ block, toolArguments }: PreviewProps) {
             <code>{screenshotPath}</code>
           </span>
         </div>
-      ) : block.content ? (
+      ) : null}
+      {structuredArtifacts.length > 0 ? <BrowserArtifactList artifacts={structuredArtifacts} /> : null}
+      {!hasVisualOrArtifact && block.content ? (
         <pre className="tool-preview-summary"><code>{block.content}</code></pre>
       ) : null}
     </section>
   )
+}
+
+function BrowserImageGallery({ images }: { images: ToolImage[] }) {
+  return (
+    <div className="tool-preview-image-grid" aria-label="Browser images">
+      {images.map((image, index) => (
+        <figure className="tool-preview-image-card" key={image.src + '-' + index}>
+          <img src={image.src} alt={image.name} loading="lazy" />
+          <figcaption>
+            <strong>{image.name}</strong>
+            {image.caption ? <span>{image.caption}</span> : null}
+            {image.href ? <a href={image.href} target="_blank" rel="noreferrer">Open</a> : null}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  )
+}
+
+function BrowserArtifactList({ artifacts }: { artifacts: ToolArtifact[] }) {
+  return (
+    <div className="tool-preview-artifact-list" aria-label="Browser artifacts">
+      {artifacts.map((artifact, index) => {
+        const Icon = artifactIcon(artifact)
+        return (
+          <article className={'tool-preview-artifact-row' + (artifact.binary ? ' tool-preview-artifact-binary' : '')} key={(artifact.href || artifact.path || artifact.name) + '-' + index}>
+            <Icon size={14} aria-hidden="true" />
+            <span>
+              <strong>{artifact.name}</strong>
+              <small>{artifactMeta(artifact)}</small>
+              {artifact.note ? <em>{artifact.note}</em> : null}
+            </span>
+            <span className="tool-preview-artifact-actions">
+              {artifactCopyText(artifact) ? (
+                <CopyButton
+                  text={artifactCopyText(artifact) || ''}
+                  label={'Copy ' + artifact.name + ' path'}
+                  displayLabel="Copy"
+                  displayCopiedLabel="Copied"
+                  className="tool-preview-artifact-copy"
+                />
+              ) : null}
+              {artifact.preview ? (
+                <CopyButton
+                  text={artifact.preview}
+                  label={'Copy ' + artifact.name + ' contents'}
+                  displayLabel="Copy contents"
+                  displayCopiedLabel="Copied"
+                  className="tool-preview-artifact-copy"
+                />
+              ) : null}
+              {artifact.href ? <a href={artifact.href} target="_blank" rel="noreferrer">Open</a> : null}
+            </span>
+            {artifact.preview ? (
+              <pre className="tool-preview-artifact-inline" aria-label={'Preview ' + artifact.name} data-language={artifact.previewLanguage || undefined}>
+                <code>{artifact.preview}</code>
+              </pre>
+            ) : artifact.binary ? (
+              <p className="tool-preview-artifact-unavailable">Binary preview unavailable. Copy the path or open the linked artifact if a URL is provided.</p>
+            ) : null}
+          </article>
+        )
+      })}
+    </div>
+  )
+}
+
+function browserScreenshotImage(block: ToolResult, screenshotPath: string | null): ToolImage | null {
+  const direct = firstString(
+    block.metadata.screenshot_url,
+    block.metadata.screenshotUrl,
+    block.metadata.screenshot_src,
+    block.metadata.screenshotSrc,
+    block.metadata.image_url,
+    block.metadata.imageUrl,
+    block.metadata.url && isImageUrl(String(block.metadata.url)) ? block.metadata.url : null,
+  )
+  const src = safeImageSrc(direct || '')
+  if (!src) return null
+  const name = firstString(block.metadata.screenshot_name, block.metadata.screenshotName, block.metadata.title) || imageNameFromSrc(src)
+  return {
+    src,
+    name,
+    caption: null,
+    href: safeHref(src) || safeHref(screenshotPath),
+  }
 }
 
 function PreviewStats({ stats }: { stats: Array<{ label: string; value: string; tone?: string }> }) {
@@ -273,15 +694,30 @@ function SearchPreview({ content }: { content: string }) {
   )
 }
 
-function WebPreview({ block, toolName }: { block: ToolResult; toolName: string }) {
+function WebPreview({ block, toolArguments, toolName }: { block: ToolResult; toolArguments: Record<string, unknown>; toolName: string }) {
   const results = parseWebResults(block)
   if (results.length === 0) return null
+  const hosted = isRecord(block.metadata.hosted_web_search) ? block.metadata.hosted_web_search : {}
+  const hostedSources = arrayValue(hosted.sources)
+  const provider = firstString(block.metadata.provider, hosted.provider)
+  const query = firstString(toolArguments.query, toolArguments.q, block.metadata.query, hosted.query, hostedWebSearchQuery(hosted))
+  const sourceCount = numberValue(block.metadata.source_count)
+    ?? numberValue(block.metadata.sourceCount)
+    ?? numberValue(hosted.source_count)
+    ?? numberValue(hosted.sourceCount)
+    ?? (hostedSources ? hostedSources.length : null)
+  const stats = [
+    provider ? { label: 'provider', value: provider } : null,
+    query ? { label: 'query', value: query } : null,
+    sourceCount != null ? { label: 'sources', value: sourceCount.toLocaleString() } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item))
   return (
     <section className="tool-preview tool-preview-web" aria-label="Web results">
       <header>
         <span><Globe size={14} /><strong>{toolName}</strong></span>
         <em>{results.length.toLocaleString()} results</em>
       </header>
+      {stats.length > 0 ? <PreviewStats stats={stats} /> : null}
       <ol className="tool-preview-web-list">
         {results.slice(0, 8).map((result, index) => (
           <li key={index}>
@@ -300,6 +736,21 @@ function WebPreview({ block, toolName }: { block: ToolResult; toolName: string }
       </ol>
     </section>
   )
+}
+
+function hostedWebSearchQuery(hosted: Record<string, unknown>): string | null {
+  const calls = arrayValue(hosted.calls)
+  if (!calls) return null
+  for (const call of calls) {
+    if (!isRecord(call)) continue
+    const direct = firstString(call.query, call.q)
+    if (direct) return direct
+    const input = isRecord(call.input) ? firstString(call.input.query, call.input.q) : null
+    if (input) return input
+    const action = isRecord(call.action) ? firstString(call.action.query, call.action.q) : null
+    if (action) return action
+  }
+  return null
 }
 
 function TaskPreview({ block, toolArguments }: PreviewProps) {
@@ -347,9 +798,11 @@ function ArtifactPreview({ artifacts }: { artifacts: ToolArtifact[] }) {
         <em>{artifacts.length.toLocaleString()} item{artifacts.length === 1 ? '' : 's'}</em>
       </header>
       <div className="tool-preview-artifact-list">
-        {artifacts.map((artifact, index) => (
-          <article className="tool-preview-artifact-row" key={(artifact.href || artifact.path || artifact.name) + '-' + index}>
-            <FileText size={14} aria-hidden="true" />
+        {artifacts.map((artifact, index) => {
+          const Icon = artifactIcon(artifact)
+          return (
+          <article className={'tool-preview-artifact-row' + (artifact.binary ? ' tool-preview-artifact-binary' : '')} key={(artifact.href || artifact.path || artifact.name) + '-' + index}>
+            <Icon size={14} aria-hidden="true" />
             <span>
               <strong>{artifact.name}</strong>
               <small>{artifactMeta(artifact)}</small>
@@ -365,10 +818,27 @@ function ArtifactPreview({ artifacts }: { artifacts: ToolArtifact[] }) {
                   className="tool-preview-artifact-copy"
                 />
               ) : null}
+              {artifact.preview ? (
+                <CopyButton
+                  text={artifact.preview}
+                  label={'Copy ' + artifact.name + ' contents'}
+                  displayLabel="Copy contents"
+                  displayCopiedLabel="Copied"
+                  className="tool-preview-artifact-copy"
+                />
+              ) : null}
               {artifact.href ? <a href={artifact.href} target="_blank" rel="noreferrer">Open</a> : null}
             </span>
+            {artifact.preview ? (
+              <pre className="tool-preview-artifact-inline" aria-label={'Preview ' + artifact.name} data-language={artifact.previewLanguage || undefined}>
+                <code>{artifact.preview}</code>
+              </pre>
+            ) : artifact.binary ? (
+              <p className="tool-preview-artifact-unavailable">Binary preview unavailable. Copy the path or open the linked artifact if a URL is provided.</p>
+            ) : null}
           </article>
-        ))}
+          )
+        })}
       </div>
     </section>
   )
@@ -482,13 +952,18 @@ function parseWebResults(block: ToolResult): WebResult[] {
   }
 
   collectWebResults(parseJson(block.content), add)
-  collectWebResults(block.metadata, add, block.content)
+  const metadataFallback = ['web_fetch', 'fetch_url'].includes((block.toolName || '').toLowerCase()) ? block.content : ''
+  collectWebResults(block.metadata, add, metadataFallback)
   for (const result of webResultsFromMarkdown(block.content)) add(result)
   return results
 }
 
 function collectWebResults(value: unknown, add: (result: WebResult | null) => void, fallbackSnippet = '', depth = 0): void {
   if (value == null || depth > 5) return
+  if (typeof value === 'string') {
+    add(webResultFromString(value))
+    return
+  }
   if (Array.isArray(value)) {
     for (const item of value) collectWebResults(item, add, fallbackSnippet, depth + 1)
     return
@@ -500,10 +975,40 @@ function collectWebResults(value: unknown, add: (result: WebResult | null) => vo
 }
 
 function webResultFromRecord(record: Record<string, unknown>, fallbackSnippet = ''): WebResult | null {
-  const url = firstString(record.url, record.link, record.href, record.uri)
-  const title = firstString(record.title, record.name, record.heading, record.url, record.link, record.href)
+  const rawUrl = firstString(
+    record.url,
+    record.link,
+    record.href,
+    record.uri,
+    record.source_url,
+    record.sourceUrl,
+    record.page_url,
+    record.pageUrl,
+  )
+  const url = safeHref(rawUrl)
+  const title = firstString(
+    record.title,
+    record.name,
+    record.heading,
+    record.label,
+    record.source,
+    record.site_name,
+    record.siteName,
+    record.url,
+    record.link,
+    record.href,
+  )
   if (!title && !url) return null
-  const snippet = firstString(
+  const snippet = webSnippetFromRecord(record, fallbackSnippet)
+  return {
+    title: title || url || 'Web result',
+    url,
+    snippet: snippet ? compactSnippet(snippet) : null,
+  }
+}
+
+function webSnippetFromRecord(record: Record<string, unknown>, fallbackSnippet = ''): string | null {
+  const direct = firstString(
     record.snippet,
     record.description,
     record.summary,
@@ -513,13 +1018,35 @@ function webResultFromRecord(record: Record<string, unknown>, fallbackSnippet = 
     record.rawContent,
     record.page_content,
     record.pageContent,
-    fallbackSnippet,
+    record.answer,
   )
-  return {
-    title: title || url || 'Web result',
-    url,
-    snippet: snippet ? compactSnippet(snippet) : null,
-  }
+  if (direct) return direct
+  return firstJoinedStringArray(record.extra_snippets)
+    || firstJoinedStringArray(record.extraSnippets)
+    || firstJoinedStringArray(record.snippets)
+    || firstJoinedStringArray(record.highlights)
+    || firstJoinedStringArray(record.citations)
+    || fallbackSnippet
+    || null
+}
+
+function firstJoinedStringArray(value: unknown): string | null {
+  if (!Array.isArray(value)) return null
+  const parts = value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim()
+      if (isRecord(item)) return firstString(item.snippet, item.text, item.content, item.summary, item.description) || ''
+      return ''
+    })
+    .filter(Boolean)
+  return parts.length > 0 ? parts.join(' ') : null
+}
+
+function webResultFromString(value: string): WebResult | null {
+  const match = value.match(/\bhttps?:\/\/[^\s<>)\]]+/)
+  if (!match) return null
+  const url = trimUrl(match[0])
+  return { title: url, url, snippet: null }
 }
 
 function webResultsFromMarkdown(content: string): WebResult[] {
@@ -529,7 +1056,41 @@ function webResultsFromMarkdown(content: string): WebResult[] {
   while ((match = pattern.exec(content)) !== null) {
     results.push({ title: match[1], url: match[2], snippet: match[3] ? compactSnippet(match[3]) : null })
   }
+
+  const lines = content.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const titleMatch = lines[index]?.match(/^\s*\d+[.)]\s+\*\*(.+?)\*\*\s*$/)
+    if (!titleMatch) continue
+    let url: string | null = null
+    const snippetLines: string[] = []
+    for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+      const nextLine = (lines[nextIndex] || '').trim()
+      if (/^\d+[.)]\s+\*\*.+?\*\*\s*$/.test(nextLine)) break
+      if (!nextLine) {
+        if (url || snippetLines.length > 0) break
+        continue
+      }
+      const urlMatch = nextLine.match(/https?:\/\/[^\s)]+/)
+      if (!url && urlMatch) {
+        url = trimUrl(urlMatch[0])
+        continue
+      }
+      if (!nextLine.startsWith('#')) snippetLines.push(nextLine.replace(/^[-*]\s+/, ''))
+    }
+    if (url || snippetLines.length > 0) {
+      results.push({
+        title: titleMatch[1] || url || 'Web result',
+        url,
+        snippet: snippetLines.length > 0 ? compactSnippet(snippetLines.join(' ')) : null,
+      })
+    }
+  }
+
   return results
+}
+
+function trimUrl(value: string): string {
+  return value.replace(/[.,;:]+$/, '')
 }
 
 function compactSnippet(value: string): string {
@@ -568,18 +1129,24 @@ function collectArtifactsFromRecord(value: unknown, add: (artifact: ToolArtifact
 function artifactFromRecord(record: Record<string, unknown> | null): ToolArtifact | null {
   if (!record) return null
   const path = firstString(record.path, record.file_path, record.filePath, record.result_path, record.resultPath, record.output_file, record.outputFile)
-  const url = firstString(record.url, record.href, record.uri)
-  const href = safeHref(url || path)
+  const explicitHref = firstString(record.url, record.href, record.uri, record.download_url, record.downloadUrl, record.preview_url, record.previewUrl)
+  const href = safeHref(explicitHref)
   if (!href && !path) return null
   const name = firstString(record.title, record.name, record.filename, record.file_name, record.label) || artifactNameFromPath(path || href || 'artifact')
+  const mimeType = firstString(record.mime_type, record.mimeType, record.media_type, record.mediaType) || null
+  const kind = firstString(record.kind, record.type) || null
+  const binary = isBinaryArtifact(record, mimeType, kind, path || href || name)
   return {
     name,
     href,
     path: path || null,
-    kind: firstString(record.kind, record.type) || null,
-    mimeType: firstString(record.mime_type, record.mimeType, record.media_type, record.mediaType) || null,
+    kind,
+    mimeType,
     size: numberValue(record.size) ?? numberValue(record.size_bytes) ?? numberValue(record.sizeBytes) ?? numberValue(record.bytes),
     note: firstString(record.caption, record.description, record.summary) || null,
+    preview: binary ? null : artifactPreviewText(record),
+    previewLanguage: binary ? null : artifactPreviewLanguage(record, path || href || name),
+    binary,
   }
 }
 
@@ -596,13 +1163,39 @@ function spillArtifactFromText(content: string): ToolArtifact | null {
   if (!path) return null
   return {
     name: artifactNameFromPath(path),
-    href: safeHref(path),
+    href: null,
     path,
     kind: 'spilled result',
     mimeType: null,
     size: null,
     note: match[1] ? 'Full output: ' + match[1].trim() : 'Full output saved to disk',
+    preview: null,
+    previewLanguage: null,
+    binary: false,
   }
+}
+
+function artifactPreviewText(record: Record<string, unknown>): string | null {
+  const direct = firstString(record.preview, record.content, record.text, record.output, record.body)
+  if (direct) return truncateArtifactPreview(direct)
+  for (const key of ['preview', 'content', 'text', 'output', 'body']) {
+    const value = record[key]
+    if (value == null || typeof value === 'string') continue
+    if (typeof value === 'number' || typeof value === 'boolean' || Array.isArray(value) || isRecord(value)) {
+      return truncateArtifactPreview(JSON.stringify(value, null, 2))
+    }
+  }
+  return null
+}
+
+function artifactPreviewLanguage(record: Record<string, unknown>, fallbackPath: string): string | null {
+  return firstString(record.language, record.lang) || languageFromPath(fallbackPath) || null
+}
+
+function truncateArtifactPreview(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length <= 2400) return trimmed
+  return trimmed.slice(0, 2400).trimEnd() + '\n... preview truncated ...'
 }
 
 function artifactCopyText(artifact: ToolArtifact): string | null {
@@ -610,8 +1203,26 @@ function artifactCopyText(artifact: ToolArtifact): string | null {
 }
 
 function artifactMeta(artifact: ToolArtifact): string {
-  const parts = [artifact.kind, artifact.mimeType, artifact.size != null ? artifact.size.toLocaleString() + ' bytes' : null, artifact.path].filter(Boolean)
+  const parts = [artifact.kind, artifact.binary ? 'binary' : null, artifact.mimeType, artifact.size != null ? artifact.size.toLocaleString() + ' bytes' : null, artifact.path].filter(Boolean)
   return parts.join(' / ') || 'artifact'
+}
+
+function artifactIcon(artifact: ToolArtifact) {
+  if (artifact.binary || artifact.mimeType?.includes('zip') || artifact.kind?.toLowerCase().includes('archive')) return FileArchive
+  if (artifact.previewLanguage || artifact.mimeType?.includes('json') || artifact.mimeType?.startsWith('text/')) return FileCode2
+  return FileText
+}
+
+function isBinaryArtifact(record: Record<string, unknown>, mimeType: string | null, kind: string | null, fallbackPath: string): boolean {
+  const explicit = booleanValue(record.binary) ?? booleanValue(record.is_binary) ?? booleanValue(record.isBinary)
+  if (explicit != null) return explicit
+  const normalizedMime = (mimeType || '').toLowerCase()
+  if (normalizedMime.startsWith('text/') || normalizedMime.includes('json') || normalizedMime.includes('xml') || normalizedMime.includes('yaml') || normalizedMime.includes('toml')) return false
+  if (normalizedMime === 'application/octet-stream' || normalizedMime.includes('zip') || normalizedMime.includes('pdf') || normalizedMime.startsWith('image/')) return true
+  const normalizedKind = (kind || '').toLowerCase()
+  if (normalizedKind.includes('binary') || normalizedKind.includes('archive')) return true
+  const language = languageFromPath(fallbackPath)
+  return language == null && /\.(?:bin|pdf|zip|tar|gz|tgz|sqlite|db|parquet|png|jpe?g|gif|webp)$/i.test(fallbackPath)
 }
 
 function artifactNameFromPath(path: string): string {
@@ -775,6 +1386,22 @@ function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
 }
 
+function firstDisplayValue(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return formatTimestampValue(value)
+  }
+  return null
+}
+
+function formatTimestampValue(value: number): string {
+  if (value > 1_000_000_000) {
+    const millis = value > 10_000_000_000 ? value : value * 1000
+    return new Date(millis).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
+  }
+  return value.toLocaleString()
+}
+
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
     const text = stringValue(value)
@@ -792,11 +1419,29 @@ function numberValue(value: unknown): number | null {
   return null
 }
 
+function booleanValue(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', 'yes', '1'].includes(normalized)) return true
+    if (['false', 'no', '0'].includes(normalized)) return false
+  }
+  return null
+}
+
 function durationSecondsFromMetadata(metadata: Record<string, unknown>): number | null {
   const seconds = numberValue(metadata.duration_seconds) ?? numberValue(metadata.durationSeconds)
   if (seconds != null) return seconds
   const millis = numberValue(metadata.duration_ms) ?? numberValue(metadata.durationMs)
   return millis != null ? millis / 1000 : null
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 10) return seconds.toFixed(1) + 's'
+  if (seconds < 60) return Math.round(seconds) + 's'
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return minutes + 'm ' + rest + 's'
 }
 
 function firstStringFromArray(value: unknown): string | null {

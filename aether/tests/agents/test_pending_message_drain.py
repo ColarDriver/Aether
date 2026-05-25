@@ -91,8 +91,10 @@ class TaskStoreDrainTests(unittest.TestCase):
         self.assertEqual(len(nudged), 1)
         self.assertEqual(nudged[0]["content"], "from peer")
         self.assertEqual(nudged[0]["metadata"]["source"], "send_message")
-        # Drain emptied the disk queue.
+        # Drain emptied the disk queue and preserved delivered history for observers.
         self.assertEqual(self.store.drain_pending_messages("t1"), [])
+        delivered = self.store.read_delivered_messages("t1")
+        self.assertEqual([entry["message"] for entry in delivered], ["from peer"])
 
     def test_no_task_id_skips_store_drain(self) -> None:
         self.store.create(_record("t1"))

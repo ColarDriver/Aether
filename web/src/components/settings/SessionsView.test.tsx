@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("SessionsView", () => {
   it("searches, inspects, resumes, and deletes sessions", async () => {
-    vi.spyOn(api, "sessions").mockResolvedValue({ sessions: [] })
+    vi.spyOn(api, "sessions").mockResolvedValue({ sessions: [sessionTwo, sessionOne] })
     vi.spyOn(api, "sessionDetail").mockImplementation(async (sessionId) => ({
       session_id: sessionId,
       info: sessionId === "session-two" ? sessionTwo : sessionOne,
@@ -77,6 +77,9 @@ describe("SessionsView", () => {
     expect(useAppStore.getState().activeView).toBe("chat")
 
     fireEvent.click(screen.getByRole("button", { name: "Delete session" }))
+    expect(screen.getByRole("dialog", { name: "Delete session" })).toBeTruthy()
+    expect(screen.getByText('Delete session "Second session"? This removes its conversation context.')).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => expect(deleteSession).toHaveBeenCalledWith("session-two"))
   })
 

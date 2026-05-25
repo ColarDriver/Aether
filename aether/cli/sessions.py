@@ -195,12 +195,35 @@ def list_sessions(*, base: Path | None = None) -> list[SessionRecord]:
 
 
 def delete_session(session_id: str, *, base: Path | None = None) -> bool:
+    root = base or default_session_dir()
+    removed = False
     path = session_file(session_id, base=base)
     try:
         path.unlink()
-        return True
+        removed = True
     except FileNotFoundError:
-        return False
+        pass
+
+    # Be defensive for older or manually edited stores where the filename
+    # does not match the embedded session_id.  The UI deletes by session_id,
+    # so every JSON record claiming that id must disappear from future lists.
+    if root.is_dir():
+        for candidate in root.glob("*.json"):
+            if candidate.name.startswith(".") or candidate == path:
+                continue
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(data.get("session_id") or "") != session_id:
+                continue
+            try:
+                candidate.unlink()
+                removed = True
+            except FileNotFoundError:
+                pass
+
+    return removed
 
 
 # ---------------------------------------------------------------------------

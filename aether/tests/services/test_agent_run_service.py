@@ -130,6 +130,50 @@ def test_agent_run_service_persists_user_display_attachments(tmp_path, monkeypat
     ]
 
 
+def test_agent_run_service_injects_text_attachment_context_for_provider(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _save_session(tmp_path)
+    provider = _RecordingProvider()
+    service, _sessions, _sink = _service(tmp_path, monkeypatch, provider)
+
+    service.start(
+        AgentRunRequest(
+            session_id="ses_run",
+            user_message="inspect this",
+            attachments=[
+                {
+                    "type": "text",
+                    "name": "app.ts",
+                    "path": "src/app.ts",
+                    "note": "workspace reference",
+                    "_llm_language": "typescript",
+                    "_llm_content": "export const app = 1",
+                }
+            ],
+            run_id="run-attachment-context",
+        )
+    )
+
+    assert provider.messages_by_call
+    user_message = [message for message in provider.messages_by_call[0] if message["role"] == "user"][-1]
+    assert "inspect this" in user_message["content"]
+    assert "<attached_context>" in user_message["content"]
+    assert "```typescript" in user_message["content"]
+    assert "export const app = 1" in user_message["content"]
+
+    saved = load_session("ses_run", base=tmp_path / "sessions")
+    assert saved is not None
+    persisted_user = next(message for message in saved.messages if message["role"] == "user")
+    assert persisted_user["content"] == "inspect this"
+    assert persisted_user["metadata"]["displayAttachments"] == [
+        {
+            "type": "text",
+            "name": "app.ts",
+            "path": "src/app.ts",
+            "note": "workspace reference",
+        }
+    ]
+
+
 def test_agent_run_service_missing_and_invalid_session_errors(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _sessions, sink = _service(tmp_path, monkeypatch, _StreamingProvider(["x"]))
 
@@ -214,6 +258,24 @@ def test_agent_run_service_active_guard_and_prompt_disconnect_failure(tmp_path, 
     )
     assert result.exit_reason == "error"
     assert isinstance(sink2.events[-1], RunFailed)
+
+
+class _RecordingProvider(ModelProvider):
+    def __init__(self) -> None:
+        self.messages_by_call: list[list[dict]] = []
+
+    def generate(
+        self,
+        messages: list[dict],
+        tools: list[ToolDescriptor],
+        config: ModelCallConfig,
+        context: TurnContext,
+        stream_callback: StreamDeltaCallback | None = None,
+        stream_silent_callback: StreamSilentCallback | None = None,
+    ) -> NormalizedResponse:
+        del tools, config, context, stream_callback, stream_silent_callback
+        self.messages_by_call.append(messages)
+        return NormalizedResponse(content="ok")
 
 
 class _StreamingProvider(ModelProvider):

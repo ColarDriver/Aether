@@ -1,8 +1,9 @@
-import { MessageSquare, Plus, Search } from 'lucide-react'
+import { MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { navItems } from '../../navItems'
 import type { ConsoleView, SessionInfo } from '../../api/types'
 import { Button } from '../shared/Button'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
 
 type Props = {
   sessions: SessionInfo[]
@@ -11,9 +12,54 @@ type Props = {
   onSelectSession: (sessionId: string) => void
   onSelectView: (view: ConsoleView) => void
   onNewSession: () => void
+  onDeleteSession?: (sessionId: string) => void | Promise<void>
 }
 
-export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession, onSelectView, onNewSession }: Props) {
+type SessionSidebarProps = Omit<Props, 'activeView' | 'onSelectView'> & {
+  placement?: 'left' | 'right'
+}
+
+export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession, onSelectView, onNewSession, onDeleteSession }: Props) {
+  return (
+    <>
+      <AppRail activeView={activeView} onSelectView={onSelectView} />
+      <SessionSidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={onSelectSession}
+        onNewSession={onNewSession}
+        onDeleteSession={onDeleteSession}
+      />
+    </>
+  )
+}
+
+export function AppRail({ activeView, onSelectView }: Pick<Props, 'activeView' | 'onSelectView'>) {
+  return (
+    <nav className="app-rail" aria-label="Console sections">
+      <div className="brand-mark">A</div>
+      <div className="app-rail-section">
+        {railPrimaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+      </div>
+      <div className="app-rail-section app-rail-section-quiet">
+        {railSecondaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+      </div>
+      <div className="app-rail-spacer" />
+      <div className="app-rail-section">
+        {railBottomItems.map((item) => renderRailButton(item, activeView, onSelectView))}
+      </div>
+    </nav>
+  )
+}
+
+export function SessionSidebar({
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onNewSession,
+  onDeleteSession,
+  placement = 'left',
+}: SessionSidebarProps) {
   const [query, setQuery] = useState('')
   const filteredSessions = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -24,23 +70,11 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
     )
   }, [query, sessions])
   const groupedSessions = useMemo(() => groupSessionsByRecency(filteredSessions), [filteredSessions])
+  const [deleteTarget, setDeleteTarget] = useState<{ sessionId: string; title: string } | null>(null)
 
   return (
     <>
-      <nav className="app-rail" aria-label="Console sections">
-        <div className="brand-mark">A</div>
-        <div className="app-rail-section">
-          {railPrimaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
-        </div>
-        <div className="app-rail-section app-rail-section-quiet">
-          {railSecondaryItems.map((item) => renderRailButton(item, activeView, onSelectView))}
-        </div>
-        <div className="app-rail-spacer" />
-        <div className="app-rail-section">
-          {railBottomItems.map((item) => renderRailButton(item, activeView, onSelectView))}
-        </div>
-      </nav>
-      <aside className="sidebar">
+      <aside className={'sidebar sidebar-placement-' + placement}>
         <div className="brand">
           <div className="brand-mark">A</div>
           <div>
@@ -73,34 +107,71 @@ export function Sidebar({ sessions, activeSessionId, activeView, onSelectSession
                 <span>{group.label}</span>
                 <small>{group.sessions.length}</small>
               </div>
-              {group.sessions.map((session) => (
-                <button
-                  type="button"
-                  key={session.session_id}
-                  className={session.session_id === activeSessionId ? 'session-item session-item-active' : 'session-item'}
-                  onClick={() => onSelectSession(session.session_id)}
-                  aria-current={session.session_id === activeSessionId ? 'page' : undefined}
-                >
-                  <span className="session-row-leading" aria-hidden="true">
-                    <MessageSquare size={13} />
-                  </span>
-                  <span className="session-row-body">
-                    <span className="session-title-row">
-                      <span className="session-item-title">{session.summary || session.session_id.slice(0, 8)}</span>
-                      <time>{formatSessionTime(session.updated_at)}</time>
-                    </span>
-                    <span className="session-item-meta">
-                      <small>{session.model}</small>
-                      {session.mode === 'plan' ? <em>plan</em> : null}
-                      {session.message_count > 0 ? <small>{session.message_count} msgs</small> : null}
-                    </span>
-                  </span>
-                </button>
-              ))}
+              {group.sessions.map((session) => {
+                const title = session.summary || session.session_id.slice(0, 8)
+                return (
+                  <div
+                    key={session.session_id}
+                    className={session.session_id === activeSessionId ? 'session-item session-item-active' : 'session-item'}
+                  >
+                    <button
+                      type="button"
+                      className="session-item-main"
+                      onClick={() => onSelectSession(session.session_id)}
+                      aria-current={session.session_id === activeSessionId ? 'page' : undefined}
+                    >
+                      <span className="session-row-leading" aria-hidden="true">
+                        <MessageSquare size={13} />
+                      </span>
+                      <span className="session-row-body">
+                        <span className="session-title-row">
+                          <span className="session-item-title">{title}</span>
+                          <time>{formatSessionTime(session.updated_at)}</time>
+                        </span>
+                        <span className="session-item-meta">
+                          <small>{session.model}</small>
+                          {session.mode === 'plan' ? <em>plan</em> : null}
+                          {session.message_count > 0 ? <small>{session.message_count} msgs</small> : null}
+                        </span>
+                      </span>
+                    </button>
+                    {onDeleteSession ? (
+                      <button
+                        type="button"
+                        className="session-delete-button"
+                        aria-label={'Delete session ' + title}
+                        title="Delete session"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setDeleteTarget({ sessionId: session.session_id, title })
+                        }}
+                      >
+                        <Trash2 aria-hidden="true" size={13} />
+                      </button>
+                    ) : null}
+                  </div>
+                )
+              })}
             </section>
           ))}
         </div>
       </aside>
+      {deleteTarget && onDeleteSession ? (
+        <ConfirmDialog
+          title="Delete session"
+          description={'Delete session "' + deleteTarget.title + '"? This removes its conversation context.'}
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const target = deleteTarget
+            setDeleteTarget(null)
+            void Promise.resolve(onDeleteSession(target.sessionId)).catch((error) => {
+              console.error('Failed to delete session', error)
+            })
+          }}
+        />
+      ) : null}
     </>
   )
 }

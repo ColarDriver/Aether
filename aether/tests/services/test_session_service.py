@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 import pytest
 
-from aether.cli.sessions import SessionRecord, save_session
+from aether.cli.sessions import SessionRecord, load_session, save_session, session_file
 from aether.runtime.session.plan_artifact import read_plan, write_plan
 from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
 from aether.services.common import ServiceConflictError, ServiceNotFoundError
@@ -78,10 +78,46 @@ def test_list_resume_update_delete_and_export(tmp_path, monkeypatch: pytest.Monk
     assert exported.session_id == "sess-a"
     assert exported.data["provider"] == "codex"
 
+    set_mode("sess-a", SessionMode.PLAN)
+    write_plan("sess-a", "# plan\n")
+
+    assert session_file("sess-a", base=tmp_path / "sessions").is_file()
     assert service.delete(SessionDeleteRequest("sess-a")) is True
+    assert get_mode("sess-a") == "agent"
+    assert read_plan("sess-a") is None
+    assert not session_file("sess-a", base=tmp_path / "sessions").exists()
+    assert not (tmp_path / "sessions" / ".deleted").exists()
     assert service.delete(SessionDeleteRequest("sess-a")) is False
     with pytest.raises(ServiceNotFoundError):
         service.resume(SessionResumeRequest("sess-a"))
+
+
+def test_delete_removes_storage_file_and_late_run_persist_cannot_recreate_it(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    service.create(SessionCreateRequest(session_id="sess-a", provider="openai", model="gpt-5"))
+
+    assert session_file("sess-a", base=tmp_path / "sessions").is_file()
+    assert service.delete(SessionDeleteRequest("sess-a")) is True
+    assert not session_file("sess-a", base=tmp_path / "sessions").exists()
+    assert service.list().sessions == []
+
+    with pytest.raises(ServiceNotFoundError):
+        service.persist_run_result("sess-a", messages=[{"role": "assistant", "content": "done"}])
+    assert not session_file("sess-a", base=tmp_path / "sessions").exists()
+
+
+def test_delete_removes_legacy_filename_with_matching_embedded_session_id(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="sess-legacy", provider="openai", model="gpt-5")
+    saved = save_session(record, base=tmp_path / "sessions")
+    legacy_path = tmp_path / "sessions" / "legacy-name.json"
+    saved.rename(legacy_path)
+
+    assert service.delete(SessionDeleteRequest("sess-legacy")) is True
+    assert not legacy_path.exists()
+    assert service.list().sessions == []
+    with pytest.raises(ServiceNotFoundError):
+        service.resume(SessionResumeRequest("sess-legacy"))
 
 
 def test_resume_unique_prefix_and_ambiguous_prefix(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

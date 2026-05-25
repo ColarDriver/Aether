@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   findWorkspaceReferenceTrigger,
   mergeWorkspaceAttachment,
+  replaceWorkspaceReferenceBrowseToken,
   replaceWorkspaceReferenceToken,
+  syncWorkspaceReferenceAttachmentsForValue,
   workspaceEntryToAttachment,
+  workspaceReferenceTokenExists,
 } from './workspaceReferences'
 
 describe('workspaceReferences', () => {
@@ -41,5 +44,32 @@ describe('workspaceReferences', () => {
     const twice = mergeWorkspaceAttachment(once, entry)
 
     expect(twice).toHaveLength(1)
+  })
+
+  it("replaces the active @ token with a browsed folder token", () => {
+    expect(replaceWorkspaceReferenceBrowseToken("read @src now", 9, "src/components")).toEqual({
+      value: "read @src/components/ now",
+      cursorPosition: 21,
+    })
+    expect(replaceWorkspaceReferenceBrowseToken("read @src now", 9, "")).toEqual({
+      value: "read @ now",
+      cursorPosition: 6,
+    })
+  })
+
+  it("detects full workspace reference tokens for selected paths", () => {
+    expect(workspaceReferenceTokenExists("read @src/app.ts now", "src/app.ts")).toBe(true)
+    expect(workspaceReferenceTokenExists("read @src/app.ts/ now", "src/app.ts")).toBe(true)
+    expect(workspaceReferenceTokenExists("read @src/app.tsx now", "src/app.ts")).toBe(false)
+    expect(workspaceReferenceTokenExists("read src/app.ts now", "src/app.ts")).toBe(false)
+  })
+
+  it("keeps only workspace attachments that still have visible @path tokens", () => {
+    const manual = { type: "text" as const, name: "manual.txt", path: "manual.txt" }
+    const app = { type: "text" as const, name: "app.ts", path: "src/app.ts", note: "workspace reference" }
+    const readme = { type: "text" as const, name: "README.md", path: "README.md", note: "workspace reference" }
+    const synced = syncWorkspaceReferenceAttachmentsForValue([manual, app, readme], "inspect @src/app.ts")
+
+    expect(synced).toEqual([manual, app])
   })
 })

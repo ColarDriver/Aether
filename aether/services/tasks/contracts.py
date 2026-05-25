@@ -7,6 +7,47 @@ from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
+class TaskMessage:
+    index: int
+    role: str
+    content: str | None = None
+    name: str | None = None
+    tool_call_id: str | None = None
+    is_error: bool = False
+    iteration: int | None = None
+    elapsed_ms: float | None = None
+    error: str | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPendingMessage:
+    index: int
+    message: str
+    ts: float | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDeliveredMessage:
+    index: int
+    message: str
+    ts: float | None = None
+    delivered_at: float | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskMessagesResult:
+    task_id: str
+    messages: list[TaskMessage]
+    pending_messages: list[TaskPendingMessage]
+    delivered_messages: list[TaskDeliveredMessage]
+    total_count: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSummary:
     task_id: str
     parent_session_id: str
@@ -34,10 +75,35 @@ class TaskSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskChildMessageStream:
+    task: TaskSummary
+    messages: list[TaskMessage]
+    pending_messages: list[TaskPendingMessage]
+    delivered_messages: list[TaskDeliveredMessage]
+    total_count: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TaskChildMessagesResult:
+    task_id: str
+    streams: list[TaskChildMessageStream]
+    total_count: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TaskResultArtifact:
+    task_id: str
+    result_path: str | None
+    result: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class TaskListResult:
     tasks: list[TaskSummary]
     active_count: int
     total_count: int
 
 
-__all__ = ["TaskListResult", "TaskSummary"]
+__all__ = ["TaskChildMessageStream", "TaskChildMessagesResult", "TaskDeliveredMessage", "TaskListResult", "TaskMessage", "TaskMessagesResult", "TaskPendingMessage", "TaskResultArtifact", "TaskSummary"]

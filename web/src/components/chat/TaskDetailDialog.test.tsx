@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import type { TaskSummary } from '../../api/types'
 import { TASK_DETAIL_REFRESH_MS, TaskDetailDialog } from './TaskDetailDialog'
@@ -10,6 +10,12 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   vi.useRealTimers()
+})
+
+beforeEach(() => {
+  vi.spyOn(api, 'taskMessages').mockResolvedValue({ task_id: 'task-1', messages: [], pending_messages: [], delivered_messages: [], total_count: 0, truncated: false })
+  vi.spyOn(api, 'taskChildMessages').mockResolvedValue({ task_id: 'task-1', streams: [], total_count: 0, truncated: false })
+  vi.spyOn(api, 'taskResult').mockResolvedValue({ task_id: 'task-1', result_path: '/tmp/result.json', result: { status: 'completed', summary: 'Renderer inspected' } })
 })
 
 const task: TaskSummary = {
@@ -35,7 +41,7 @@ const task: TaskSummary = {
   error: null,
   result_path: '/tmp/result.json',
   output_tail: 'done\n',
-  metadata: { agent_type: 'explorer' },
+  metadata: { agent_type: 'explorer', provider: 'openai-compatible' },
 }
 
 describe('TaskDetailDialog', () => {
@@ -47,10 +53,162 @@ describe('TaskDetailDialog', () => {
     expect(screen.getByText('Loading task details...')).toBeTruthy()
     await waitFor(() => expect(screen.getByText('Inspect renderer')).toBeTruthy())
     expect(screen.getByText('Renderer inspected')).toBeTruthy()
+    expect(screen.getByText('openai-compatible')).toBeTruthy()
+    expect(screen.getByText('5s')).toBeTruthy()
     expect(screen.getByText('Output tail')).toBeTruthy()
     expect(screen.getByText('done')).toBeTruthy()
     expect(screen.getByText('Metadata')).toBeTruthy()
     expect(api.taskDetail).toHaveBeenCalledWith('task-1')
+    expect(api.taskMessages).toHaveBeenCalledWith('task-1', { limit: 100 })
+    expect(api.taskChildMessages).toHaveBeenCalledWith('task-1', { limit: 50, perTaskLimit: 25 })
+    expect(api.taskResult).toHaveBeenCalledWith('task-1')
+    const artifact = screen.getByRole('region', { name: 'Task result artifact' })
+    expect(within(artifact).getByText('Result artifact')).toBeTruthy()
+    expect(within(artifact).getByText('/tmp/result.json')).toBeTruthy()
+    expect(within(artifact).getByRole('button', { name: 'Copy task result path' })).toBeTruthy()
+    expect(within(artifact).getByRole('button', { name: 'Copy task result JSON' })).toBeTruthy()
+    expect(within(artifact).getAllByText('result.json').length).toBeGreaterThan(0)
+  })
+
+  it('renders explicit task result artifact links and local path copy actions', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskResult).mockResolvedValue({
+      task_id: 'task-1',
+      result_path: '/tmp/result.json',
+      result: {
+        artifacts: [
+          { name: 'bundle.zip', path: '/tmp/aether/bundle.zip', download_url: 'https://example.com/bundle.zip', mime_type: 'application/zip', size_bytes: 1000 },
+        ],
+      },
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByLabelText('Task result files')).toBeTruthy())
+    const files = screen.getByLabelText('Task result files')
+    expect(within(files).getByText('bundle.zip')).toBeTruthy()
+    expect(within(files).getByText((text) => text.includes('/tmp/aether/bundle.zip'))).toBeTruthy()
+    expect(within(files).getByRole('link', { name: /Open/ }).getAttribute('href')).toBe('https://example.com/bundle.zip')
+    expect(within(files).getByRole('button', { name: 'Copy bundle.zip path' })).toBeTruthy()
+  })
+
+  it('renders task observer messages from the subagent message stream', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskMessages).mockResolvedValue({
+      task_id: 'task-1',
+      total_count: 2,
+      truncated: false,
+      pending_messages: [],
+      delivered_messages: [],
+      messages: [
+        { index: 0, role: 'assistant', content: 'I inspected the renderer.', iteration: 1 },
+        { index: 1, role: 'tool', name: 'read_file', tool_call_id: 'call-1', content: 'file contents', elapsed_ms: 25 },
+      ],
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Task message stream' })).toBeTruthy())
+    expect(screen.getByText('assistant')).toBeTruthy()
+    expect(screen.getByText('I inspected the renderer.')).toBeTruthy()
+    expect(screen.getByText('read_file')).toBeTruthy()
+    expect(screen.getByText('file contents')).toBeTruthy()
+    expect(screen.getByText(/25ms/)).toBeTruthy()
+  })
+
+  it('renders queued parent-to-subagent messages in task details', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskMessages).mockResolvedValue({
+      task_id: 'task-1',
+      total_count: 0,
+      truncated: false,
+      messages: [],
+      delivered_messages: [],
+      pending_messages: [{ index: 0, message: 'please also inspect auth.ts', ts: 1700000001 }],
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Task message stream' })).toBeTruthy())
+    expect(screen.getByLabelText('Queued parent messages')).toBeTruthy()
+    expect(screen.getByText('parent message')).toBeTruthy()
+    expect(screen.getByText('please also inspect auth.ts')).toBeTruthy()
+  })
+
+  it('does not request a result artifact when the task has no result path', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue({ ...task, result_path: null })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByText('Inspect renderer')).toBeTruthy())
+    expect(api.taskResult).not.toHaveBeenCalled()
+  })
+
+  it('renders a readable result artifact load error', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskResult).mockRejectedValue(new Error('Task result not found'))
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByText('Task result not found')).toBeTruthy())
+  })
+
+  it('renders delivered parent-to-subagent message history in task details', async () => {
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskMessages).mockResolvedValue({
+      task_id: 'task-1',
+      total_count: 0,
+      truncated: false,
+      messages: [],
+      pending_messages: [],
+      delivered_messages: [{ index: 0, message: 'already delivered context', ts: 1700000001, delivered_at: 1700000002 }],
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Task message stream' })).toBeTruthy())
+    expect(screen.getByLabelText('Delivered parent messages')).toBeTruthy()
+    expect(screen.getByText('delivered parent message')).toBeTruthy()
+    expect(screen.getByText('already delivered context')).toBeTruthy()
+    expect(screen.getAllByText(/delivered/).length).toBeGreaterThan(0)
+  })
+
+  it('renders descendant child task message streams', async () => {
+    const onOpenTask = vi.fn()
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(task)
+    vi.mocked(api.taskChildMessages).mockResolvedValue({
+      task_id: 'task-1',
+      total_count: 1,
+      truncated: false,
+      streams: [
+        {
+          task: { ...task, task_id: 'child-task', prompt: 'Child verification', status: 'completed', parent_task_id: 'task-1', child_depth: 2 },
+          messages: [{ index: 0, role: 'assistant', content: 'child checked renderer', iteration: 1 }],
+          pending_messages: [],
+          delivered_messages: [{ index: 0, message: 'child context delivered', delivered_at: 1700000002 }],
+          total_count: 1,
+          truncated: false,
+        },
+      ],
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} onOpenTask={onOpenTask} />)
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Child task message streams' })).toBeTruthy())
+    expect(screen.getByText('Child verification')).toBeTruthy()
+    expect(screen.getByText('child checked renderer')).toBeTruthy()
+    expect(screen.getByText('child context delivered')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Active/ }))
+    expect(screen.getByText('No child streams match this filter.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Finished/ }))
+    expect(screen.getByText('child checked renderer')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Open child task' }))
+    expect(onOpenTask).toHaveBeenCalledWith('child-task')
+    const toggle = screen.getByRole('button', { name: /Child verification/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('child checked renderer')).toBeNull()
   })
 
   it('renders related parent and child tasks with drill-down actions', async () => {

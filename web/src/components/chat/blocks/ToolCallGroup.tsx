@@ -49,7 +49,7 @@ function ToolCallGroupMulti({ toolCalls, results, diffs }: Props) {
         <span>{summary}</span>
         <em>
           <StatusIcon size={13} />
-          {status}
+          <span className={status === 'running' ? 'aether-shimmer-text' : undefined}>{status}</span>
         </em>
       </button>
       {expanded ? (
@@ -69,9 +69,8 @@ function ToolCallGroupMulti({ toolCalls, results, diffs }: Props) {
 }
 
 function activityStatus(toolCalls: ToolCall[], results: Map<string, ToolResult>): 'running' | 'failed' | 'finished' {
-  if (toolCalls.some((toolCall) => toolCall.status === 'running' || toolCall.status === 'pending')) return 'running'
-  if (toolCalls.some((toolCall) => toolCall.status === 'failed')) return 'failed'
-  if (toolCalls.some((toolCall) => results.get(toolCall.toolCallId)?.isError)) return 'failed'
+  if (toolCalls.some((toolCall) => results.get(toolCall.toolCallId)?.isError || toolCall.status === 'failed')) return 'failed'
+  if (toolCalls.some((toolCall) => !results.has(toolCall.toolCallId) && (toolCall.status === 'running' || toolCall.status === 'pending'))) return 'running'
   return 'finished'
 }
 

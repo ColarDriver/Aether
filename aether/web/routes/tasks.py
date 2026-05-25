@@ -53,4 +53,37 @@ async def task_detail(task_id: str, request: Request) -> dict[str, object]:
     return to_jsonable(services.tasks.get_task(task_id))
 
 
+@router.get("/api/tasks/{task_id}/messages")
+async def task_messages(
+    task_id: str,
+    request: Request,
+    limit: int = Query(default=100),
+) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(services.tasks.get_task_messages(task_id, limit=limit))
+
+
+@router.get("/api/tasks/{task_id}/children/messages")
+async def task_child_messages(
+    task_id: str,
+    request: Request,
+    limit: int = Query(default=50),
+    per_task_limit: int = Query(default=25),
+) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.tasks.get_child_task_messages(
+            task_id,
+            limit=limit,
+            per_task_limit=per_task_limit,
+        )
+    )
+
+
+@router.get("/api/tasks/{task_id}/result")
+async def task_result(task_id: str, request: Request) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(services.tasks.get_task_result(task_id))
+
+
 __all__ = ["router"]

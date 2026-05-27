@@ -292,13 +292,14 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
 
   const revertFileChange = async (change: CurrentTurnFileChangeAction) => {
     if (!session) return
+    const expected_hashes = change.currentHash ? { [change.path]: change.currentHash } : undefined
     if (change.checkpointId) {
-      const result = await api.rejectWorkspaceChanges({ paths: [change.path], checkpoint_id: change.checkpointId })
+      const result = await api.rejectWorkspaceChanges({ paths: [change.path], checkpoint_id: change.checkpointId, expected_hashes })
       appendLocalNotice(session.session_id, result.message || 'Rejected `' + change.path + '` from checkpoint `' + change.checkpointId + '`.')
       return
     }
     if (change.oldText == null) return
-    const result = await api.rejectWorkspaceChanges({ paths: [change.path] })
+    const result = await api.rejectWorkspaceChanges({ paths: [change.path], expected_hashes })
     appendLocalNotice(session.session_id, result.message || 'Rejected `' + change.path + '`.')
   }
 

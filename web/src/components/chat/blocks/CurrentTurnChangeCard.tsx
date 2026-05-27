@@ -1,7 +1,7 @@
 import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, FileCode2, Info, RotateCcw, ShieldCheck, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import { api } from '../../../api/client'
-import type { SessionTurnCheckpoint } from '../../../api/types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ApiError, api } from '../../../api/client'
+import type { SessionTurnCheckpoint, WorkspaceChange } from '../../../api/types'
 import type { DiagnosticEntry, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock } from '../../../chat-rendering'
 import { CopyButton } from '../../shared/CopyButton'
 import { DiffViewer, parseUnifiedDiff } from '../DiffViewer'
@@ -19,7 +19,7 @@ type Props = {
 
 export type FileChangeKind = 'created' | 'deleted' | 'modified'
 type DiagnosticTone = 'error' | 'warning' | 'info'
-type ChangeResolution = 'accepting' | 'accepted' | 'reverting' | 'reverted' | 'error'
+type ChangeResolution = 'accepting' | 'accepted' | 'reverting' | 'reverted' | 'conflict' | 'error'
 type ServerDiffState = {
   loading?: boolean
   diff?: string | null
@@ -34,6 +34,7 @@ export type CurrentTurnFileChangeAction = {
   newText?: string | null
   checkpointId?: string | null
   checkpointFiles?: string[]
+  currentHash?: string | null
 }
 
 export type CurrentTurnCheckpoint = {
@@ -79,10 +80,23 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
     if (localChanges.length > 0) return localChanges
     return summarizeServerCheckpoint(serverCheckpoint, serverDiffsByPath)
   }, [localChanges, serverCheckpoint, serverDiffsByPath])
+  const effectiveCheckpoint = useMemo<CurrentTurnCheckpoint | null>(() => {
+    if (checkpoint) return checkpoint
+    const checkpointId = serverCheckpoint?.code.checkpoint_id
+    if (!checkpointId) return null
+    return {
+      checkpointId,
+      label: null,
+      files: serverCheckpoint?.code.files_changed ?? [],
+    }
+  }, [checkpoint, serverCheckpoint])
   const [expanded, setExpanded] = useState(false)
   const [resolutionByPath, setResolutionByPath] = useState<Record<string, ChangeResolution>>({})
   const [errorByPath, setErrorByPath] = useState<Record<string, string>>({})
+  const [workspaceChangeByPath, setWorkspaceChangeByPath] = useState<Record<string, WorkspaceChange>>({})
   const usingServerCheckpoint = localChanges.length === 0 && Boolean(serverCheckpoint)
+  const shouldTrackWorkspaceChanges = Boolean(onAcceptFile || onRevertFile)
+  const changePathsKey = useMemo(() => changes.map((change) => normalizeComparablePath(change.path)).sort().join('\n'), [changes])
   const totals = summarizeChanges(changes)
   const displayedTotals = usingServerCheckpoint && serverCheckpoint
     ? {
@@ -116,10 +130,36 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
             ...current,
             [path]: { error: error instanceof Error ? error.message : String(error) },
           }))
-        })
+      })
     }
   }, [expanded, serverCheckpoint, serverDiffsByPath, sessionId, usingServerCheckpoint])
+  const refreshWorkspaceChanges = useCallback(async () => {
+    if (!shouldTrackWorkspaceChanges || !changePathsKey) {
+      setWorkspaceChangeByPath({})
+      return
+    }
+    try {
+      const result = await api.workspaceChanges()
+      const next: Record<string, WorkspaceChange> = {}
+      for (const change of result.changes ?? []) {
+        next[normalizeComparablePath(change.path)] = change
+      }
+      setWorkspaceChangeByPath(next)
+    } catch {
+      setWorkspaceChangeByPath({})
+    }
+  }, [changePathsKey, shouldTrackWorkspaceChanges])
+
+  useEffect(() => {
+    void refreshWorkspaceChanges()
+  }, [refreshWorkspaceChanges])
+
   if (changes.length === 0) return null
+  const actionForChange = (change: FileChange): CurrentTurnFileChangeAction => ({
+    ...change,
+    ...(effectiveCheckpoint?.checkpointId ? { checkpointId: effectiveCheckpoint.checkpointId, checkpointFiles: effectiveCheckpoint.files ?? [] } : {}),
+    currentHash: workspaceChangeForPath(workspaceChangeByPath, change.path)?.current_hash ?? null,
+  })
   const acceptChange = (change: FileChange) => {
     if (resolutionByPath[change.path] === 'accepting') return
     setResolutionByPath((current) => ({ ...current, [change.path]: onAcceptFile ? 'accepting' : 'accepted' }))
@@ -129,41 +169,37 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
       return next
     })
     if (!onAcceptFile) return
-    Promise.resolve(onAcceptFile({
-      ...change,
-      ...(checkpoint?.checkpointId ? { checkpointId: checkpoint.checkpointId, checkpointFiles: checkpoint.files ?? [] } : {}),
-    }))
+    Promise.resolve(onAcceptFile(actionForChange(change)))
       .then(() => {
         setResolutionByPath((current) => ({ ...current, [change.path]: 'accepted' }))
+        void refreshWorkspaceChanges()
       })
       .catch((error: unknown) => {
-        setResolutionByPath((current) => ({ ...current, [change.path]: 'error' }))
+        setResolutionByPath((current) => ({ ...current, [change.path]: resolutionFromError(error) }))
         setErrorByPath((current) => ({
           ...current,
-          [change.path]: error instanceof Error ? error.message : String(error),
+          [change.path]: changeActionErrorMessage(error),
         }))
       })
   }
   const revertChange = (change: FileChange) => {
-    if (!onRevertFile || (!checkpoint?.checkpointId && change.oldText == null) || resolutionByPath[change.path] === 'reverting') return
+    if (!onRevertFile || (!effectiveCheckpoint?.checkpointId && change.oldText == null) || resolutionByPath[change.path] === 'reverting') return
     setResolutionByPath((current) => ({ ...current, [change.path]: 'reverting' }))
     setErrorByPath((current) => {
       const next = { ...current }
       delete next[change.path]
       return next
     })
-    Promise.resolve(onRevertFile({
-      ...change,
-      ...(checkpoint?.checkpointId ? { checkpointId: checkpoint.checkpointId, checkpointFiles: checkpoint.files ?? [] } : {}),
-    }))
+    Promise.resolve(onRevertFile(actionForChange(change)))
       .then(() => {
         setResolutionByPath((current) => ({ ...current, [change.path]: 'reverted' }))
+        void refreshWorkspaceChanges()
       })
       .catch((error: unknown) => {
-        setResolutionByPath((current) => ({ ...current, [change.path]: 'error' }))
+        setResolutionByPath((current) => ({ ...current, [change.path]: resolutionFromError(error) }))
         setErrorByPath((current) => ({
           ...current,
-          [change.path]: error instanceof Error ? error.message : String(error),
+          [change.path]: changeActionErrorMessage(error),
         }))
       })
   }
@@ -186,7 +222,7 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
         </span>
         <DiagnosticPills counts={displayedTotals.diagnostics} compact />
         {verifications.length > 0 ? <VerificationPill totals={verificationTotals} /> : null}
-        {checkpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {checkpoint.checkpointId.slice(0, 8)}</span> : null}
+        {effectiveCheckpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {effectiveCheckpoint.checkpointId.slice(0, 8)}</span> : null}
         <span className="current-turn-change-stats">
           <em className="change-add">+{displayedTotals.additions}</em>
           <em className="change-remove">-{displayedTotals.removals}</em>
@@ -195,8 +231,9 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
       <div className="current-turn-change-files">
         {changes.map((change) => {
           const diagnosticCounts = countDiagnostics(change.diagnostics)
-          const resolution = resolutionByPath[change.path]
-          const canRevert = Boolean(onRevertFile && (change.oldText != null || checkpoint?.checkpointId))
+          const workspaceChange = workspaceChangeForPath(workspaceChangeByPath, change.path)
+          const resolution = resolutionByPath[change.path] ?? (workspaceChange?.accepted ? 'accepted' : undefined)
+          const canRevert = Boolean(onRevertFile && (change.oldText != null || effectiveCheckpoint?.checkpointId))
           return (
             <div className={'current-turn-change-file current-turn-change-file-' + change.kind} key={change.path}>
               <span className="current-turn-change-path">{change.path}</span>
@@ -408,7 +445,23 @@ function resolutionLabel(value: ChangeResolution): string {
   if (value === 'accepted') return 'accepted'
   if (value === 'reverting') return 'reverting'
   if (value === 'reverted') return 'reverted'
+  if (value === 'conflict') return 'conflict'
   return 'revert failed'
+}
+
+function resolutionFromError(error: unknown): ChangeResolution {
+  return error instanceof ApiError && error.status === 409 ? 'conflict' : 'error'
+}
+
+function changeActionErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 409) {
+    return error.message + '. The file changed after this card was rendered; refresh the workspace diff before reverting.'
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+function workspaceChangeForPath(changes: Record<string, WorkspaceChange>, path: string): WorkspaceChange | undefined {
+  return changes[normalizeComparablePath(path)]
 }
 
 function summarizeChanges(changes: FileChange[]) {

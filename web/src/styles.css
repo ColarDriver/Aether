@@ -3953,6 +3953,7 @@ body.is-resizing-layout {
 }
 
 .current-turn-change-resolution-error,
+.current-turn-change-resolution-conflict,
 .current-turn-change-error {
   color: var(--danger);
 }

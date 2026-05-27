@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../../../api/client'
+import { ApiError, api } from '../../../api/client'
 import type { DiffBlock } from '../../../chat-rendering'
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 const base = {
   id: 'diff-1',
@@ -178,6 +181,51 @@ describe('CurrentTurnChangeCard', () => {
     }))
   })
 
+  it('uses server checkpoint metadata and workspace hashes for revert actions', async () => {
+    vi.spyOn(api, 'workspaceChanges').mockResolvedValue({
+      root: '/workspace/Aether',
+      git_root: '/workspace/Aether',
+      available: true,
+      changes: [
+        workspaceChange({ path: 'src/lazy.ts', current_hash: 'hash-at-render' }),
+      ],
+    })
+    const onRevertFile = vi.fn()
+
+    render(
+      <CurrentTurnChangeCard
+        diffs={[]}
+        sessionId="s1"
+        serverCheckpoint={{
+          target: {
+            target_user_message_id: 'turn-1',
+            user_message_index: 0,
+            user_message_count: 1,
+            message_index: 0,
+          },
+          code: {
+            available: true,
+            files_changed: ['src/lazy.ts'],
+            insertions: 1,
+            deletions: 1,
+            checkpoint_id: 'cp-server',
+          },
+        }}
+        onRevertFile={onRevertFile}
+      />,
+    )
+
+    await waitFor(() => expect(api.workspaceChanges).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+
+    expect(onRevertFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'src/lazy.ts',
+      checkpointId: 'cp-server',
+      checkpointFiles: ['src/lazy.ts'],
+      currentHash: 'hash-at-render',
+    }))
+  })
+
   it('calls backend-backed accept handlers before marking a change accepted', async () => {
     const onAcceptFile = vi.fn().mockResolvedValue(undefined)
     const diffs: DiffBlock[] = [
@@ -193,6 +241,32 @@ describe('CurrentTurnChangeCard', () => {
     expect(onAcceptFile).toHaveBeenCalledWith(expect.objectContaining({
       path: 'src/accept.ts',
       kind: 'modified',
+    }))
+  })
+
+  it('marks action conflicts when the backend rejects a stale workspace hash', async () => {
+    vi.spyOn(api, 'workspaceChanges').mockResolvedValue({
+      root: '/workspace/Aether',
+      git_root: '/workspace/Aether',
+      available: true,
+      changes: [
+        workspaceChange({ path: 'src/conflict.ts', current_hash: 'hash-at-render' }),
+      ],
+    })
+    const onRevertFile = vi.fn().mockRejectedValue(new ApiError(409, { error: { message: 'workspace change conflict' } }))
+    const diffs: DiffBlock[] = [
+      { ...base, id: 'd-conflict', path: 'src/conflict.ts', diff: '@@ -1,1 +1,1 @@\n-before\n+after', oldText: 'before', newText: 'after' },
+    ]
+
+    render(<CurrentTurnChangeCard diffs={diffs} onRevertFile={onRevertFile} />)
+
+    await waitFor(() => expect(api.workspaceChanges).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+
+    expect(await screen.findByText('conflict')).toBeTruthy()
+    expect(screen.getByText(/changed after this card was rendered/)).toBeTruthy()
+    expect(onRevertFile).toHaveBeenCalledWith(expect.objectContaining({
+      currentHash: 'hash-at-render',
     }))
   })
 
@@ -243,3 +317,25 @@ describe('CurrentTurnChangeCard', () => {
     expect(screen.getByText('1 failed')).toBeTruthy()
   })
 })
+
+function workspaceChange(overrides: Partial<Awaited<ReturnType<typeof api.workspaceChanges>>['changes'][number]> = {}) {
+  return {
+    change_id: overrides.path ?? 'src/app.ts',
+    path: 'src/app.ts',
+    status: 'modified',
+    source: 'git',
+    staged: false,
+    unstaged: true,
+    untracked: false,
+    binary: false,
+    accepted: false,
+    rejected: false,
+    conflict: false,
+    checkpoint_available: true,
+    additions: 1,
+    removals: 1,
+    hunks: 1,
+    current_hash: 'hash-current',
+    ...overrides,
+  }
+}

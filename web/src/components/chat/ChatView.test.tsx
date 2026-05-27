@@ -7,9 +7,28 @@ import { useChatStore } from '../../stores/chatStore'
 import { useTaskStore } from '../../stores/taskStore'
 import { ChatView, isNearChatBottom, restoredChatScrollTop } from './ChatView'
 
+const runSocketMock = vi.hoisted(() => ({
+  connect: vi.fn(),
+  onFrame: vi.fn(() => () => undefined),
+  startRun: vi.fn(() => 'run-chat-view'),
+  cancelRun: vi.fn(),
+  respondPermission: vi.fn(),
+  respondApproval: vi.fn(),
+}))
+
+vi.mock('../../api/runSocket', () => ({
+  runSocket: runSocketMock,
+}))
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  runSocketMock.connect.mockClear()
+  runSocketMock.onFrame.mockClear()
+  runSocketMock.startRun.mockClear()
+  runSocketMock.cancelRun.mockClear()
+  runSocketMock.respondPermission.mockClear()
+  runSocketMock.respondApproval.mockClear()
   useChatStore.setState({
     connected: false,
     socketState: 'idle',
@@ -120,6 +139,116 @@ describe('ChatView', () => {
     expect(screen.getByRole('button', { name: /Plan edit/ })).toBeTruthy()
     expect(screen.getByRole('textbox')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
+  })
+
+  it('retries persisted prompts through checkpoint-aware session actions', async () => {
+    const session = {
+      session_id: 'session-1',
+      created_at: 1,
+      updated_at: 1,
+      provider: 'openai',
+      model: 'gpt-5.4',
+      message_count: 2,
+    }
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({
+      session_id: 'session-1',
+      messages: [
+        { role: 'user', text: 'Patch auth' },
+        { role: 'assistant', text: 'Done' },
+      ],
+    })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({ tasks: [], active_count: 0, total_count: 0 })
+    vi.spyOn(api, 'sessionTurnCheckpoints').mockResolvedValue({
+      session_id: 'session-1',
+      checkpoints: [{
+        target: {
+          target_user_message_id: 'turn-1',
+          user_message_index: 0,
+          user_message_count: 1,
+          message_index: 0,
+          content: 'Patch auth',
+        },
+        code: {
+          available: true,
+          files_changed: ['src/auth.ts'],
+          insertions: 2,
+          deletions: 1,
+          checkpoint_id: 'cp-1',
+        },
+      }],
+    })
+    vi.spyOn(api, 'sessionActionRetry').mockResolvedValue({
+      action: 'retry_prepared',
+      restore: { checkpoint_id: 'cp-1', paths: ['src/auth.ts'] },
+      result: {
+        session_id: 'session-1',
+        rewound_to_index: -1,
+        messages_kept: 0,
+        messages_removed: 2,
+        info: { ...session, message_count: 0 },
+        messages: [],
+      },
+    })
+    vi.spyOn(api, 'sessions').mockResolvedValue({ sessions: [session] })
+
+    render(<ChatView session={session} />)
+
+    expect(await screen.findByText('Patch auth')).toBeTruthy()
+    await waitFor(() => expect(api.sessionTurnCheckpoints).toHaveBeenCalledWith('session-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry prompt' }))
+
+    await waitFor(() => expect(api.sessionActionRetry).toHaveBeenCalledWith('session-1', {
+      user_message_index: 0,
+      expected_content: 'Patch auth',
+      checkpoint_id: 'cp-1',
+      paths: ['src/auth.ts'],
+    }))
+    expect(runSocketMock.startRun).toHaveBeenCalledWith('session-1', 'Patch auth', [])
+    expect(await screen.findByText(/Restored 1 file from checkpoint `cp-1`/)).toBeTruthy()
+  })
+
+  it('rewinds assistant replies by message index while user prompts use stable turn targets', async () => {
+    const session = {
+      session_id: 'session-1',
+      created_at: 1,
+      updated_at: 1,
+      provider: 'openai',
+      model: 'gpt-5.4',
+      message_count: 2,
+    }
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({
+      session_id: 'session-1',
+      messages: [
+        { role: 'user', text: 'Patch auth' },
+        { role: 'assistant', text: 'Done' },
+      ],
+    })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({ tasks: [], active_count: 0, total_count: 0 })
+    vi.spyOn(api, 'sessionTurnCheckpoints').mockResolvedValue({ session_id: 'session-1', checkpoints: [] })
+    vi.spyOn(api, 'sessionActionRewind').mockResolvedValue({
+      action: 'rewind',
+      restore: null,
+      result: {
+        session_id: 'session-1',
+        rewound_to_index: 1,
+        messages_kept: 2,
+        messages_removed: 0,
+        info: session,
+        messages: [
+          { role: 'user', text: 'Patch auth' },
+          { role: 'assistant', text: 'Done' },
+        ],
+      },
+    })
+    vi.spyOn(api, 'sessions').mockResolvedValue({ sessions: [session] })
+
+    render(<ChatView session={session} />)
+
+    expect(await screen.findByText('Done')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind to reply' }))
+
+    await waitFor(() => expect(api.sessionActionRewind).toHaveBeenCalledWith('session-1', { message_index: 1 }))
   })
 
   it('stops an active subagent task from the session task bar', async () => {

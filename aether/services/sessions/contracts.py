@@ -94,7 +94,10 @@ class SessionRenameRequest:
 @dataclass(frozen=True, slots=True)
 class SessionForkRequest:
     session_id_or_prefix: str
-    message_index: int
+    message_index: int | None = None
+    target_user_message_id: str | None = None
+    user_message_index: int | None = None
+    expected_content: str | None = None
     new_session_id: str | None = None
 
 

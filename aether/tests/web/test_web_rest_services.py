@@ -204,6 +204,35 @@ def test_session_fork_route_copies_transcript_prefix(client: TestClient) -> None
     assert current.json()["session"]["session_id"] == "forked_ses"
 
 
+def test_session_action_fork_route_accepts_stable_turn_target(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "source_target_ses"},
+    )
+    assert created.status_code == 200
+    services = client.app.state.aether_services
+    services.sessions.persist_run_result(
+        "source_target_ses",
+        messages=[
+            {"role": "user", "id": "turn-1", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "id": "turn-2", "content": "second"},
+            {"role": "assistant", "content": "second answer"},
+        ],
+    )
+
+    forked = client.post(
+        "/api/sessions/source_target_ses/actions/fork",
+        json={"target_user_message_id": "turn-2", "expected_content": "second", "new_session_id": "forked_target_ses"},
+    )
+
+    assert forked.status_code == 200
+    body = forked.json()
+    assert body["info"]["session_id"] == "forked_target_ses"
+    assert body["forked_from_index"] == 2
+    assert [message["text"] for message in body["messages"]] == ["first", "answer", "second"]
+
+
 def test_session_rewind_route_truncates_transcript(client: TestClient) -> None:
     created = client.post(
         "/api/sessions",

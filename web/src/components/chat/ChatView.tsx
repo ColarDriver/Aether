@@ -1,7 +1,7 @@
 import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
-import type { SessionInfo, SessionTurnCheckpoint, TaskSummary } from '../../api/types'
+import type { SessionCheckpointActionBody, SessionCheckpointActionResult, SessionInfo, SessionRewindResult, SessionTurnCheckpoint, TaskSummary } from '../../api/types'
 import type { AssistantMessageBlock as AssistantMessage, ChatBlock, RunStatusSnapshot, TokenUsage, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { tokenUsageFromRecord, tokenUsageTotal } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
@@ -56,8 +56,6 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
   const setActiveView = useAppStore((state) => state.setActiveView)
   const createSession = useSessionStore((state) => state.createSession)
   const resumeSession = useSessionStore((state) => state.resumeSession)
-  const forkSession = useSessionStore((state) => state.forkSession)
-  const rewindSession = useSessionStore((state) => state.rewindSession)
   const updateSession = useSessionStore((state) => state.updateSession)
   const setSessionMode = useSessionStore((state) => state.setSessionMode)
   const loadSessions = useSessionStore((state) => state.loadSessions)
@@ -202,10 +200,16 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       if (session) appendLocalError(session.session_id, 'This message cannot be forked until it is persisted in the transcript.')
       return
     }
-    void forkSession(session.session_id, block.messageIndex)
+    const target = actionTargetForMessage(blocks, block, turnCheckpoints)
+    const body = block.kind === 'user_message' && target
+      ? target.body
+      : { message_index: block.messageIndex }
+    void api.sessionActionFork(session.session_id, body)
       .then((forked) => {
         setActiveView('chat')
-        void loadTranscript(forked.session_id)
+        void resumeSession(forked.info.session_id)
+        void loadSessions()
+        void loadTranscript(forked.info.session_id)
       })
       .catch((error) => {
         appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
@@ -217,10 +221,15 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       if (session) appendLocalError(session.session_id, 'This message cannot be rewound until it is persisted in the transcript.')
       return
     }
-    void rewindSession(session.session_id, block.messageIndex)
+    const target = block.kind === 'user_message' ? actionTargetForUser(blocks, block, turnCheckpoints) : null
+    const body = target?.body ?? { message_index: block.messageIndex }
+    void api.sessionActionRewind(session.session_id, body)
       .then((result) => {
-        replaceTranscript(result.session_id, result.messages)
-        appendLocalNotice(result.session_id, 'Rewound session to message ' + (result.rewound_to_index + 1).toLocaleString() + '.')
+        const rewind = result.result
+        if (!isSessionRewindResult(rewind)) return
+        replaceTranscript(rewind.session_id, rewind.messages)
+        void loadSessions()
+        appendLocalNotice(rewind.session_id, checkpointActionNotice(result, 'Rewound session to message ' + (rewind.rewound_to_index + 1).toLocaleString() + '.'))
       })
       .catch((error) => {
         appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
@@ -233,9 +242,18 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       startRun(session.session_id, block.content, block.attachments)
       return
     }
-    void rewindSession(session.session_id, block.messageIndex - 1)
+    const target = actionTargetForMessage(blocks, block, turnCheckpoints)
+    if (!target) {
+      appendLocalError(session.session_id, 'Could not resolve the persisted prompt for retry.')
+      return
+    }
+    void api.sessionActionRetry(session.session_id, target.body)
       .then((result) => {
-        replaceTranscript(result.session_id, result.messages)
+        const rewind = result.result
+        if (!isSessionRewindResult(rewind)) return
+        replaceTranscript(rewind.session_id, rewind.messages)
+        void loadSessions()
+        appendLocalNotice(rewind.session_id, checkpointActionNotice(result, 'Prepared retry from the selected prompt.'))
         startRun(session.session_id, block.content, block.attachments)
       })
       .catch((error) => {
@@ -253,9 +271,18 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       appendLocalError(session.session_id, 'Could not find the prompt that produced this reply.')
       return
     }
-    void rewindSession(session.session_id, prompt.messageIndex - 1)
+    const target = actionTargetForUser(blocks, prompt, turnCheckpoints)
+    if (!target) {
+      appendLocalError(session.session_id, 'Could not resolve the persisted prompt for retry.')
+      return
+    }
+    void api.sessionActionRetry(session.session_id, target.body)
       .then((result) => {
-        replaceTranscript(result.session_id, result.messages)
+        const rewind = result.result
+        if (!isSessionRewindResult(rewind)) return
+        replaceTranscript(rewind.session_id, rewind.messages)
+        void loadSessions()
+        appendLocalNotice(rewind.session_id, checkpointActionNotice(result, 'Prepared retry from the selected reply.'))
         startRun(session.session_id, prompt.content, prompt.attachments)
       })
       .catch((error) => {
@@ -473,6 +500,86 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       ) : null}
     </div>
   )
+}
+
+type CheckpointActionTarget = {
+  prompt: UserMessage
+  body: SessionCheckpointActionBody
+}
+
+function actionTargetForMessage(
+  blocks: ChatBlock[],
+  block: UserMessage | AssistantMessage,
+  checkpoints: SessionTurnCheckpoint[],
+): CheckpointActionTarget | null {
+  if (block.kind === 'user_message') return actionTargetForUser(blocks, block, checkpoints)
+  const prompt = previousUserBlockForAssistant(blocks, block)
+  return prompt ? actionTargetForUser(blocks, prompt, checkpoints) : null
+}
+
+function actionTargetForUser(
+  blocks: ChatBlock[],
+  block: UserMessage,
+  checkpoints: SessionTurnCheckpoint[],
+): CheckpointActionTarget | null {
+  if (block.source !== 'transcript' || typeof block.messageIndex !== 'number') return null
+  const userMessageIndex = userMessageIndexForBlock(blocks, block)
+  if (userMessageIndex == null) return null
+  const checkpoint = checkpoints.find((candidate) => (
+    candidate.target.message_index === block.messageIndex ||
+    candidate.target.user_message_index === userMessageIndex
+  ))
+  const body: SessionCheckpointActionBody = {
+    user_message_index: userMessageIndex,
+    expected_content: block.content,
+  }
+  if (checkpoint?.code.checkpoint_id) {
+    body.checkpoint_id = checkpoint.code.checkpoint_id
+    body.paths = checkpoint.code.files_changed
+  }
+  return { prompt: block, body }
+}
+
+function userMessageIndexForBlock(blocks: ChatBlock[], block: UserMessage): number | null {
+  if (typeof block.messageIndex !== 'number') return null
+  const persistedUsers = blocks
+    .filter((candidate): candidate is UserMessage => (
+      candidate.kind === 'user_message' &&
+      candidate.source === 'transcript' &&
+      typeof candidate.messageIndex === 'number'
+    ))
+    .sort((left, right) => (left.messageIndex ?? 0) - (right.messageIndex ?? 0))
+  const index = persistedUsers.findIndex((candidate) => candidate.messageIndex === block.messageIndex)
+  return index >= 0 ? index : null
+}
+
+function isSessionRewindResult(value: unknown): value is SessionRewindResult {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    'session_id' in value &&
+    'messages' in value &&
+    'rewound_to_index' in value,
+  )
+}
+
+function checkpointActionNotice(result: SessionCheckpointActionResult, fallback: string): string {
+  const restore = recordFromUnknown(result.restore)
+  const checkpointId = stringValue(restore.checkpoint_id)
+  const paths = Array.isArray(restore.paths)
+    ? restore.paths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+    : []
+  if (!checkpointId) return fallback
+  const fileCount = paths.length > 0 ? paths.length.toLocaleString() + ' file' + (paths.length === 1 ? '' : 's') : 'workspace'
+  return fallback + ' Restored ' + fileCount + ' from checkpoint `' + checkpointId + '`.'
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
 function latestRunMetadataForSession(sessionId: string, blocks: ChatBlock[]): Record<string, unknown> | undefined {

@@ -229,6 +229,31 @@ def test_fork_copies_transcript_prefix_to_new_active_session(tmp_path, monkeypat
     assert [message["content"] for message in saved.messages] == ["first", "answer"]
 
 
+def test_fork_can_resolve_stable_user_turn_target(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="source-target", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "first"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "id": "turn-2", "content": "second"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.fork(
+        SessionForkRequest(
+            "source-target",
+            target_user_message_id="turn-2",
+            expected_content="second",
+            new_session_id="forked-target",
+        )
+    )
+
+    assert result.info.session_id == "forked-target"
+    assert result.forked_from_index == 2
+    assert [message.text for message in result.messages] == ["first", "answer", "second"]
+
+
 def test_rewind_truncates_transcript_and_recomputes_summary(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)
     record = SessionRecord.new(session_id="rewind-source", provider="openai", model="gpt-5")

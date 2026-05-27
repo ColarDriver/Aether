@@ -241,13 +241,14 @@ async def session_message_actions(request: Request, session_id: str, message_ind
 @router.post("/api/sessions/{session_id}/actions/fork")
 async def session_action_fork(request: Request, session_id: str, body: SessionActionBody) -> dict[str, object]:
     services = request.app.state.aether_services
-    if body.message_index is None:
-        raise ServiceValidationError("message_index is required for fork")
     return to_jsonable(
         services.sessions.fork(
             SessionForkRequest(
                 session_id_or_prefix=session_id,
                 message_index=body.message_index,
+                target_user_message_id=body.target_user_message_id,
+                user_message_index=body.user_message_index,
+                expected_content=body.expected_content,
                 new_session_id=body.new_session_id,
             )
         )

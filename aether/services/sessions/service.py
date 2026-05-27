@@ -241,7 +241,13 @@ class SessionService:
         source = self.resolve_record(
             _require_non_empty(request.session_id_or_prefix, "session_id")
         )
-        message_index = request.message_index
+        message_index = _resolve_message_index(
+            source,
+            message_index=request.message_index,
+            target_user_message_id=request.target_user_message_id,
+            user_message_index=request.user_message_index,
+            expected_content=request.expected_content,
+        )
         if not isinstance(message_index, int) or isinstance(message_index, bool):
             raise ServiceValidationError(
                 "message_index must be an integer",

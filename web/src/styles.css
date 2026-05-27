@@ -4149,6 +4149,12 @@ body.is-resizing-layout {
   flex: none;
 }
 
+.current-turn-change-diff-placeholder {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .current-turn-change-diagnostic-list {
   display: grid;
   gap: 0;

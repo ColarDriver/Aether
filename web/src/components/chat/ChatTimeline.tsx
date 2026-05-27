@@ -1,3 +1,4 @@
+import type { SessionTurnCheckpoint } from '../../api/types'
 import type { AssistantMessageBlock as AssistantMessage, ChatBlock, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock, ToolResultBlock as ToolResultChatBlock, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { buildChatRenderModel, type ChatRenderItem } from '../../chat-rendering/renderModel'
 import {
@@ -21,6 +22,8 @@ import type { CurrentTurnCheckpoint, CurrentTurnFileChangeAction, CurrentTurnVer
 
 type Props = {
   blocks: ChatBlock[]
+  sessionId?: string | null
+  turnCheckpoints?: SessionTurnCheckpoint[]
   messageActionsDisabled?: boolean
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
@@ -36,7 +39,7 @@ type Props = {
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }
 
-export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
+export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
   if (blocks.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
@@ -70,6 +73,8 @@ export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespond
             diagnostics={diagnosticsForTurn(turn)}
             verifications={verificationsForTurn(turn, model.toolResultsByCallId)}
             checkpoint={workspaceCheckpointForTurn(turn)}
+            sessionId={sessionId}
+            serverCheckpoint={checkpointForTurn(turn, turnCheckpoints)}
             onAcceptFile={onAcceptFileChange}
             onRevertFile={onRevertFileChange}
           />
@@ -183,6 +188,20 @@ function workspaceCheckpointForTurn(turn: ChatTurn): CurrentTurnCheckpoint | nul
     if (item.block.kind !== 'assistant_message' && item.block.kind !== 'tool_result') continue
     const checkpoint = checkpointFromMetadata(item.block.metadata)
     if (checkpoint) return checkpoint
+  }
+  return null
+}
+
+function checkpointForTurn(turn: ChatTurn, checkpoints: SessionTurnCheckpoint[]): SessionTurnCheckpoint | null {
+  if (checkpoints.length === 0) return null
+  const user = userMessageForTurn(turn)
+  if (!user || typeof user.messageIndex !== 'number') return null
+  return checkpoints.find((checkpoint) => checkpoint.target.message_index === user.messageIndex) ?? null
+}
+
+function userMessageForTurn(turn: ChatTurn): UserMessage | null {
+  for (const item of turn.items) {
+    if (item.kind === 'block' && item.block.kind === 'user_message') return item.block
   }
   return null
 }

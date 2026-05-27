@@ -161,6 +161,18 @@ class SessionTurnCheckpointsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionTurnCheckpointDiffResult:
+    session_id: str
+    state: Literal["ok", "missing", "error"]
+    target: SessionTurnTarget
+    path: str
+    diff: str | None = None
+    work_dir: str | None = None
+    checkpoint_id: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionMessageAction:
     name: str
     supported: bool
@@ -238,6 +250,7 @@ __all__ = [
     "SessionRewindRequest",
     "SessionRewindResult",
     "SessionTurnCheckpoint",
+    "SessionTurnCheckpointDiffResult",
     "SessionTurnCheckpointsResult",
     "SessionTurnCodeSnapshot",
     "SessionTurnTarget",

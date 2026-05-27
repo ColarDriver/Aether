@@ -49,6 +49,7 @@ from aether.services.sessions.contracts import (
     SessionRewindRequest,
     SessionRewindResult,
     SessionTurnCheckpoint,
+    SessionTurnCheckpointDiffResult,
     SessionTurnCheckpointsResult,
     SessionTurnCodeSnapshot,
     SessionTurnTarget,
@@ -369,6 +370,62 @@ class SessionService:
                 )
             )
         return SessionTurnCheckpointsResult(session_id=record.session_id, checkpoints=checkpoints)
+
+    def turn_checkpoint_diff(
+        self,
+        session_id_or_prefix: str,
+        *,
+        path: str,
+        target_user_message_id: str | None = None,
+        user_message_index: int | None = None,
+    ) -> SessionTurnCheckpointDiffResult:
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        requested_path = _require_non_empty(path, "path")
+        turn = _resolve_turn_target(
+            record.messages,
+            target_user_message_id=target_user_message_id,
+            user_message_index=user_message_index,
+        )
+        if turn is None:
+            raise ServiceNotFoundError(
+                "turn checkpoint target not found",
+                details={
+                    "session_id": record.session_id,
+                    "target_user_message_id": target_user_message_id,
+                    "user_message_index": user_message_index,
+                },
+            )
+        messages = record.messages[turn.message_index + 1 : turn.response_end_index]
+        checkpoint = _workspace_checkpoint_from_messages(messages)
+        diff = _diff_for_path_in_messages(messages, requested_path)
+        target = SessionTurnTarget(
+            target_user_message_id=turn.message_id,
+            user_message_index=turn.user_message_index,
+            user_message_count=turn.user_message_count,
+            message_index=turn.message_index,
+            content=turn.content,
+        )
+        work_dir = _first_string_from_mapping(checkpoint, "root", "cwd", "work_dir", "workDir")
+        checkpoint_id = _checkpoint_id(checkpoint)
+        if diff:
+            return SessionTurnCheckpointDiffResult(
+                session_id=record.session_id,
+                state="ok",
+                target=target,
+                path=requested_path,
+                diff=diff,
+                work_dir=work_dir,
+                checkpoint_id=checkpoint_id,
+            )
+        return SessionTurnCheckpointDiffResult(
+            session_id=record.session_id,
+            state="missing",
+            target=target,
+            path=requested_path,
+            work_dir=work_dir,
+            checkpoint_id=checkpoint_id,
+            error="No diff metadata is available for this file in the selected turn.",
+        )
 
     def message_actions(self, session_id_or_prefix: str, message_index: int) -> SessionMessageActionsResult:
         record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
@@ -909,12 +966,128 @@ def _paths_from_message(message: dict[str, Any]) -> list[str]:
             value = metadata.get(key)
             if isinstance(value, str) and value.strip():
                 paths.append(value.strip())
+        for key in ("edited_paths", "editedPaths", "paths", "files_changed", "filesChanged"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                paths.extend(item.strip() for item in value if isinstance(item, str) and item.strip())
     for call in extract_tool_calls(message):
         for key in ("path", "file_path", "filePath"):
             value = call.arguments.get(key)
             if isinstance(value, str) and value.strip():
                 paths.append(value.strip())
     return paths
+
+
+def _diff_for_path_in_messages(messages: list[dict[str, Any]], requested_path: str) -> str | None:
+    tool_call_paths: dict[str, list[str]] = {}
+    for message in messages:
+        for call in extract_tool_calls(message):
+            tool_call_paths[call.id] = _paths_from_mapping(call.arguments)
+
+    diffs: list[str] = []
+    for message in messages:
+        candidate_paths = _paths_from_message(message)
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str):
+            candidate_paths.extend(tool_call_paths.get(tool_call_id, []))
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        path_matches = any(_paths_match(candidate, requested_path) for candidate in candidate_paths)
+
+        diff = _diff_from_mapping(metadata) if isinstance(metadata, dict) else None
+        if diff and (path_matches or _diff_mentions_path(diff, requested_path)):
+            diffs.append(diff)
+            continue
+
+        text, _attachments = extract_message_content(
+            message.get("content"),
+            metadata=metadata if isinstance(metadata, dict) else None,
+        )
+        if text and _looks_like_unified_diff(text) and (path_matches or _diff_mentions_path(text, requested_path)):
+            diffs.append(text)
+
+    if not diffs:
+        return None
+    return "\n\n".join(_unique_preserve_strings(diffs))
+
+
+def _paths_from_mapping(mapping: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("path", "file_path", "filePath", "old_path", "oldPath"):
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    for key in ("edited_paths", "editedPaths", "paths", "files_changed", "filesChanged"):
+        value = mapping.get(key)
+        if isinstance(value, list):
+            paths.extend(item.strip() for item in value if isinstance(item, str) and item.strip())
+    return paths
+
+
+def _diff_from_mapping(mapping: dict[str, Any]) -> str | None:
+    for key in ("diff", "unified_diff", "unifiedDiff", "patch", "content_diff", "contentDiff"):
+        value = mapping.get(key)
+        if isinstance(value, str) and _looks_like_unified_diff(value):
+            return value
+    for key in ("result", "data", "metadata"):
+        nested = mapping.get(key)
+        if isinstance(nested, dict):
+            diff = _diff_from_mapping(nested)
+            if diff:
+                return diff
+    return None
+
+
+def _looks_like_unified_diff(value: str) -> bool:
+    if "@@" not in value:
+        return False
+    return any(line.startswith(("--- ", "+++ ", "diff --git ")) for line in value.splitlines())
+
+
+def _diff_mentions_path(diff: str, requested_path: str) -> bool:
+    wanted = _normalize_path_for_compare(requested_path)
+    if not wanted:
+        return False
+    for line in diff.splitlines():
+        if not line.startswith(("--- ", "+++ ", "diff --git ")):
+            continue
+        for token in line.split():
+            cleaned = token
+            if cleaned in {"---", "+++", "diff", "--git", "a/", "b/"}:
+                continue
+            cleaned = cleaned.removeprefix("a/").removeprefix("b/")
+            if _paths_match(cleaned, wanted):
+                return True
+    return False
+
+
+def _paths_match(candidate: str, requested: str) -> bool:
+    left = _normalize_path_for_compare(candidate)
+    right = _normalize_path_for_compare(requested)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.endswith("/" + right) or right.endswith("/" + left)
+
+
+def _normalize_path_for_compare(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    if not normalized:
+        return ""
+    normalized = re.sub(r"^[ab]/", "", normalized)
+    return normalized.rstrip("/")
+
+
+def _unique_preserve_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        marker = value.strip()
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        out.append(value)
+    return out
 
 
 def _diff_stats_for_turn(messages: list[dict[str, Any]]) -> tuple[int, int]:

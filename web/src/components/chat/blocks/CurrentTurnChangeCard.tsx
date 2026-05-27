@@ -1,5 +1,7 @@
 import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, FileCode2, Info, RotateCcw, ShieldCheck, XCircle } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { api } from '../../../api/client'
+import type { SessionTurnCheckpoint } from '../../../api/types'
 import type { DiagnosticEntry, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock } from '../../../chat-rendering'
 import { CopyButton } from '../../shared/CopyButton'
 import { DiffViewer, parseUnifiedDiff } from '../DiffViewer'
@@ -9,6 +11,8 @@ type Props = {
   diagnostics?: DiagnosticsChatBlock[]
   verifications?: CurrentTurnVerification[]
   checkpoint?: CurrentTurnCheckpoint | null
+  sessionId?: string | null
+  serverCheckpoint?: SessionTurnCheckpoint | null
   onAcceptFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
   onRevertFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
 }
@@ -16,6 +20,11 @@ type Props = {
 export type FileChangeKind = 'created' | 'deleted' | 'modified'
 type DiagnosticTone = 'error' | 'warning' | 'info'
 type ChangeResolution = 'accepting' | 'accepted' | 'reverting' | 'reverted' | 'error'
+type ServerDiffState = {
+  loading?: boolean
+  diff?: string | null
+  error?: string | null
+}
 
 export type CurrentTurnFileChangeAction = {
   path: string
@@ -63,14 +72,54 @@ type DiagnosticCounts = {
   infos: number
 }
 
-export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications = [], checkpoint = null, onAcceptFile, onRevertFile }: Props) {
-  const changes = useMemo(() => summarizeDiffs(diffs, diagnostics), [diffs, diagnostics])
+export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications = [], checkpoint = null, sessionId = null, serverCheckpoint = null, onAcceptFile, onRevertFile }: Props) {
+  const localChanges = useMemo(() => summarizeDiffs(diffs, diagnostics), [diffs, diagnostics])
+  const [serverDiffsByPath, setServerDiffsByPath] = useState<Record<string, ServerDiffState>>({})
+  const changes = useMemo(() => {
+    if (localChanges.length > 0) return localChanges
+    return summarizeServerCheckpoint(serverCheckpoint, serverDiffsByPath)
+  }, [localChanges, serverCheckpoint, serverDiffsByPath])
   const [expanded, setExpanded] = useState(false)
   const [resolutionByPath, setResolutionByPath] = useState<Record<string, ChangeResolution>>({})
   const [errorByPath, setErrorByPath] = useState<Record<string, string>>({})
-  if (changes.length === 0) return null
+  const usingServerCheckpoint = localChanges.length === 0 && Boolean(serverCheckpoint)
   const totals = summarizeChanges(changes)
+  const displayedTotals = usingServerCheckpoint && serverCheckpoint
+    ? {
+        ...totals,
+        additions: totals.additions || serverCheckpoint.code.insertions,
+        removals: totals.removals || serverCheckpoint.code.deletions,
+      }
+    : totals
   const verificationTotals = summarizeVerifications(verifications)
+  useEffect(() => {
+    if (!expanded || !usingServerCheckpoint || !serverCheckpoint || !sessionId) return
+    for (const path of serverCheckpoint.code.files_changed) {
+      const existing = serverDiffsByPath[path]
+      if (existing?.loading || existing?.diff !== undefined || existing?.error) continue
+      setServerDiffsByPath((current) => ({ ...current, [path]: { loading: true } }))
+      void api.sessionTurnCheckpointDiff(sessionId, {
+        path,
+        target_user_message_id: serverCheckpoint.target.target_user_message_id,
+        user_message_index: serverCheckpoint.target.user_message_index,
+      })
+        .then((result) => {
+          setServerDiffsByPath((current) => ({
+            ...current,
+            [path]: result.state === 'ok'
+              ? { diff: result.diff ?? '' }
+              : { error: result.error || 'Diff unavailable for this file.' },
+          }))
+        })
+        .catch((error) => {
+          setServerDiffsByPath((current) => ({
+            ...current,
+            [path]: { error: error instanceof Error ? error.message : String(error) },
+          }))
+        })
+    }
+  }, [expanded, serverCheckpoint, serverDiffsByPath, sessionId, usingServerCheckpoint])
+  if (changes.length === 0) return null
   const acceptChange = (change: FileChange) => {
     if (resolutionByPath[change.path] === 'accepting') return
     setResolutionByPath((current) => ({ ...current, [change.path]: onAcceptFile ? 'accepting' : 'accepted' }))
@@ -129,18 +178,18 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
       >
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <FileCode2 size={15} />
-        <strong>{changes.length} changed {changes.length === 1 ? 'file' : 'files'}</strong>
-        <span className="current-turn-change-kind-summary" aria-label="File change summary">
-          {totals.created > 0 ? <em className="change-created">{totals.created} created</em> : null}
-          {totals.modified > 0 ? <em>{totals.modified} modified</em> : null}
-          {totals.deleted > 0 ? <em className="change-deleted">{totals.deleted} deleted</em> : null}
+          <strong>{changes.length} changed {changes.length === 1 ? 'file' : 'files'}</strong>
+          <span className="current-turn-change-kind-summary" aria-label="File change summary">
+          {displayedTotals.created > 0 ? <em className="change-created">{displayedTotals.created} created</em> : null}
+          {displayedTotals.modified > 0 ? <em>{displayedTotals.modified} modified</em> : null}
+          {displayedTotals.deleted > 0 ? <em className="change-deleted">{displayedTotals.deleted} deleted</em> : null}
         </span>
-        <DiagnosticPills counts={totals.diagnostics} compact />
+        <DiagnosticPills counts={displayedTotals.diagnostics} compact />
         {verifications.length > 0 ? <VerificationPill totals={verificationTotals} /> : null}
         {checkpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {checkpoint.checkpointId.slice(0, 8)}</span> : null}
         <span className="current-turn-change-stats">
-          <em className="change-add">+{totals.additions}</em>
-          <em className="change-remove">-{totals.removals}</em>
+          <em className="change-add">+{displayedTotals.additions}</em>
+          <em className="change-remove">-{displayedTotals.removals}</em>
         </span>
       </button>
       <div className="current-turn-change-files">
@@ -196,7 +245,11 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
                   <em className={'change-' + change.kind}>{change.kind}</em>
                 </span>
               </header>
-              <DiffViewer diff={change.diff} />
+              {usingServerCheckpoint ? (
+                <ServerCheckpointDiff path={change.path} state={serverDiffsByPath[change.path]} diff={change.diff} />
+              ) : (
+                <DiffViewer diff={change.diff} />
+              )}
               <ChangeDiagnostics diagnostics={change.diagnostics} />
             </article>
           ))}
@@ -314,6 +367,40 @@ function summarizeDiffs(diffs: DiffChatBlock[], diagnostics: DiagnosticsChatBloc
       newText: entry.newText,
     }
   })
+}
+
+function summarizeServerCheckpoint(checkpoint: SessionTurnCheckpoint | null, diffStateByPath: Record<string, ServerDiffState>): FileChange[] {
+  if (!checkpoint) return []
+  return checkpoint.code.files_changed.map((path) => {
+    const state = diffStateByPath[path]
+    const diff = state?.diff ?? ''
+    const parsed = diff ? parseUnifiedDiff(diff) : []
+    const header = diff ? parseUnifiedDiffHeader(diff) : { path: null, kind: 'modified' as FileChangeKind }
+    return {
+      path: cleanPath(header.path) || path,
+      diff,
+      kind: header.kind,
+      additions: parsed.filter((line) => line.kind === 'add').length,
+      removals: parsed.filter((line) => line.kind === 'remove').length,
+      hunks: diff.split('\n').filter((line) => line.startsWith('@@')).length,
+      diagnostics: [],
+      oldText: null,
+      newText: null,
+    }
+  })
+}
+
+function ServerCheckpointDiff({ path, state, diff }: { path: string; state?: ServerDiffState; diff: string }) {
+  if (state?.loading) {
+    return <div className="current-turn-change-diff-placeholder">Loading diff for {path}...</div>
+  }
+  if (state?.error) {
+    return <div className="current-turn-change-error">{state.error}</div>
+  }
+  if (!diff.trim()) {
+    return <div className="current-turn-change-diff-placeholder">Diff unavailable for {path}.</div>
+  }
+  return <DiffViewer diff={diff} />
 }
 
 function resolutionLabel(value: ChangeResolution): string {

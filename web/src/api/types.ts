@@ -65,6 +65,17 @@ export type SessionTurnCheckpointsResult = {
   checkpoints: SessionTurnCheckpoint[]
 }
 
+export type SessionTurnCheckpointDiffResult = {
+  session_id: string
+  state: 'ok' | 'missing' | 'error'
+  target: SessionTurnTarget
+  path: string
+  diff?: string | null
+  work_dir?: string | null
+  checkpoint_id?: string | null
+  error?: string | null
+}
+
 export type SessionMessageAction = {
   name: string
   supported: boolean

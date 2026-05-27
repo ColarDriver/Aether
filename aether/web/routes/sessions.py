@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel
 from typing import Any
 
@@ -209,6 +209,27 @@ async def rewind_session(request: Request, session_id: str, body: SessionRewindB
 async def session_turn_checkpoints(request: Request, session_id: str) -> dict[str, object]:
     services = request.app.state.aether_services
     return to_jsonable(services.sessions.turn_checkpoints(session_id))
+
+
+@router.get("/api/sessions/{session_id}/turn-checkpoints/diff")
+async def session_turn_checkpoint_diff(
+    request: Request,
+    session_id: str,
+    path: str = Query(...),
+    target_user_message_id: str | None = Query(default=None),
+    targetUserMessageId: str | None = Query(default=None),
+    user_message_index: int | None = Query(default=None),
+    userMessageIndex: int | None = Query(default=None),
+) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.sessions.turn_checkpoint_diff(
+            session_id,
+            path=path,
+            target_user_message_id=target_user_message_id or targetUserMessageId,
+            user_message_index=user_message_index if user_message_index is not None else userMessageIndex,
+        )
+    )
 
 
 @router.get("/api/sessions/{session_id}/message-actions/{message_index}")

@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../../../api/client'
 import type { DiffBlock } from '../../../chat-rendering'
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 
@@ -100,6 +101,57 @@ describe('CurrentTurnChangeCard', () => {
     const { container } = render(<CurrentTurnChangeCard diffs={[{ ...base, id: 'empty', path: 'src/empty.ts', diff: '' }]} />)
 
     expect(container.firstChild).toBeNull()
+  })
+
+  it('renders checkpoint-backed changed files and lazy-loads per-file diffs', async () => {
+    vi.spyOn(api, 'sessionTurnCheckpointDiff').mockResolvedValue({
+      session_id: 's1',
+      state: 'ok',
+      path: 'src/lazy.ts',
+      diff: '--- a/src/lazy.ts\n+++ b/src/lazy.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+      target: {
+        target_user_message_id: 'turn-1',
+        user_message_index: 0,
+        user_message_count: 1,
+        message_index: 0,
+      },
+      checkpoint_id: 'cp-1',
+    })
+
+    render(
+      <CurrentTurnChangeCard
+        diffs={[]}
+        sessionId="s1"
+        serverCheckpoint={{
+          target: {
+            target_user_message_id: 'turn-1',
+            user_message_index: 0,
+            user_message_count: 1,
+            message_index: 0,
+          },
+          code: {
+            available: true,
+            files_changed: ['src/lazy.ts'],
+            insertions: 1,
+            deletions: 1,
+            checkpoint_id: 'cp-1',
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Changed files' })).toBeTruthy()
+    expect(screen.getByText('src/lazy.ts')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /1 changed file/ }))
+
+    expect(api.sessionTurnCheckpointDiff).toHaveBeenCalledWith('s1', {
+      path: 'src/lazy.ts',
+      target_user_message_id: 'turn-1',
+      user_message_index: 0,
+    })
+    expect(await screen.findByText(/old/)).toBeTruthy()
+    expect(screen.getByText(/new/)).toBeTruthy()
   })
 
   it('allows checkpoint-backed revert when old text is unavailable', () => {

@@ -237,6 +237,56 @@ def test_session_rewind_route_truncates_transcript(client: TestClient) -> None:
     assert current.json()["session"]["session_id"] == "rewind_ses"
 
 
+def test_session_turn_checkpoint_diff_route_returns_file_diff(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "diff_web"},
+    )
+    assert created.status_code == 200
+    diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+    services = client.app.state.aether_services
+    services.sessions.persist_run_result(
+        "diff_web",
+        messages=[
+            {"role": "user", "id": "turn-1", "content": "edit app.py"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "file_edit", "arguments": {"path": "app.py"}},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "name": "file_edit",
+                "content": "edited",
+                "metadata": {
+                    "path": "app.py",
+                    "diff": diff,
+                    "workspace_checkpoint": {"checkpoint_id": "cp-1", "root": "/repo"},
+                },
+            },
+            {"role": "assistant", "content": "done"},
+        ],
+    )
+
+    result = client.get(
+        "/api/sessions/diff_web/turn-checkpoints/diff?targetUserMessageId=turn-1&path=app.py",
+    )
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["state"] == "ok"
+    assert body["diff"] == diff
+    assert body["target"]["target_user_message_id"] == "turn-1"
+    assert body["checkpoint_id"] == "cp-1"
+
+
 def test_config_prefs_and_diagnostics_routes(client: TestClient) -> None:
     config = client.get("/api/config")
     assert config.status_code == 200

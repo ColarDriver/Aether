@@ -34,6 +34,7 @@ import type {
   SessionInfo,
   SessionMessageActionsResult,
   SessionRewindResult,
+  SessionTurnCheckpointDiffResult,
   SessionTurnCheckpointsResult,
   SkillSummary,
   StatusResponse,
@@ -324,6 +325,12 @@ export const api = {
     request<SessionRewindResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/rewind', body),
   sessionTurnCheckpoints: (sessionId: string) =>
     request<SessionTurnCheckpointsResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/turn-checkpoints'),
+  sessionTurnCheckpointDiff: (sessionId: string, params: { path: string; target_user_message_id?: string | null; user_message_index?: number | null }) => {
+    const query = new URLSearchParams({ path: params.path })
+    if (params.target_user_message_id) query.set('target_user_message_id', params.target_user_message_id)
+    if (params.user_message_index != null) query.set('user_message_index', String(params.user_message_index))
+    return request<SessionTurnCheckpointDiffResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/turn-checkpoints/diff?' + query.toString())
+  },
   sessionMessageActions: (sessionId: string, messageIndex: number) =>
     request<SessionMessageActionsResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/message-actions/' + encodeURIComponent(String(messageIndex))),
   sessionActionFork: (sessionId: string, body: SessionCheckpointActionBody) =>

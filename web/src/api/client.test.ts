@@ -72,6 +72,18 @@ describe('api client', () => {
     )
   })
 
+  it('gets per-file turn checkpoint diffs', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ session_id: 's1', state: 'ok', path: 'app.py', diff: '@@', target: { target_user_message_id: 'turn-1', user_message_index: 0, user_message_count: 1, message_index: 0 } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.sessionTurnCheckpointDiff('s1', { path: 'app.py', target_user_message_id: 'turn-1', user_message_index: 0 })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://aether.test/api/sessions/s1/turn-checkpoints/diff?path=app.py&target_user_message_id=turn-1&user_message_index=0',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
   it('renames, exports, and imports session records', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       if (String(_url).endsWith('/rename')) {

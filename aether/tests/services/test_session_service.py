@@ -278,6 +278,56 @@ def test_rewind_to_before_first_message_clears_transcript(tmp_path, monkeypatch:
     assert saved.first_user_message == ""
 
 
+def test_turn_checkpoint_diff_reads_tool_result_metadata(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+    record = SessionRecord.new(session_id="diff-source", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "edit app.py"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "file_edit", "arguments": {"path": "app.py"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "file_edit",
+            "content": "edited app.py",
+            "metadata": {
+                "path": "app.py",
+                "diff": diff,
+                "workspace_checkpoint": {
+                    "checkpoint_id": "cp-1",
+                    "root": "/repo",
+                    "files": [{"path": "app.py"}],
+                },
+            },
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoint_diff("diff-source", path="app.py", target_user_message_id="turn-1")
+
+    assert result.state == "ok"
+    assert result.diff == diff
+    assert result.path == "app.py"
+    assert result.target.target_user_message_id == "turn-1"
+    assert result.checkpoint_id == "cp-1"
+    assert result.work_dir == "/repo"
+
+    missing = service.turn_checkpoint_diff("diff-source", path="other.py", user_message_index=0)
+    assert missing.state == "missing"
+    assert missing.diff is None
+
+
 def test_transcript_normalizes_messages_and_malformed_tool_json(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)
     record = SessionRecord.new(session_id="with-msgs", provider="openai", model="gpt-5")

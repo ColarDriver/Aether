@@ -1,7 +1,7 @@
 import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
-import type { SessionInfo, TaskSummary } from '../../api/types'
+import type { SessionInfo, SessionTurnCheckpoint, TaskSummary } from '../../api/types'
 import type { AssistantMessageBlock as AssistantMessage, ChatBlock, RunStatusSnapshot, TokenUsage, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { tokenUsageFromRecord, tokenUsageTotal } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
@@ -73,6 +73,7 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
   const [verboseMode, setVerboseModeState] = useState(() => readBooleanSetting(WEB_VERBOSE_STORAGE_KEY, false))
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [composerDraftPatch, setComposerDraftPatch] = useState<ComposerDraftPatch | null>(null)
+  const [turnCheckpoints, setTurnCheckpoints] = useState<SessionTurnCheckpoint[]>([])
   const composerDraftPatchIdRef = useRef(0)
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -111,6 +112,28 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
     if (!sessionId) return
     void loadSessionTasks(sessionId)
   }, [loadSessionTasks, sessionId])
+
+  useEffect(() => {
+    if (!sessionId) {
+      setTurnCheckpoints([])
+      return
+    }
+    if (activeRunId) {
+      setTurnCheckpoints([])
+      return
+    }
+    let cancelled = false
+    api.sessionTurnCheckpoints(sessionId)
+      .then((result) => {
+        if (!cancelled) setTurnCheckpoints(result.checkpoints ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setTurnCheckpoints([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeRunId, blocks.length, sessionId])
 
   useEffect(() => {
     if (!sessionId) return
@@ -373,6 +396,8 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}
+          sessionId={session.session_id}
+          turnCheckpoints={turnCheckpoints}
           messageActionsDisabled={Boolean(activeRunId)}
           onOpenTask={setSelectedTaskId}
           onRespondPermission={respondPermission}

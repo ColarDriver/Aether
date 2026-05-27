@@ -18,7 +18,7 @@ import {
   ToolResultBlock,
   UserMessageBlock,
 } from './blocks'
-import type { CurrentTurnCheckpoint, CurrentTurnFileChangeAction, CurrentTurnVerification } from './blocks/CurrentTurnChangeCard'
+import type { CurrentTurnCheckpoint, CurrentTurnFileChangeAction, CurrentTurnUndoAction, CurrentTurnVerification } from './blocks/CurrentTurnChangeCard'
 
 type Props = {
   blocks: ChatBlock[]
@@ -30,6 +30,7 @@ type Props = {
   onOpenTask?: (taskId: string) => void
   onAcceptFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
   onRevertFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onUndoTurn?: (action: CurrentTurnUndoAction) => void
   onRetryAssistantMessage?: (block: AssistantMessage) => void
   onRetryUserMessage?: (block: UserMessage) => void
   onEditUserMessage?: (block: UserMessage) => void
@@ -39,7 +40,7 @@ type Props = {
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }
 
-export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
+export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onUndoTurn, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
   if (blocks.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
@@ -47,39 +48,45 @@ export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], m
   const turns = groupRenderItemsIntoTurns(model.items)
   return (
     <div className="chat-timeline">
-      {turns.map((turn) => (
-        <section className={turn.hasUser ? 'chat-turn' : 'chat-turn chat-turn-orphan'} key={turn.id}>
-          {turn.items.map((item) => (
-            <ChatRenderItemView
-              item={item}
-              key={item.kind === 'tool_group' ? item.id : item.block.id}
-              messageActionsDisabled={messageActionsDisabled}
-              onRespondPermission={onRespondPermission}
-              onRespondApproval={onRespondApproval}
-              onOpenTask={onOpenTask}
-              onRetryAssistantMessage={onRetryAssistantMessage}
-              onRetryUserMessage={onRetryUserMessage}
-              onEditUserMessage={onEditUserMessage}
-              onForkMessage={onForkMessage}
-              onRewindMessage={onRewindMessage}
-              onQuoteUserMessage={onQuoteUserMessage}
-              onQuoteAssistantMessage={onQuoteAssistantMessage}
-              results={model.toolResultsByCallId}
-              diffs={model.diffsByToolCallId}
+      {turns.map((turn) => {
+        const serverCheckpoint = checkpointForTurn(turn, turnCheckpoints)
+        return (
+          <section className={turn.hasUser ? 'chat-turn' : 'chat-turn chat-turn-orphan'} key={turn.id}>
+            {turn.items.map((item) => (
+              <ChatRenderItemView
+                item={item}
+                key={item.kind === 'tool_group' ? item.id : item.block.id}
+                messageActionsDisabled={messageActionsDisabled}
+                onRespondPermission={onRespondPermission}
+                onRespondApproval={onRespondApproval}
+                onOpenTask={onOpenTask}
+                onRetryAssistantMessage={onRetryAssistantMessage}
+                onRetryUserMessage={onRetryUserMessage}
+                onEditUserMessage={onEditUserMessage}
+                onForkMessage={onForkMessage}
+                onRewindMessage={onRewindMessage}
+                onQuoteUserMessage={onQuoteUserMessage}
+                onQuoteAssistantMessage={onQuoteAssistantMessage}
+                results={model.toolResultsByCallId}
+                diffs={model.diffsByToolCallId}
+              />
+            ))}
+            <CurrentTurnChangeCard
+              diffs={diffsForTurn(turn, model.diffsByToolCallId)}
+              diagnostics={diagnosticsForTurn(turn)}
+              verifications={verificationsForTurn(turn, model.toolResultsByCallId)}
+              checkpoint={workspaceCheckpointForTurn(turn)}
+              sessionId={sessionId}
+              serverCheckpoint={serverCheckpoint}
+              undoAction={undoActionForTurn(turn, serverCheckpoint)}
+              undoDisabled={messageActionsDisabled}
+              onAcceptFile={onAcceptFileChange}
+              onRevertFile={onRevertFileChange}
+              onUndoTurn={onUndoTurn}
             />
-          ))}
-          <CurrentTurnChangeCard
-            diffs={diffsForTurn(turn, model.diffsByToolCallId)}
-            diagnostics={diagnosticsForTurn(turn)}
-            verifications={verificationsForTurn(turn, model.toolResultsByCallId)}
-            checkpoint={workspaceCheckpointForTurn(turn)}
-            sessionId={sessionId}
-            serverCheckpoint={checkpointForTurn(turn, turnCheckpoints)}
-            onAcceptFile={onAcceptFileChange}
-            onRevertFile={onRevertFileChange}
-          />
-        </section>
-      ))}
+          </section>
+        )
+      })}
     </div>
   )
 }
@@ -204,6 +211,24 @@ function userMessageForTurn(turn: ChatTurn): UserMessage | null {
     if (item.kind === 'block' && item.block.kind === 'user_message') return item.block
   }
   return null
+}
+
+function undoActionForTurn(turn: ChatTurn, checkpoint: SessionTurnCheckpoint | null): CurrentTurnUndoAction | null {
+  const user = userMessageForTurn(turn)
+  if (!user || !checkpoint?.code.available || !checkpoint.code.checkpoint_id || checkpoint.code.files_changed.length === 0) return null
+  return {
+    body: {
+      target_user_message_id: checkpoint.target.target_user_message_id,
+      user_message_index: checkpoint.target.user_message_index,
+      expected_content: user.content,
+      checkpoint_id: checkpoint.code.checkpoint_id,
+      paths: checkpoint.code.files_changed,
+    },
+    promptContent: user.content,
+    attachments: user.attachments ?? [],
+    checkpointId: checkpoint.code.checkpoint_id,
+    paths: checkpoint.code.files_changed,
+  }
 }
 
 function checkpointFromMetadata(metadata: Record<string, unknown> | undefined): CurrentTurnCheckpoint | null {

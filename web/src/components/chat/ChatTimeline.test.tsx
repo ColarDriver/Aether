@@ -293,6 +293,63 @@ describe('ChatTimeline', () => {
     })))
   })
 
+  it('exposes checkpoint-backed undo actions for completed turns', () => {
+    const onUndoTurn = vi.fn()
+    const blocks: ChatBlock[] = [
+      {
+        ...base,
+        id: 'u-undo-turn',
+        source: 'transcript',
+        messageIndex: 0,
+        kind: 'user_message',
+        content: 'Patch auth',
+        attachments: [{ type: 'file', name: 'auth.ts', path: 'src/auth.ts' }],
+      },
+      { ...base, id: 'a-undo-turn', source: 'transcript', messageIndex: 1, kind: 'assistant_message', content: 'Changed auth.' },
+    ]
+
+    render(
+      <ChatTimeline
+        blocks={blocks}
+        sessionId="session-1"
+        turnCheckpoints={[{
+          target: {
+            target_user_message_id: 'turn-1',
+            user_message_index: 0,
+            user_message_count: 1,
+            message_index: 0,
+            content: 'Patch auth',
+          },
+          code: {
+            available: true,
+            files_changed: ['src/auth.ts'],
+            insertions: 2,
+            deletions: 1,
+            checkpoint_id: 'cp-undo',
+          },
+        }]}
+        onUndoTurn={onUndoTurn}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Changed files' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Undo turn' }))
+
+    expect(onUndoTurn).toHaveBeenCalledWith(expect.objectContaining({
+      promptContent: 'Patch auth',
+      attachments: [{ type: 'file', name: 'auth.ts', path: 'src/auth.ts' }],
+      checkpointId: 'cp-undo',
+      paths: ['src/auth.ts'],
+      body: {
+        target_user_message_id: 'turn-1',
+        user_message_index: 0,
+        expected_content: 'Patch auth',
+        checkpoint_id: 'cp-undo',
+        paths: ['src/auth.ts'],
+      },
+    }))
+  })
+
   it('attaches same-turn verification tool results to the changed-file summary', () => {
     const blocks: ChatBlock[] = [
       { ...base, id: 'u-verify-change', kind: 'user_message', content: 'Patch auth and verify' },

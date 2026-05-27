@@ -226,6 +226,31 @@ describe('CurrentTurnChangeCard', () => {
     }))
   })
 
+  it('emits a turn-level undo action from the card header', () => {
+    const onUndoTurn = vi.fn()
+    const undoAction = {
+      body: {
+        target_user_message_id: 'turn-1',
+        user_message_index: 0,
+        expected_content: 'Patch auth',
+        checkpoint_id: 'cp-undo',
+        paths: ['src/auth.ts'],
+      },
+      promptContent: 'Patch auth',
+      checkpointId: 'cp-undo',
+      paths: ['src/auth.ts'],
+    }
+    const diffs: DiffBlock[] = [
+      { ...base, id: 'd-undo', path: 'src/auth.ts', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+    ]
+
+    render(<CurrentTurnChangeCard diffs={diffs} undoAction={undoAction} onUndoTurn={onUndoTurn} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo turn' }))
+
+    expect(onUndoTurn).toHaveBeenCalledWith(undoAction)
+  })
+
   it('calls backend-backed accept handlers before marking a change accepted', async () => {
     const onAcceptFile = vi.fn().mockResolvedValue(undefined)
     const diffs: DiffBlock[] = [

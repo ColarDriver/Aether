@@ -17,7 +17,8 @@ import { PermissionDialog } from './PermissionDialog'
 import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 import { executeWebSlashCommand } from './slashExecute'
 import { TaskDetailDialog } from './TaskDetailDialog'
-import type { CurrentTurnFileChangeAction } from './blocks/CurrentTurnChangeCard'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
+import type { CurrentTurnFileChangeAction, CurrentTurnUndoAction } from './blocks/CurrentTurnChangeCard'
 
 type Props = {
   session: SessionInfo | null
@@ -72,6 +73,8 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [composerDraftPatch, setComposerDraftPatch] = useState<ComposerDraftPatch | null>(null)
   const [turnCheckpoints, setTurnCheckpoints] = useState<SessionTurnCheckpoint[]>([])
+  const [pendingTurnUndo, setPendingTurnUndo] = useState<CurrentTurnUndoAction | null>(null)
+  const [turnUndoRunning, setTurnUndoRunning] = useState(false)
   const composerDraftPatchIdRef = useRef(0)
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -142,6 +145,11 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
     }, 2000)
     return () => window.clearInterval(interval)
   }, [activeRunId, loadSessionTasks, sessionId, tasks])
+
+  useEffect(() => {
+    setPendingTurnUndo(null)
+    setTurnUndoRunning(false)
+  }, [sessionId])
 
   useEffect(() => {
     if (lastSessionIdRef.current === sessionId) return
@@ -309,6 +317,36 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
     appendLocalNotice(session.session_id, result.message || 'Accepted `' + change.path + '`.')
   }
 
+  const requestUndoTurn = (action: CurrentTurnUndoAction) => {
+    setPendingTurnUndo(action)
+  }
+
+  const confirmUndoTurn = () => {
+    if (!session || !pendingTurnUndo || turnUndoRunning) return
+    const action = pendingTurnUndo
+    setTurnUndoRunning(true)
+    void api.sessionActionUndoRun(session.session_id, action.body)
+      .then((result) => {
+        const rewind = result.result
+        if (!isSessionRewindResult(rewind)) {
+          throw new Error('Unexpected undo response from session service.')
+        }
+        replaceTranscript(rewind.session_id, rewind.messages)
+        void loadSessions()
+        setTurnCheckpoints([])
+        patchComposerDraft('replace', action.promptContent, action.attachments)
+        appendLocalNotice(rewind.session_id, checkpointActionNotice(result, turnUndoFallbackNotice(rewind)))
+        setPendingTurnUndo(null)
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+        setPendingTurnUndo(null)
+      })
+      .finally(() => {
+        setTurnUndoRunning(false)
+      })
+  }
+
   const stopTaskFromBar = async (task: TaskSummary) => {
     if (!session) return
     try {
@@ -432,6 +470,7 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
           onRespondApproval={respondApproval}
           onAcceptFileChange={acceptFileChange}
           onRevertFileChange={revertFileChange}
+          onUndoTurn={requestUndoTurn}
           onRetryAssistantMessage={retryAssistantMessage}
           onRetryUserMessage={retryUserMessage}
           onEditUserMessage={(block) => patchComposerDraft('replace', block.content, block.attachments)}
@@ -497,6 +536,18 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
           sessionTasks={tasks}
           onOpenTask={setSelectedTaskId}
           onClose={() => setSelectedTaskId(null)}
+        />
+      ) : null}
+      {pendingTurnUndo ? (
+        <ConfirmDialog
+          title="Undo this turn?"
+          description={turnUndoDescription(pendingTurnUndo)}
+          confirmLabel={turnUndoRunning ? 'Undoing' : 'Undo turn'}
+          cancelLabel="Cancel"
+          onConfirm={confirmUndoTurn}
+          onCancel={() => {
+            if (!turnUndoRunning) setPendingTurnUndo(null)
+          }}
         />
       ) : null}
     </div>
@@ -573,6 +624,17 @@ function checkpointActionNotice(result: SessionCheckpointActionResult, fallback:
   if (!checkpointId) return fallback
   const fileCount = paths.length > 0 ? paths.length.toLocaleString() + ' file' + (paths.length === 1 ? '' : 's') : 'workspace'
   return fallback + ' Restored ' + fileCount + ' from checkpoint `' + checkpointId + '`.'
+}
+
+function turnUndoFallbackNotice(rewind: SessionRewindResult): string {
+  const removed = rewind.messages_removed
+  return 'Undid selected turn and returned its prompt to the composer. Removed ' + removed.toLocaleString() + ' message' + (removed === 1 ? '' : 's') + '.'
+}
+
+function turnUndoDescription(action: CurrentTurnUndoAction): string {
+  const fileCount = action.paths.length
+  const fileLabel = fileCount.toLocaleString() + ' file' + (fileCount === 1 ? '' : 's')
+  return 'Restore ' + fileLabel + ' from checkpoint `' + (action.checkpointId || 'unknown') + '`, remove this turn from the transcript, and return the prompt to the composer.'
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> {

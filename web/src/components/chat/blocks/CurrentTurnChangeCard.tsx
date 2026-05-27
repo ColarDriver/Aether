@@ -1,8 +1,8 @@
 import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, FileCode2, Info, RotateCcw, ShieldCheck, XCircle } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError, api } from '../../../api/client'
-import type { SessionTurnCheckpoint, WorkspaceChange } from '../../../api/types'
-import type { DiagnosticEntry, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock } from '../../../chat-rendering'
+import type { SessionCheckpointActionBody, SessionTurnCheckpoint, WorkspaceChange } from '../../../api/types'
+import type { ChatAttachment, DiagnosticEntry, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock } from '../../../chat-rendering'
 import { CopyButton } from '../../shared/CopyButton'
 import { DiffViewer, parseUnifiedDiff } from '../DiffViewer'
 
@@ -13,8 +13,11 @@ type Props = {
   checkpoint?: CurrentTurnCheckpoint | null
   sessionId?: string | null
   serverCheckpoint?: SessionTurnCheckpoint | null
+  undoAction?: CurrentTurnUndoAction | null
+  undoDisabled?: boolean
   onAcceptFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
   onRevertFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onUndoTurn?: (action: CurrentTurnUndoAction) => void
 }
 
 export type FileChangeKind = 'created' | 'deleted' | 'modified'
@@ -41,6 +44,14 @@ export type CurrentTurnCheckpoint = {
   checkpointId: string
   label?: string | null
   files?: string[]
+}
+
+export type CurrentTurnUndoAction = {
+  body: SessionCheckpointActionBody
+  promptContent: string
+  attachments?: ChatAttachment[]
+  checkpointId?: string | null
+  paths: string[]
 }
 
 export type CurrentTurnVerification = {
@@ -73,7 +84,7 @@ type DiagnosticCounts = {
   infos: number
 }
 
-export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications = [], checkpoint = null, sessionId = null, serverCheckpoint = null, onAcceptFile, onRevertFile }: Props) {
+export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications = [], checkpoint = null, sessionId = null, serverCheckpoint = null, undoAction = null, undoDisabled = false, onAcceptFile, onRevertFile, onUndoTurn }: Props) {
   const localChanges = useMemo(() => summarizeDiffs(diffs, diagnostics), [diffs, diagnostics])
   const [serverDiffsByPath, setServerDiffsByPath] = useState<Record<string, ServerDiffState>>({})
   const changes = useMemo(() => {
@@ -206,28 +217,41 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications =
 
   return (
     <section className="current-turn-change-card" aria-label="Changed files">
-      <button
-        type="button"
-        className="current-turn-change-header"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <FileCode2 size={15} />
+      <div className="current-turn-change-header">
+        <button
+          type="button"
+          className="current-turn-change-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <FileCode2 size={15} />
           <strong>{changes.length} changed {changes.length === 1 ? 'file' : 'files'}</strong>
           <span className="current-turn-change-kind-summary" aria-label="File change summary">
-          {displayedTotals.created > 0 ? <em className="change-created">{displayedTotals.created} created</em> : null}
-          {displayedTotals.modified > 0 ? <em>{displayedTotals.modified} modified</em> : null}
-          {displayedTotals.deleted > 0 ? <em className="change-deleted">{displayedTotals.deleted} deleted</em> : null}
-        </span>
-        <DiagnosticPills counts={displayedTotals.diagnostics} compact />
-        {verifications.length > 0 ? <VerificationPill totals={verificationTotals} /> : null}
-        {effectiveCheckpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {effectiveCheckpoint.checkpointId.slice(0, 8)}</span> : null}
-        <span className="current-turn-change-stats">
-          <em className="change-add">+{displayedTotals.additions}</em>
-          <em className="change-remove">-{displayedTotals.removals}</em>
-        </span>
-      </button>
+            {displayedTotals.created > 0 ? <em className="change-created">{displayedTotals.created} created</em> : null}
+            {displayedTotals.modified > 0 ? <em>{displayedTotals.modified} modified</em> : null}
+            {displayedTotals.deleted > 0 ? <em className="change-deleted">{displayedTotals.deleted} deleted</em> : null}
+          </span>
+          <DiagnosticPills counts={displayedTotals.diagnostics} compact />
+          {verifications.length > 0 ? <VerificationPill totals={verificationTotals} /> : null}
+          {effectiveCheckpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {effectiveCheckpoint.checkpointId.slice(0, 8)}</span> : null}
+          <span className="current-turn-change-stats">
+            <em className="change-add">+{displayedTotals.additions}</em>
+            <em className="change-remove">-{displayedTotals.removals}</em>
+          </span>
+        </button>
+        {undoAction && onUndoTurn ? (
+          <button
+            type="button"
+            className="current-turn-change-undo"
+            disabled={undoDisabled}
+            onClick={() => onUndoTurn(undoAction)}
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            Undo turn
+          </button>
+        ) : null}
+      </div>
       <div className="current-turn-change-files">
         {changes.map((change) => {
           const diagnosticCounts = countDiagnostics(change.diagnostics)

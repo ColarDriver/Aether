@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
@@ -249,6 +249,82 @@ describe('ChatView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Rewind to reply' }))
 
     await waitFor(() => expect(api.sessionActionRewind).toHaveBeenCalledWith('session-1', { message_index: 1 }))
+  })
+
+  it('undoes a checkpoint-backed turn and returns its prompt to the composer', async () => {
+    const session = {
+      session_id: 'session-1',
+      created_at: 1,
+      updated_at: 1,
+      provider: 'openai',
+      model: 'gpt-5.4',
+      message_count: 2,
+    }
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({
+      session_id: 'session-1',
+      messages: [
+        { role: 'user', text: 'Patch auth', attachments: [{ type: 'file', name: 'auth.ts', path: 'src/auth.ts' }] },
+        { role: 'assistant', text: 'Changed auth.' },
+      ],
+    })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({ tasks: [], active_count: 0, total_count: 0 })
+    vi.spyOn(api, 'workspaceChanges').mockResolvedValue({
+      root: '/workspace/Aether',
+      git_root: '/workspace/Aether',
+      available: true,
+      changes: [],
+    })
+    vi.spyOn(api, 'sessionTurnCheckpoints').mockResolvedValue({
+      session_id: 'session-1',
+      checkpoints: [{
+        target: {
+          target_user_message_id: 'turn-1',
+          user_message_index: 0,
+          user_message_count: 1,
+          message_index: 0,
+          content: 'Patch auth',
+        },
+        code: {
+          available: true,
+          files_changed: ['src/auth.ts'],
+          insertions: 2,
+          deletions: 1,
+          checkpoint_id: 'cp-undo',
+        },
+      }],
+    })
+    vi.spyOn(api, 'sessionActionUndoRun').mockResolvedValue({
+      action: 'undo_run',
+      restore: { checkpoint_id: 'cp-undo', paths: ['src/auth.ts'] },
+      result: {
+        session_id: 'session-1',
+        rewound_to_index: -1,
+        messages_kept: 0,
+        messages_removed: 2,
+        info: { ...session, message_count: 0 },
+        messages: [],
+      },
+    })
+    vi.spyOn(api, 'sessions').mockResolvedValue({ sessions: [session] })
+
+    render(<ChatView session={session} />)
+
+    expect(await screen.findByText('Changed auth.')).toBeTruthy()
+    await waitFor(() => expect(api.sessionTurnCheckpoints).toHaveBeenCalledWith('session-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo turn' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Undo this turn?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Undo turn' }))
+
+    await waitFor(() => expect(api.sessionActionUndoRun).toHaveBeenCalledWith('session-1', {
+      target_user_message_id: 'turn-1',
+      user_message_index: 0,
+      expected_content: 'Patch auth',
+      checkpoint_id: 'cp-undo',
+      paths: ['src/auth.ts'],
+    }))
+    expect(await screen.findByText(/Restored 1 file from checkpoint `cp-undo`/)).toBeTruthy()
+    await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Patch auth'))
   })
 
   it('stops an active subagent task from the session task bar', async () => {

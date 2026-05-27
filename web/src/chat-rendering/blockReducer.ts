@@ -2,6 +2,7 @@ import type { RunSocketFrame } from '../api/types'
 import type {
   ApprovalRequestBlock,
   ChatBlock,
+  ErrorDiagnosticDetail,
   PermissionPreview,
   PermissionRequestBlock,
   TokenUsage,
@@ -18,21 +19,41 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
   const runId = frameRunId(frame)
 
   if (frame.type === 'run.accepted') {
+    if (!sessionId || !runId) {
+      return {
+        ...state,
+        activeRunId: runId || state.activeRunId,
+      }
+    }
+    const blocks = state.blocksBySession[sessionId] ?? []
+    const snapshot: RunStatusSnapshot = {
+      runId,
+      sessionId,
+      state: 'starting',
+      detail: 'run accepted',
+    }
     return {
-      ...state,
-      activeRunId: runId || state.activeRunId,
+      ...withSessionBlocks(state, sessionId, upsertStreamingStatus(blocks, snapshot)),
+      activeRunId: runId,
+      statusByRun: {
+        ...state.statusByRun,
+        [runId]: snapshot,
+      },
     }
   }
 
-  if (frame.type === 'prompt.resolved') {
+  if (isPromptTerminalFrame(frame.type)) {
     const promptId = stringFromUnknown(payload.prompt_id)
     const result = recordFromUnknown(payload.result)
+    const terminalState = promptTerminalState(frame.type)
     return {
       ...state,
       blocksBySession: resolvePromptInBlocks(
         state.blocksBySession,
         promptId,
         Object.keys(result).length > 0 ? result : payload,
+        terminalState,
+        stringFromUnknown(payload.reason),
       ),
       pendingPermissionBlock: state.pendingPermissionBlock?.promptId === promptId ? null : state.pendingPermissionBlock,
       pendingApprovalBlock: state.pendingApprovalBlock?.promptId === promptId ? null : state.pendingApprovalBlock,
@@ -42,6 +63,44 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
   if (!sessionId) return state
 
   const blocks = state.blocksBySession[sessionId] ?? []
+
+  if (frame.type === 'run.started') {
+    if (!runId) return state
+    const snapshot: RunStatusSnapshot = {
+      runId,
+      sessionId,
+      state: 'starting',
+      detail: 'run started',
+      tokens: state.statusByRun[runId]?.tokens,
+    }
+    return {
+      ...withSessionBlocks(state, sessionId, upsertStreamingStatus(blocks, snapshot)),
+      activeRunId: runId || state.activeRunId,
+      statusByRun: {
+        ...state.statusByRun,
+        [runId]: snapshot,
+      },
+    }
+  }
+
+  if (frame.type === 'run.cancel.accepted') {
+    if (!runId) return state
+    const cancelled = payload.cancelled !== false
+    const snapshot: RunStatusSnapshot = {
+      runId,
+      sessionId,
+      state: cancelled ? 'cancelling' : 'idle',
+      detail: cancelled ? 'interrupt requested' : 'no active run',
+      tokens: state.statusByRun[runId]?.tokens,
+    }
+    return {
+      ...withSessionBlocks(state, sessionId, upsertStreamingStatus(blocks, snapshot)),
+      statusByRun: {
+        ...state.statusByRun,
+        [runId]: snapshot,
+      },
+    }
+  }
 
   if (frame.type === 'assistant.delta') {
     const text = stringFromUnknown(payload.text)
@@ -183,7 +242,7 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
     const metadata = recordFromUnknown(payload.metadata)
     const usage = tokenUsageFromRecord(recordFromUnknown(payload.usage))
     const hasUsage = Object.values(usage).some((value) => typeof value === 'number')
-    const nextBlocks = applyRunResultBlocks(
+    let nextBlocks = applyRunResultBlocks(
       blocks,
       sessionId,
       runId,
@@ -191,6 +250,14 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
       metadata,
       timestampFor(frame),
     )
+    if (stringFromUnknown(payload.exit_reason) === 'error') {
+      nextBlocks = failRunBlocks(
+        nextBlocks,
+        sessionId,
+        runId,
+        errorDiagnosticFromRunResult(metadata, payload),
+      )
+    }
     const previous = state.statusByRun[runId]
     return {
       ...withSessionBlocks(state, sessionId, nextBlocks),
@@ -222,10 +289,15 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
     }
   }
 
-  if (frame.type === 'run.failed') {
+  if (frame.type === 'run.failed' || frame.type === 'error') {
+    const message = stringFromUnknown(payload.message) || stringFromUnknown(payload.error) || 'Run failed.'
+    const code = stringFromUnknown(payload.code) || (frame.type === 'error' ? 'run_error' : 'run_failed')
+    const diagnostic = frame.type === 'error'
+      ? errorDiagnosticFromServiceFrame(payload, message, code)
+      : { message, code }
     return {
-      ...withSessionBlocks(state, sessionId, failRunBlocks(blocks, sessionId, runId, stringFromUnknown(payload.message))),
-      activeRunId: state.activeRunId === runId ? null : state.activeRunId,
+      ...withSessionBlocks(state, sessionId, failRunBlocks(blocks, sessionId, runId, diagnostic)),
+      activeRunId: !runId || state.activeRunId === runId ? null : state.activeRunId,
     }
   }
 
@@ -236,18 +308,26 @@ export function resolvePromptInBlocks(
   blocksBySession: Record<string, ChatBlock[]>,
   promptId: string,
   result: Record<string, unknown>,
+  terminalState?: 'stale' | 'expired' | 'disconnected' | 'missing',
+  statusMessage?: string | null,
 ): Record<string, ChatBlock[]> {
   if (!promptId) return blocksBySession
   const next: Record<string, ChatBlock[]> = {}
   for (const [sessionId, blocks] of Object.entries(blocksBySession)) {
     next[sessionId] = blocks.map((block) => {
       if (block.kind === 'permission_request' && block.promptId === promptId) {
+        if (terminalState) {
+          return { ...block, state: terminalState, statusMessage }
+        }
         const decision = recordFromUnknown(result.decision)
         const rawType = stringFromUnknown(result.type || decision.type || result.decision)
         const state = rawType.includes('deny') ? 'denied' : rawType.includes('abort') ? 'aborted' : 'allowed'
         return { ...block, state }
       }
       if (block.kind === 'approval_request' && block.promptId === promptId) {
+        if (terminalState) {
+          return { ...block, state: terminalState, statusMessage }
+        }
         const confirmed = result.confirmed === true
         const answers = recordFromUnknown(result.answers)
         return {
@@ -259,6 +339,22 @@ export function resolvePromptInBlocks(
     })
   }
   return next
+}
+
+function isPromptTerminalFrame(type: string): boolean {
+  return type === 'prompt.resolved'
+    || type === 'prompt.stale'
+    || type === 'prompt.expired'
+    || type === 'prompt.disconnected'
+    || type === 'prompt.missing'
+}
+
+function promptTerminalState(type: string): 'stale' | 'expired' | 'disconnected' | 'missing' | undefined {
+  if (type === 'prompt.stale') return 'stale'
+  if (type === 'prompt.expired') return 'expired'
+  if (type === 'prompt.disconnected') return 'disconnected'
+  if (type === 'prompt.missing') return 'missing'
+  return undefined
 }
 
 function withSessionBlocks(state: ChatRenderState, sessionId: string, blocks: ChatBlock[]): ChatRenderState {
@@ -528,7 +624,19 @@ function applyRunResultBlocks(
       ...(hasMetadata ? { metadata: mergeMetadata(block.metadata, metadata) } : {}),
     })
   }
-  if (!finalText) return finished
+  if (!finalText) {
+    if (hasMetadata) {
+      const resultIndex = findLastIndex(finished, (block) => block.kind === 'tool_result' && block.runId === runId)
+      const block = finished[resultIndex]
+      if (block?.kind === 'tool_result') {
+        return replaceAt(finished, resultIndex, {
+          ...block,
+          metadata: mergeMetadata(block.metadata, metadata),
+        })
+      }
+    }
+    return finished
+  }
   return [
     ...finished,
     {
@@ -560,14 +668,34 @@ function finishRunBlocks(blocks: ChatBlock[], runId: string): ChatBlock[] {
     .filter((block) => !(block.runId === runId && block.kind === 'streaming_status'))
 }
 
-function failRunBlocks(blocks: ChatBlock[], sessionId: string, runId: string, message: string): ChatBlock[] {
+type RunErrorDiagnostic = {
+  message: string
+  code?: string | null
+  details?: ErrorDiagnosticDetail[]
+  suggestions?: string[]
+}
+
+function failRunBlocks(blocks: ChatBlock[], sessionId: string, runId: string, diagnostic: RunErrorDiagnostic): ChatBlock[] {
+  const message = diagnostic.message || 'Run failed.'
+  const code = diagnostic.code || 'run_failed'
   const finished = finishRunBlocks(blocks, runId).map((block) =>
     block.kind === 'assistant_message' && block.runId === runId
       ? { ...block, isStreaming: false, isError: true }
       : block,
   )
   const hasError = finished.some((block) => block.kind === 'error' && block.runId === runId)
-  if (hasError) return finished
+  if (hasError) {
+    return finished.map((block) => {
+      if (block.kind !== 'error' || block.runId !== runId) return block
+      return {
+        ...block,
+        message: preferredErrorMessage(block.message, message),
+        code: block.code || code,
+        details: mergeErrorDetails(block.details, diagnostic.details),
+        suggestions: mergeStrings(block.suggestions, diagnostic.suggestions),
+      }
+    })
+  }
   return [
     ...finished,
     {
@@ -578,9 +706,147 @@ function failRunBlocks(blocks: ChatBlock[], sessionId: string, runId: string, me
       source: 'live',
       kind: 'error',
       message: message || 'Run failed.',
-      code: 'run_failed',
+      code,
+      ...(diagnostic.details && diagnostic.details.length > 0 ? { details: diagnostic.details } : {}),
+      ...(diagnostic.suggestions && diagnostic.suggestions.length > 0 ? { suggestions: diagnostic.suggestions } : {}),
     },
   ]
+}
+
+function preferredErrorMessage(current: string, incoming: string): string {
+  if (!incoming) return current
+  if (!current) return incoming
+  if (incoming === current) return current
+  if (incoming.length > current.length) return incoming
+  return current
+}
+
+function errorDiagnosticFromRunResult(metadata: Record<string, unknown>, payload: Record<string, unknown>): RunErrorDiagnostic {
+  const error = recordFromUnknown(metadata.error)
+  const message = stringFromUnknown(error.message) || stringFromUnknown(payload.error) || 'Run failed.'
+  const details: ErrorDiagnosticDetail[] = []
+  const status = numberOrUndefined(error.status_code)
+  if (status !== undefined) details.push({ label: 'HTTP status', value: String(status) })
+  const errorMetadata = recordFromUnknown(error.metadata)
+  const url = stringFromUnknown(errorMetadata.url)
+  if (url) details.push({ label: 'Endpoint', value: url })
+  const method = stringFromUnknown(errorMetadata.method)
+  if (method) details.push({ label: 'Method', value: method })
+  const phase = stringFromUnknown(errorMetadata.phase)
+  if (phase) details.push({ label: 'Phase', value: phase })
+  if (error.is_network_error === true) details.push({ label: 'Network', value: 'transport-level failure' })
+  const retryAfter = numberOrUndefined(error.retry_after_seconds)
+  if (retryAfter !== undefined) details.push({ label: 'Retry after', value: formatSeconds(retryAfter) })
+  const body = stringFromUnknown(error.body_summary)
+  if (body) details.push({ label: 'Response body', value: body })
+  return {
+    message,
+    code: stringFromUnknown(error.type) || 'run_error',
+    details,
+    suggestions: errorSuggestions({ status, url, body, message, network: error.is_network_error === true }),
+  }
+}
+
+function errorDiagnosticFromServiceFrame(
+  payload: Record<string, unknown>,
+  message: string,
+  code: string,
+): RunErrorDiagnostic {
+  const detailsRecord = recordFromUnknown(payload.details)
+  const details = Object.entries(detailsRecord)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => ({
+      label: detailLabel(key),
+      value: detailValue(value),
+    }))
+    .filter((detail) => detail.value.length > 0)
+  return {
+    message,
+    code,
+    details,
+    suggestions: serviceErrorSuggestions(code, message),
+  }
+}
+
+function errorSuggestions(input: { status?: number; url: string; body: string; message: string; network: boolean }): string[] {
+  const haystack = [input.body, input.message].join('\n').toLowerCase()
+  const suggestions: string[] = []
+  if (input.status === 404) {
+    suggestions.push('Check the provider base URL and API mode. OpenAI-compatible chat calls usually need a /v1-compatible endpoint that serves /chat/completions.')
+    suggestions.push('Verify the selected model exists on that endpoint; some gateways return 404 for unknown models.')
+  } else if (input.status === 401 || input.status === 403) {
+    suggestions.push('Check the active provider credential and whether this key can use the selected model.')
+  } else if (input.status === 429) {
+    suggestions.push('The provider rate limit was hit. Wait or switch to a provider/model with available quota.')
+  } else if (input.status === 413 || haystack.includes('context length') || haystack.includes('maximum context')) {
+    suggestions.push('The request is too large for the model context window. Compress context, clear old transcript, or select a larger-context model.')
+  } else if (input.network) {
+    suggestions.push('The backend could not complete the network request. Check provider host reachability, proxy settings, and timeout configuration.')
+  }
+  if (input.url && !input.url.includes('/chat/completions') && input.url.includes('/v1')) {
+    suggestions.push('This request did not target /chat/completions; confirm the provider API mode matches the configured endpoint.')
+  }
+  return mergeStrings(undefined, suggestions) ?? []
+}
+
+function serviceErrorSuggestions(code: string, message: string): string[] {
+  const normalized = (code + '\n' + message).toLowerCase()
+  if (normalized.includes('run_already_active') || normalized.includes('already active')) {
+    return ['Wait for the active run to finish, or cancel it before starting a new run in this session.']
+  }
+  if (normalized.includes('invalid_run_start')) {
+    return ['Send a non-empty prompt or attach at least one file before starting a run.']
+  }
+  return []
+}
+
+function detailLabel(key: string): string {
+  return key
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function detailValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function mergeErrorDetails(
+  left: ErrorDiagnosticDetail[] | undefined,
+  right: ErrorDiagnosticDetail[] | undefined,
+): ErrorDiagnosticDetail[] | undefined {
+  const seen = new Set<string>()
+  const merged: ErrorDiagnosticDetail[] = []
+  for (const detail of [...(left ?? []), ...(right ?? [])]) {
+    if (!detail.label || !detail.value) continue
+    const key = detail.label + '\n' + detail.value
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(detail)
+  }
+  return merged.length > 0 ? merged : undefined
+}
+
+function mergeStrings(left: string[] | undefined, right: string[] | undefined): string[] | undefined {
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const value of [...(left ?? []), ...(right ?? [])]) {
+    const normalized = value.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    merged.push(normalized)
+  }
+  return merged.length > 0 ? merged : undefined
+}
+
+function formatSeconds(value: number): string {
+  if (!Number.isFinite(value)) return String(value)
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 }) + 's'
 }
 
 function statusSnapshotFromFrame(

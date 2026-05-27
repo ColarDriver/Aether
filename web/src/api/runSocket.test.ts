@@ -160,6 +160,27 @@ describe('run socket client', () => {
     client.disconnect()
   })
 
+  it('emits local connection lifecycle frames during reconnects', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RunSocketClient()
+    const handler = vi.fn()
+    client.onFrame(handler)
+
+    client.connect()
+    expect(handler).toHaveBeenCalledWith({ type: 'socket.connecting' })
+    fakeSockets[0].open()
+    expect(handler).toHaveBeenCalledWith({ type: 'socket.open' })
+
+    fakeSockets[0].serverClose()
+    expect(handler).toHaveBeenCalledWith({ type: 'socket.closed', payload: { reconnecting: true, opened: true } })
+    vi.advanceTimersByTime(1000)
+    expect(fakeSockets).toHaveLength(2)
+    expect(handler).toHaveBeenCalledWith({ type: 'socket.connecting' })
+
+    client.disconnect()
+  })
+
   it('reconnects after an unexpected close', () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)

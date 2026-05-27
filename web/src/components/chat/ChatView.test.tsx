@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
@@ -12,6 +12,8 @@ afterEach(() => {
   vi.restoreAllMocks()
   useChatStore.setState({
     connected: false,
+    socketState: 'idle',
+    socketDetail: null,
     frames: [],
     activeRunId: null,
     blocksBySession: {},
@@ -118,5 +120,65 @@ describe('ChatView', () => {
     expect(screen.getByRole('button', { name: /Plan edit/ })).toBeTruthy()
     expect(screen.getByRole('textbox')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeTruthy()
+  })
+
+  it('stops an active subagent task from the session task bar', async () => {
+    const task = {
+      task_id: 'task-1',
+      parent_session_id: 'session-1',
+      subagent_type: 'explorer',
+      prompt: 'Inspect renderer',
+      status: 'running',
+      started_at: 10,
+      finished_at: null,
+      last_heartbeat: 11,
+      model: 'gpt-5.4',
+      isolation: null,
+      worktree_path: null,
+      parent_task_id: null,
+      child_depth: 1,
+      background: true,
+      tool_use_count: 2,
+      input_tokens: 100,
+      output_tokens: 25,
+      iterations: 1,
+      summary: null,
+      error: null,
+      result_path: null,
+      output_tail: null,
+      metadata: null,
+    } as const
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({ session_id: 'session-1', messages: [] })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({ tasks: [task], active_count: 1, total_count: 1 })
+    vi.spyOn(api, 'stopTask').mockResolvedValue({
+      task_id: 'task-1',
+      delivered: true,
+      status: 'running',
+      message: 'Stop signal sent to running task.',
+    })
+    useTaskStore.setState({
+      tasksBySession: { 'session-1': [task] },
+      isLoadingBySession: {},
+      errorBySession: {},
+    })
+
+    render(
+      <ChatView
+        session={{
+          session_id: 'session-1',
+          created_at: 1,
+          updated_at: 1,
+          provider: 'openai',
+          model: 'gpt-5.4',
+          message_count: 0,
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop task task-1' }))
+
+    await waitFor(() => expect(api.stopTask).toHaveBeenCalledWith('task-1'))
+    await waitFor(() => expect(api.sessionTasks).toHaveBeenCalledWith('session-1', { limit: 100 }))
+    expect(await screen.findByText('Stop signal sent to running task.')).toBeTruthy()
   })
 })

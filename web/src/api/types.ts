@@ -13,6 +13,104 @@ export type SessionInfo = {
   mode?: string | null
 }
 
+export type SessionDetail = {
+  session_id: string
+  info: SessionInfo
+  messages: TranscriptMessage[]
+}
+
+export type SessionForkResult = {
+  source_session_id: string
+  forked_from_index: number
+  messages_copied: number
+  info: SessionInfo
+  messages: TranscriptMessage[]
+}
+
+export type SessionRewindResult = {
+  session_id: string
+  rewound_to_index: number
+  messages_kept: number
+  messages_removed: number
+  info: SessionInfo
+  messages: TranscriptMessage[]
+}
+
+export type SessionTurnTarget = {
+  target_user_message_id: string
+  user_message_index: number
+  user_message_count: number
+  message_index: number
+  content?: string | null
+}
+
+export type SessionTurnCodeSnapshot = {
+  available: boolean
+  files_changed: string[]
+  insertions: number
+  deletions: number
+  checkpoint_id?: string | null
+  reason?: string | null
+}
+
+export type SessionTurnCheckpoint = {
+  target: SessionTurnTarget
+  code: SessionTurnCodeSnapshot
+  work_dir?: string | null
+  conversation?: Record<string, unknown> | null
+}
+
+export type SessionTurnCheckpointsResult = {
+  session_id: string
+  checkpoints: SessionTurnCheckpoint[]
+}
+
+export type SessionMessageAction = {
+  name: string
+  supported: boolean
+  label: string
+  reason?: string | null
+  checkpoint_id?: string | null
+  destructive: boolean
+}
+
+export type SessionMessageActionsResult = {
+  session_id: string
+  message_index: number
+  role: string
+  target_user_message_id?: string | null
+  user_message_index?: number | null
+  actions: SessionMessageAction[]
+}
+
+export type SessionCheckpointActionBody = {
+  message_index?: number | null
+  target_user_message_id?: string | null
+  user_message_index?: number | null
+  expected_content?: string | null
+  checkpoint_id?: string | null
+  paths?: string[] | null
+  new_session_id?: string | null
+}
+
+export type SessionCheckpointActionResult = {
+  action: string
+  restore?: Record<string, unknown> | null
+  result: SessionRewindResult | SessionForkResult
+}
+
+export type SessionExportResult = {
+  session_id: string
+  data: Record<string, unknown>
+}
+
+export type SessionImportResult = {
+  source_session_id?: string | null
+  overwritten: boolean
+  info: SessionInfo
+  messages: TranscriptMessage[]
+}
+
 export type TranscriptToolCall = {
   id: string
   name: string
@@ -77,6 +175,11 @@ export type ProviderModelList = {
     error?: string | null
     count?: number | null
     base_url?: string | null
+    base_url_source?: string | null
+    url?: string | null
+    suggested_base_url?: string | null
+    warning?: string | null
+    body_preview?: string | null
   }
 }
 
@@ -90,6 +193,23 @@ export type ProviderRuntimeStatus = {
   base_url_env_names: string[]
   source: string
   credential?: CredentialStatus | null
+  extra?: Record<string, unknown>
+}
+
+export type ProviderPreflightStatus = {
+  family: string
+  provider_name: string
+  model: string
+  base_url?: string | null
+  chat_completions_url?: string | null
+  models_url?: string | null
+  status: 'ready' | 'warning' | 'error' | string
+  ready: boolean
+  credential?: CredentialStatus | null
+  discovery?: ProviderModelList['discovery'] | null
+  issues: string[]
+  suggestions: string[]
+  extra?: Record<string, unknown>
 }
 
 export type ProviderSelectionResult = {
@@ -113,6 +233,112 @@ export type ToolSummary = {
 export type ToolGroup = {
   name: string
   tools: ToolSummary[]
+}
+
+export type McpImportedTool = {
+  name: string
+  server: string
+  local_name: string
+  description: string
+  enabled: boolean
+}
+
+export type McpServerSummary = {
+  name: string
+  status: string
+  tools_count: number
+  resources_count: number
+  credential_status: string
+}
+
+export type McpConfiguredServer = {
+  name: string
+  enabled: boolean
+  transport: string
+  command?: string | null
+  args: string[]
+  url?: string | null
+  env_keys: string[]
+  header_keys: string[]
+  timeout?: number | null
+  connect_timeout?: number | null
+  source: string
+}
+
+export type McpConfigList = {
+  config_path: string
+  exists: boolean
+  servers: McpConfiguredServer[]
+}
+
+export type McpConfigMutationResult = {
+  ok: boolean
+  config_path: string
+  message: string
+  server?: McpConfiguredServer | null
+}
+
+export type McpStatus = {
+  enabled: boolean
+  status: string
+  message: string
+  servers: McpServerSummary[]
+  imported_tools: McpImportedTool[]
+}
+
+export type McpResourceSummary = {
+  server: string
+  uri: string
+  name: string
+  mime_type?: string | null
+  description: string
+}
+
+export type McpResourceList = {
+  enabled: boolean
+  status: string
+  message: string
+  resources: McpResourceSummary[]
+}
+
+export type McpResourceContent = {
+  type: string
+  text?: string | null
+  blob?: string | null
+  mime_type?: string | null
+  uri?: string | null
+}
+
+export type McpResourceReadResult = {
+  enabled: boolean
+  status: string
+  message: string
+  server: string
+  uri: string
+  name?: string | null
+  mime_type?: string | null
+  contents: McpResourceContent[]
+}
+
+export type WebSearchStatus = {
+  enabled: boolean
+  provider: string
+  supported_providers: string[]
+  api_key_configured: boolean
+  credential_name: string
+  api_key_source?: string | null
+  status: string
+  message: string
+}
+
+export type WebSearchTestResult = {
+  ok: boolean
+  provider: string
+  query: string
+  result_count: number
+  message: string
+  content_preview: string
+  error?: string | null
 }
 
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'killed' | string
@@ -208,6 +434,21 @@ export type TaskListResult = {
   total_count: number
 }
 
+export type TaskStopResult = {
+  task_id: string
+  delivered: boolean
+  status: string
+  message: string
+}
+
+export type TaskSendMessageResult = {
+  task_id: string
+  queued: boolean
+  status: string
+  message: string
+  queued_chars: number
+}
+
 export type SkillSummary = {
   name: string
   description: string
@@ -292,6 +533,34 @@ export type PlanCurrent = {
   has_plan: boolean
   plan_content?: string | null
   info?: SessionInfo
+}
+
+
+export type ContextStatus = {
+  session_id: string
+  context_engine: string
+  compression_count: number
+  last_compression?: Record<string, unknown> | null
+  message_count: number
+  token_estimate: number
+  provider?: string | null
+  model?: string | null
+  context_window?: number | null
+  prompt_tokens?: number
+  transcript_tokens?: number
+  system_tokens?: number
+  memory_tokens?: number
+  attachment_tokens?: number
+  tool_result_tokens?: number
+  pressure_level?: string
+  next_action?: string
+  breakdown?: Array<{
+    label: string
+    tokens: number
+    detail?: string | null
+  }>
+  status?: string | null
+  error?: string | null
 }
 
 export type SlashCommandInfo = {
@@ -449,6 +718,17 @@ export type WorkspaceTree = {
   entries: WorkspaceEntry[]
 }
 
+export type WorkspaceRootInfo = {
+  root: string
+  name: string
+  exists: boolean
+  readable: boolean
+  git_root?: string | null
+  is_git: boolean
+  recent_roots: string[]
+  message?: string | null
+}
+
 export type WorkspaceFile = {
   root: string
   path: string
@@ -466,4 +746,102 @@ export type WorkspaceSearchResult = {
   root: string
   query: string
   entries: WorkspaceEntry[]
+}
+
+export type WorkspaceGitFile = {
+  path: string
+  status: string
+  index_status: string
+  worktree_status: string
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
+}
+
+export type WorkspaceGitStatus = {
+  root: string
+  git_root?: string | null
+  available: boolean
+  branch?: string | null
+  upstream?: string | null
+  ahead: number
+  behind: number
+  clean: boolean
+  files: WorkspaceGitFile[]
+  message?: string | null
+}
+
+export type WorkspaceGitDiff = {
+  root: string
+  path?: string | null
+  diff: string
+  staged: boolean
+  truncated: boolean
+}
+
+export type WorkspaceChange = {
+  change_id: string
+  path: string
+  status: string
+  source: string
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
+  binary: boolean
+  accepted: boolean
+  rejected: boolean
+  conflict: boolean
+  checkpoint_available: boolean
+  additions: number
+  removals: number
+  hunks: number
+  current_hash?: string | null
+}
+
+export type WorkspaceChangeList = {
+  root: string
+  git_root?: string | null
+  available: boolean
+  changes: WorkspaceChange[]
+  message?: string | null
+}
+
+export type WorkspaceChangeActionResult = {
+  root: string
+  action: string
+  paths: string[]
+  status: WorkspaceGitStatus
+  checkpoint_id?: string | null
+  message?: string | null
+}
+
+export type WorkspaceChangeVerificationResult = {
+  root: string
+  paths: string[]
+  status: string
+  command: string[]
+  exit_code?: number | null
+  stdout: string
+  stderr: string
+  message?: string | null
+}
+
+export type WorkspaceCheckpointFile = {
+  path: string
+  exists: boolean
+  size_bytes: number
+  binary: boolean
+}
+
+export type WorkspaceCheckpoint = {
+  checkpoint_id: string
+  label?: string | null
+  created_at: number
+  root: string
+  files: WorkspaceCheckpointFile[]
+}
+
+export type WorkspaceCheckpointList = {
+  root: string
+  checkpoints: WorkspaceCheckpoint[]
 }

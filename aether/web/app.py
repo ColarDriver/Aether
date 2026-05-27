@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from aether.services.analytics import AnalyticsService
 from aether.services.config import ConfigService, PrefsService
+from aether.services.context import ContextService
 from aether.services.diagnostics import DiagnosticsService
 from aether.services.docs import DocsService
 from aether.services.environment import EnvironmentService
@@ -21,11 +22,13 @@ from aether.services.skills import SkillService
 from aether.services.tasks import TaskService
 from aether.services.tools import ToolService
 from aether.services.workspace import WorkspaceService
+from aether.services.common import ServiceError
 from aether.web.errors import install_error_handlers
 from aether.web.routes.analytics import router as analytics_router
 from aether.web.routes.bootstrap import router as bootstrap_router
 from aether.web.routes.commands import router as commands_router
 from aether.web.routes.config import router as config_router
+from aether.web.routes.context import router as context_router
 from aether.web.routes.diagnostics import router as diagnostics_router
 from aether.web.routes.docs import router as docs_router
 from aether.web.routes.environment import router as environment_router
@@ -43,6 +46,7 @@ from aether.web.security import create_session_token, install_security
 from aether.web.static import mount_spa
 from aether.web.ws.hub import WebRunSocketHub
 from aether.web.ws.prompts import WebPromptBroker
+from aether.web.ws.prompt_store import WebPromptStore
 from aether.web.ws.runs import router as run_ws_router
 
 
@@ -50,6 +54,7 @@ from aether.web.ws.runs import router as run_ws_router
 class WebServices:
     health: HealthService
     sessions: SessionService
+    context: ContextService
     config: ConfigService
     prefs: PrefsService
     providers: ProviderService
@@ -74,6 +79,7 @@ def create_app(
     web_dist: str | Path | None = None,
     health_service: HealthService | None = None,
     session_service: SessionService | None = None,
+    context_service: ContextService | None = None,
     config_service: ConfigService | None = None,
     prefs_service: PrefsService | None = None,
     provider_service: ProviderService | None = None,
@@ -88,6 +94,7 @@ def create_app(
     analytics_service: AnalyticsService | None = None,
     docs_service: DocsService | None = None,
     workspace_service: WorkspaceService | None = None,
+    web_prompt_store: WebPromptStore | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI app.
 
@@ -99,17 +106,26 @@ def create_app(
     token = session_token or create_session_token()
     app = FastAPI(title="Aether Web Console", version=_package_version())
     sessions = session_service or SessionService()
+    prefs = prefs_service or PrefsService()
+    workspace = workspace_service or _workspace_service_from_prefs(prefs)
+    prompt_store = web_prompt_store or WebPromptStore()
+    prompt_store.mark_orphaned_stale()
     app.state.aether_session_token = token
     app.state.aether_auth_enabled = bool(auth_enabled)
     app.state.aether_bound_host = bound_host
     app.state.aether_run_socket_hub = WebRunSocketHub()
-    app.state.aether_web_prompt_broker = WebPromptBroker(send_frame=app.state.aether_run_socket_hub.broadcast)
+    app.state.aether_web_prompt_store = prompt_store
+    app.state.aether_web_prompt_broker = WebPromptBroker(
+        send_frame=app.state.aether_run_socket_hub.broadcast,
+        prompt_store=prompt_store,
+    )
     app.state.aether_run_tasks = set()
     app.state.aether_services = WebServices(
         health=health_service or HealthService(),
         sessions=sessions,
+        context=context_service or ContextService(session_service=sessions),
         config=config_service or ConfigService(),
-        prefs=prefs_service or PrefsService(),
+        prefs=prefs,
         providers=provider_service or ProviderService(),
         model_selection=model_selection_service or ModelSelectionService(),
         tools=tool_service or ToolService(),
@@ -121,7 +137,7 @@ def create_app(
         logs=log_service or LogService(),
         analytics=analytics_service or AnalyticsService(session_service=sessions),
         docs=docs_service or DocsService(),
-        workspace=workspace_service or WorkspaceService(),
+        workspace=workspace,
     )
 
     install_security(
@@ -136,6 +152,7 @@ def create_app(
     app.include_router(bootstrap_router)
     app.include_router(analytics_router)
     app.include_router(commands_router)
+    app.include_router(context_router)
     app.include_router(docs_router)
     app.include_router(workspace_router)
     app.include_router(sessions_router)
@@ -164,6 +181,19 @@ def _package_version() -> str:
         return version("aether-harness")
     except Exception:
         return "unknown"
+
+
+def _workspace_service_from_prefs(prefs: PrefsService) -> WorkspaceService:
+    active_root = prefs.get("workspace.active_root")
+    if isinstance(active_root, str) and active_root.strip():
+        try:
+            return WorkspaceService(root=active_root)
+        except ServiceError:
+            # Keep the web app bootable if the remembered root was deleted or
+            # became unreadable. The root endpoint still exposes the normalized
+            # recent list and users can select a new root from the UI.
+            return WorkspaceService()
+    return WorkspaceService()
 
 
 __all__ = ["WebServices", "create_app"]

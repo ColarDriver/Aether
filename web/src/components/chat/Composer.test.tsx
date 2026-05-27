@@ -142,6 +142,80 @@ describe('Composer', () => {
     await waitFor(() => expect(screen.getByText('Runtime')).toBeTruthy())
   })
 
+  it('renders context inspector with provider window and latest compression metadata', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'providerModels').mockResolvedValue({
+      models: [{ id: 'gpt-5.4', display_name: 'GPT-5.4', context_window: 128000 }],
+      discovery: { kind: 'static', source: 'test' },
+    })
+    vi.spyOn(api, 'contextStatus').mockResolvedValue({
+      session_id: 'session-ctx',
+      context_engine: 'default',
+      compression_count: 1,
+      last_compression: { status: 'compressed', source_message_count: 42, result_message_count: 18, source_tokens: 90000, result_tokens: 60000 },
+      message_count: 18,
+      token_estimate: 60000,
+      status: 'compressed',
+      error: null,
+    })
+    vi.spyOn(api, 'compressContext').mockResolvedValue({
+      session_id: 'session-ctx',
+      context_engine: 'default',
+      compression_count: 2,
+      last_compression: { status: 'skipped', reason: 'not_needed', source_tokens: 60000, result_tokens: 60000 },
+      message_count: 18,
+      token_estimate: 60000,
+      status: 'skipped',
+      error: null,
+    })
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        onCancel={() => undefined}
+        onSend={onSend}
+        slashCommands={slashCommands}
+        sessionId="session-ctx"
+        provider="codex"
+        model="gpt-5.4"
+        messageCount={8}
+        tokens={{ input_tokens: 1000, output_tokens: 500, total_tokens: 1500 }}
+        runMetadata={{
+          usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 },
+          context_engine: {
+            name: 'default',
+            compression: {
+              status: 'compressed',
+              trigger_reason: 'preflight',
+              source_message_count: 42,
+              result_message_count: 18,
+              source_tokens: 90000,
+              result_tokens: 60000,
+              engine: { tiers_run: ['tier2_snip', 'tier4_collapse'] },
+            },
+          },
+          compaction: { tier2_snipped_count: 2, tier4_collapse_segments: 1 },
+          compression_lineage: { generation: 1, trigger_reason: 'preflight' },
+        }}
+      />,
+    )
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '/context', selectionStart: 8 } })
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    expect(onSend).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Context inspector')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('128,000')).toBeTruthy())
+    expect(screen.getAllByText('90,000 -> 60,000').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('30,000 tokens freed').length).toBeGreaterThan(0)
+    expect(screen.getByText('tier2_snip, tier4_collapse')).toBeTruthy()
+
+    fireEvent.change(screen.getByPlaceholderText('optional compression focus'), { target: { value: 'auth' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Compress context' }))
+    await waitFor(() => expect(api.compressContext).toHaveBeenCalledWith('session-ctx', { focus: 'auth', force: true }))
+  })
+
   it('renders skill inspector data from the skills API', async () => {
     const onSend = vi.fn()
     vi.spyOn(api, 'skills').mockResolvedValue({
@@ -164,16 +238,35 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
-  it('shows MCP as an explicit unavailable local panel and closes with Escape', () => {
+  it('shows service-backed MCP integration status and closes with Escape', async () => {
     const onSend = vi.fn()
     const onSlashCommand = vi.fn()
+    vi.spyOn(api, 'mcpStatus').mockResolvedValue({
+      enabled: false,
+      status: 'not_configured',
+      message: 'No MCP servers are configured for this Aether runtime.',
+      servers: [],
+      imported_tools: [],
+    })
+    vi.spyOn(api, 'mcpResources').mockResolvedValue({
+      enabled: false,
+      status: 'not_configured',
+      message: 'No MCP resources are available because no MCP servers are configured.',
+      resources: [],
+    })
+    vi.spyOn(api, 'mcpConfig').mockResolvedValue({
+      config_path: '/tmp/aether/mcp_servers.json',
+      exists: false,
+      servers: [],
+    })
     render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} onSlashCommand={onSlashCommand} slashCommands={slashCommands} />)
     const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
 
     fireEvent.change(textbox, { target: { value: '/mcp', selectionStart: 4 } })
     fireEvent.keyDown(textbox, { key: 'Enter' })
 
-    expect(screen.getByText(/MCP management is not wired/)).toBeTruthy()
+    expect(await screen.findByText('No MCP servers are configured for this Aether runtime.')).toBeTruthy()
+    expect(screen.queryByText(/MCP management is not wired/)).toBeNull()
     expect(onSend).not.toHaveBeenCalled()
     expect(onSlashCommand).not.toHaveBeenCalled()
 
@@ -194,6 +287,24 @@ describe('Composer', () => {
   it('opens inspector panels from the composer control menu', () => {
     const onSend = vi.fn()
     const onSlashCommand = vi.fn()
+    vi.spyOn(api, 'mcpStatus').mockResolvedValue({
+      enabled: true,
+      status: 'available',
+      message: '1 MCP server(s) exposed through the tool catalog.',
+      servers: [{ name: 'filesystem', status: 'available', tools_count: 2, resources_count: 0, credential_status: 'unknown' }],
+      imported_tools: [{ name: 'mcp__filesystem__read_file', server: 'filesystem', local_name: 'read_file', description: 'Read file', enabled: true }],
+    })
+    vi.spyOn(api, 'mcpResources').mockResolvedValue({
+      enabled: true,
+      status: 'available',
+      message: '1 MCP resource(s) available.',
+      resources: [{ server: 'filesystem', uri: 'file:///README.md', name: 'README.md', mime_type: 'text/markdown', description: 'Project readme' }],
+    })
+    vi.spyOn(api, 'mcpConfig').mockResolvedValue({
+      config_path: '/tmp/aether/mcp_servers.json',
+      exists: true,
+      servers: [{ name: 'filesystem', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'], url: null, env_keys: [], header_keys: [], timeout: null, connect_timeout: null, source: 'file' }],
+    })
     render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} onSlashCommand={onSlashCommand} slashCommands={slashCommands} />)
 
     fireEvent.click(screen.getByLabelText('Open composer menu'))
@@ -203,6 +314,115 @@ describe('Composer', () => {
     expect(screen.getByLabelText('MCP inspector')).toBeTruthy()
     expect(onSend).not.toHaveBeenCalled()
     expect(onSlashCommand).not.toHaveBeenCalled()
+  })
+
+  it('reads MCP resource content from the inspector', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'mcpStatus').mockResolvedValue({
+      enabled: true,
+      status: 'available',
+      message: '1 MCP server(s) exposed through the tool catalog.',
+      servers: [{ name: 'filesystem', status: 'available', tools_count: 2, resources_count: 1, credential_status: 'unknown' }],
+      imported_tools: [{ name: 'mcp__filesystem__read_file', server: 'filesystem', local_name: 'read_file', description: 'Read file', enabled: true }],
+    })
+    vi.spyOn(api, 'mcpResources').mockResolvedValue({
+      enabled: true,
+      status: 'available',
+      message: '1 MCP resource(s) available.',
+      resources: [{ server: 'filesystem', uri: 'file:///README.md', name: 'README.md', mime_type: 'text/markdown', description: 'Project readme' }],
+    })
+    vi.spyOn(api, 'mcpConfig').mockResolvedValue({
+      config_path: '/tmp/aether/mcp_servers.json',
+      exists: true,
+      servers: [{ name: 'filesystem', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'], url: null, env_keys: [], header_keys: [], timeout: null, connect_timeout: null, source: 'file' }],
+    })
+    vi.spyOn(api, 'mcpResourceRead').mockResolvedValue({
+      enabled: true,
+      status: 'available',
+      message: 'Read resource.',
+      server: 'filesystem',
+      uri: 'file:///README.md',
+      name: 'README.md',
+      mime_type: 'text/markdown',
+      contents: [{ type: 'text', text: '# README', mime_type: 'text/markdown', uri: 'file:///README.md' }],
+    })
+
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '/mcp', selectionStart: 4 } })
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Read resource' }))
+
+    await waitFor(() => expect(api.mcpResourceRead).toHaveBeenCalledWith('filesystem', 'file:///README.md'))
+    expect(await screen.findByRole('region', { name: 'MCP resource content' })).toBeTruthy()
+    expect(screen.getByText('# README')).toBeTruthy()
+  })
+
+  it('saves and deletes managed MCP servers from the inspector', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'mcpStatus').mockResolvedValue({
+      enabled: false,
+      status: 'not_configured',
+      message: 'No MCP servers are configured for this Aether runtime.',
+      servers: [],
+      imported_tools: [],
+    })
+    vi.spyOn(api, 'mcpResources').mockResolvedValue({
+      enabled: false,
+      status: 'not_configured',
+      message: 'No MCP resources are available.',
+      resources: [],
+    })
+    vi.spyOn(api, 'mcpConfig')
+      .mockResolvedValueOnce({
+        config_path: '/tmp/aether/mcp_servers.json',
+        exists: false,
+        servers: [],
+      })
+      .mockResolvedValue({
+        config_path: '/tmp/aether/mcp_servers.json',
+        exists: true,
+        servers: [{ name: 'filesystem', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'], url: null, env_keys: ['TOKEN'], header_keys: [], timeout: null, connect_timeout: null, source: 'file' }],
+      })
+    vi.spyOn(api, 'upsertMcpServer').mockResolvedValue({
+      ok: true,
+      config_path: '/tmp/aether/mcp_servers.json',
+      message: "MCP server 'filesystem' saved.",
+      server: { name: 'filesystem', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'], url: null, env_keys: ['TOKEN'], header_keys: [], timeout: null, connect_timeout: null, source: 'file' },
+    })
+    vi.spyOn(api, 'deleteMcpServer').mockResolvedValue({
+      ok: true,
+      config_path: '/tmp/aether/mcp_servers.json',
+      message: "MCP server 'filesystem' deleted.",
+      server: null,
+    })
+
+    render(<Composer disabled={false} running={false} onCancel={() => undefined} onSend={onSend} slashCommands={slashCommands} />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: '/mcp', selectionStart: 4 } })
+    fireEvent.keyDown(textbox, { key: 'Enter' })
+
+    await screen.findByRole('region', { name: 'MCP server management' })
+    fireEvent.change(screen.getByPlaceholderText('filesystem'), { target: { value: 'filesystem' } })
+    fireEvent.change(screen.getByPlaceholderText('node'), { target: { value: 'node' } })
+    fireEvent.change(screen.getByPlaceholderText('TOKEN=${MCP_TOKEN}'), { target: { value: 'TOKEN=${MCP_TOKEN}' } })
+    fireEvent.change(screen.getByLabelText('Args'), { target: { value: 'server.js' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    await waitFor(() => expect(api.upsertMcpServer).toHaveBeenCalledWith({
+      name: 'filesystem',
+      enabled: true,
+      command: 'node',
+      args: ['server.js'],
+      env: { TOKEN: '${MCP_TOKEN}' },
+      transport: 'stdio',
+    }))
+    expect(await screen.findByText("MCP server 'filesystem' saved.")).toBeTruthy()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete server' }))
+    await waitFor(() => expect(api.deleteMcpServer).toHaveBeenCalledWith('filesystem'))
   })
 
   it('inserts slash and workspace triggers from the composer control menu', () => {

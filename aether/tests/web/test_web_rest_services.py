@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from aether.cli.sessions import session_file
+from aether.runtime.context import CompressionResult
 from aether.runtime.session.plan_artifact import read_plan, write_plan
+from aether.runtime.session.session_state import get_cwd
 from aether.runtime.tasks import TaskRecord, TaskStatus, TaskStore
+from aether.services.config import PrefsService
+from aether.services.context import ContextService
 from aether.services.docs import DocsService
 from aether.services.environment import EnvironmentService
 from aether.services.providers import ModelSelectionService, ProviderService
@@ -92,6 +97,37 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
     assert search.status_code == 200
     assert search.json()["sessions"][0]["session_id"] == "web_ses"
 
+    exported = client.get("/api/sessions/web_ses/export")
+    assert exported.status_code == 200
+    assert exported.json()["session_id"] == "web_ses"
+    assert exported.json()["data"]["model"] == "gpt-5.4-mini"
+
+    imported = client.post(
+        "/api/sessions/import",
+        json={
+            "data": exported.json()["data"],
+            "new_session_id": "imported_web_ses",
+            "make_current": False,
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.json()["source_session_id"] == "web_ses"
+    assert imported.json()["info"]["session_id"] == "imported_web_ses"
+    assert imported.json()["overwritten"] is False
+
+    conflict = client.post(
+        "/api/sessions/import",
+        json={"data": exported.json()["data"], "new_session_id": "imported_web_ses"},
+    )
+    assert conflict.status_code == 409
+
+    renamed = client.post(
+        "/api/sessions/imported_web_ses/rename",
+        json={"new_session_id": "renamed_web_ses"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["session_id"] == "renamed_web_ses"
+
     messages = client.get("/api/sessions/web_ses/messages")
     assert messages.status_code == 200
     assert messages.json() == {"session_id": "web_ses", "messages": []}
@@ -122,7 +158,12 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
 
     relisted = client.get("/api/sessions")
     assert relisted.status_code == 200
-    assert [item["session_id"] for item in relisted.json()["sessions"]] == []
+    assert [item["session_id"] for item in relisted.json()["sessions"]] == ["renamed_web_ses"]
+
+    deleted_import = client.delete("/api/sessions/renamed_web_ses")
+    assert deleted_import.status_code == 204
+    final_list = client.get("/api/sessions")
+    assert [item["session_id"] for item in final_list.json()["sessions"]] == []
 
     current_after_delete = client.get("/api/sessions/current")
     assert current_after_delete.status_code == 200
@@ -130,6 +171,70 @@ def test_session_routes_create_list_current_resume_messages_and_delete(client: T
 
     missing = client.get("/api/sessions/web_ses/messages")
     assert missing.status_code == 404
+
+
+def test_session_fork_route_copies_transcript_prefix(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "source_ses"},
+    )
+    assert created.status_code == 200
+    services = client.app.state.aether_services
+    services.sessions.persist_run_result(
+        "source_ses",
+        messages=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second"},
+        ],
+    )
+
+    forked = client.post(
+        "/api/sessions/source_ses/fork",
+        json={"message_index": 1, "new_session_id": "forked_ses"},
+    )
+
+    assert forked.status_code == 200
+    body = forked.json()
+    assert body["source_session_id"] == "source_ses"
+    assert body["info"]["session_id"] == "forked_ses"
+    assert body["messages_copied"] == 2
+    assert [message["text"] for message in body["messages"]] == ["first", "answer"]
+    current = client.get("/api/sessions/current")
+    assert current.json()["session"]["session_id"] == "forked_ses"
+
+
+def test_session_rewind_route_truncates_transcript(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "rewind_ses"},
+    )
+    assert created.status_code == 200
+    services = client.app.state.aether_services
+    services.sessions.persist_run_result(
+        "rewind_ses",
+        messages=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second"},
+        ],
+    )
+
+    rewound = client.post(
+        "/api/sessions/rewind_ses/rewind",
+        json={"message_index": 0},
+    )
+
+    assert rewound.status_code == 200
+    body = rewound.json()
+    assert body["session_id"] == "rewind_ses"
+    assert body["rewound_to_index"] == 0
+    assert body["messages_kept"] == 1
+    assert body["messages_removed"] == 2
+    assert body["info"]["message_count"] == 1
+    assert [message["text"] for message in body["messages"]] == ["first"]
+    current = client.get("/api/sessions/current")
+    assert current.json()["session"]["session_id"] == "rewind_ses"
 
 
 def test_config_prefs_and_diagnostics_routes(client: TestClient) -> None:
@@ -201,6 +306,169 @@ def test_commands_route_exposes_slash_catalog(client: TestClient) -> None:
     by_name = {item["name"]: item for item in result.json()["commands"]}
     assert by_name["/plan"]["category"] == "session"
     assert by_name["/help"]["description"]
+
+
+def test_provider_preflight_route_reports_current_run_readiness(client: TestClient) -> None:
+    result = client.get("/api/providers/preflight?provider=openai&model=gpt-5.4")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["provider_name"] == "openai"
+    assert body["model"] == "gpt-5.4"
+    assert body["status"] == "error"
+    assert body["ready"] is False
+    assert body["chat_completions_url"] == "https://api.openai.com/v1/chat/completions"
+    assert "OPENAI_API_KEY" in body["issues"][0]
+
+
+def test_context_routes_report_status_and_compress_session(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "ctx_web"},
+    )
+    assert created.status_code == 200
+
+    status = client.get("/api/context/ctx_web/status")
+    assert status.status_code == 200
+    status_body = status.json()
+    assert status_body["session_id"] == "ctx_web"
+    assert status_body["context_engine"] == "default"
+    assert status_body["compression_count"] == 0
+    assert status_body["message_count"] == 0
+
+    skipped = client.post("/api/context/ctx_web/compress", json={"focus": "auth"})
+    assert skipped.status_code == 200
+    skipped_body = skipped.json()
+    assert skipped_body["status"] == "skipped"
+    assert skipped_body["last_compression"]["reason"] == "not_enough_context"
+
+    services = client.app.state.aether_services
+    services.sessions.persist_run_result(
+        "ctx_web",
+        messages=[{"role": "user", "content": f"message {idx}"} for idx in range(6)],
+    )
+
+    class FakeCompressionService:
+        def __init__(self) -> None:
+            self.focus = None
+
+        def compress(self, request):
+            self.focus = request.focus
+            return CompressionResult(
+                messages=[{"role": "user", "content": "summary"}],
+                status="compressed",
+                metadata={
+                    "status": "compressed",
+                    "source_message_count": 6,
+                    "result_message_count": 1,
+                },
+            )
+
+    fake = FakeCompressionService()
+    services.context = ContextService(
+        session_service=services.sessions,
+        compression_service_factory=lambda _record: fake,
+    )
+
+    compressed = client.post("/api/context/ctx_web/compress", json={"focus": "auth", "force": True})
+    assert compressed.status_code == 200
+    compressed_body = compressed.json()
+    assert compressed_body["status"] == "compressed"
+    assert compressed_body["compression_count"] == 1
+    assert compressed_body["message_count"] == 1
+    assert compressed_body["last_compression"]["source_message_count"] == 6
+    assert fake.focus == "auth"
+    assert services.sessions.transcript("ctx_web")[0].text == "summary"
+
+    missing = client.get("/api/context/missing/status")
+    assert missing.status_code == 404
+
+
+def test_mcp_status_route_reports_runtime_integration_state(client: TestClient) -> None:
+    result = client.get("/api/mcp/status")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["status"] in {"available", "not_configured"}
+    assert isinstance(body["servers"], list)
+    assert isinstance(body["imported_tools"], list)
+
+
+def test_mcp_resources_route_reports_resource_boundary(client: TestClient) -> None:
+    result = client.get("/api/mcp/resources")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["status"] in {"not_configured", "not_available", "available"}
+    assert isinstance(body["resources"], list)
+    assert "message" in body
+
+
+def test_mcp_resource_read_route_reports_resource_boundary(client: TestClient) -> None:
+    result = client.get("/api/mcp/resources/read?server=filesystem&uri=file%3A%2F%2F%2FREADME.md")
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["status"] in {"not_configured", "server_not_found", "not_available", "available"}
+    assert body["server"] == "filesystem"
+    assert body["uri"] == "file:///README.md"
+    assert isinstance(body["contents"], list)
+    assert "message" in body
+
+
+def test_mcp_config_routes_manage_local_servers(client: TestClient) -> None:
+    listed = client.get("/api/mcp/config")
+    assert listed.status_code == 200
+    assert listed.json()["exists"] is False
+    assert listed.json()["servers"] == []
+
+    saved = client.put(
+        "/api/mcp/servers",
+        json={
+            "name": "local fs",
+            "command": "node",
+            "args": ["server.js"],
+            "env": {"TOKEN": "${MCP_TOKEN}"},
+            "timeout": 5,
+            "connect_timeout": 2,
+        },
+    )
+    assert saved.status_code == 200
+    saved_body = saved.json()
+    assert saved_body["ok"] is True
+    assert saved_body["server"]["name"] == "local_fs"
+    assert saved_body["server"]["env_keys"] == ["TOKEN"]
+
+    relisted = client.get("/api/mcp/config")
+    assert relisted.status_code == 200
+    servers = relisted.json()["servers"]
+    assert [(server["name"], server["command"], server["args"]) for server in servers] == [
+        ("local_fs", "node", ["server.js"])
+    ]
+
+    refreshed = client.post("/api/mcp/refresh")
+    assert refreshed.status_code == 200
+    assert "status" in refreshed.json()
+
+    deleted = client.delete("/api/mcp/servers/local_fs")
+    assert deleted.status_code == 200
+    assert deleted.json()["ok"] is True
+    assert client.get("/api/mcp/config").json()["servers"] == []
+
+
+def test_web_search_routes_report_status_and_test_configuration(client: TestClient) -> None:
+    status = client.get("/api/web-search/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["provider"] in {"brave", "tavily", "bocha"}
+    assert body["status"] in {"ready", "missing_credential", "invalid_provider"}
+    assert "WEB_SEARCH_API_KEY" == body["credential_name"]
+
+    tested = client.post("/api/web-search/test", json={"query": "docs", "max_results": 1})
+    assert tested.status_code == 200
+    test_body = tested.json()
+    assert test_body["query"] == "docs"
+    assert "provider" in test_body
 
 
 def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> None:
@@ -299,13 +567,38 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
     assert message_body["pending_messages"][0]["message"] == "please inspect src/auth.ts"
     assert message_body["delivered_messages"] == []
 
-    assert store.drain_pending_messages("task-running") == ["please inspect src/auth.ts"]
+    sent_message = client.post(
+        "/api/tasks/task-running/messages",
+        json={"message": "browser follow-up", "summary": "follow up"},
+    )
+    assert sent_message.status_code == 200
+    sent_body = sent_message.json()
+    assert sent_body["queued"] is True
+    assert sent_body["task_id"] == "task-running"
+    queued_messages = client.get("/api/tasks/task-running/messages")
+    assert queued_messages.status_code == 200
+    assert [item["message"] for item in queued_messages.json()["pending_messages"]] == [
+        "please inspect src/auth.ts",
+        "browser follow-up",
+    ]
+
+    assert store.drain_pending_messages("task-running") == [
+        "please inspect src/auth.ts",
+        "browser follow-up",
+    ]
     delivered_messages = client.get("/api/tasks/task-running/messages")
     assert delivered_messages.status_code == 200
     delivered_body = delivered_messages.json()
     assert delivered_body["pending_messages"] == []
     assert delivered_body["delivered_messages"][0]["message"] == "please inspect src/auth.ts"
+    assert delivered_body["delivered_messages"][1]["message"] == "browser follow-up"
     assert isinstance(delivered_body["delivered_messages"][0]["delivered_at"], float)
+
+    terminal_message = client.post(
+        "/api/tasks/task-child/messages",
+        json={"message": "too late"},
+    )
+    assert terminal_message.status_code == 409
 
     invalid_messages = client.get("/api/tasks/task-running/messages?limit=0")
     assert invalid_messages.status_code == 400
@@ -324,6 +617,18 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
     global_active = client.get("/api/tasks?active_only=true")
     assert global_active.status_code == 200
     assert [task["task_id"] for task in global_active.json()["tasks"]] == ["task-running"]
+
+    client.app.state.aether_services.runs.stop_task = lambda task_id: task_id == "task-running"
+    stopped = client.post("/api/tasks/task-running/stop")
+    assert stopped.status_code == 200
+    stopped_body = stopped.json()
+    assert stopped_body["task_id"] == "task-running"
+    assert stopped_body["delivered"] is True
+    assert stopped_body["status"] == "running"
+
+    terminal_stop = client.post("/api/tasks/task-child/stop")
+    assert terminal_stop.status_code == 200
+    assert terminal_stop.json()["delivered"] is False
 
     missing = client.get("/api/tasks/missing")
     assert missing.status_code == 404
@@ -405,6 +710,29 @@ def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None
     assert search.status_code == 200
     assert search.json()["entries"][0]["path"] == "app.py"
 
+    created_file = client.post("/api/workspace/file", json={"path": "notes/todo.txt", "content": "x"})
+    assert created_file.status_code == 404
+
+    created_dir = client.post("/api/workspace/directory", json={"path": "notes"})
+    assert created_dir.status_code == 200
+    assert created_dir.json()["path"] == "notes"
+
+    created_file = client.post("/api/workspace/file", json={"path": "notes/todo.txt", "content": "x"})
+    assert created_file.status_code == 200
+    assert created_file.json()["path"] == "notes/todo.txt"
+    assert created_file.json()["content"] == "x"
+
+    renamed = client.patch("/api/workspace/path", json={"path": "notes/todo.txt", "new_path": "notes/done.txt"})
+    assert renamed.status_code == 200
+    assert renamed.json()["path"] == "notes/done.txt"
+
+    delete_nonempty = client.delete("/api/workspace/path?path=notes")
+    assert delete_nonempty.status_code == 409
+
+    deleted = client.delete("/api/workspace/path?path=notes&recursive=true")
+    assert deleted.status_code == 204
+    assert client.get("/api/workspace/file?path=notes/done.txt").status_code == 404
+
     escaped = client.get("/api/workspace/file?path=../secret.py")
     assert escaped.status_code == 400
 
@@ -416,6 +744,124 @@ def test_workspace_routes_list_read_and_search_files(client: TestClient) -> None
 
     escaped_raw = client.get("/api/workspace/raw?path=../secret.py")
     assert escaped_raw.status_code == 400
+
+
+def test_workspace_root_routes_switch_persist_and_update_session_cwd(client: TestClient, tmp_path) -> None:
+    original_root = client.app.state.aether_services.workspace.root
+    alternate = tmp_path / "alternate-workspace"
+    alternate.mkdir()
+    (alternate / "alt.py").write_text("print('alt')\n", encoding="utf-8")
+
+    current = client.get("/api/workspace/root")
+    assert current.status_code == 200
+    assert current.json()["root"] == str(original_root)
+    assert current.json()["recent_roots"][0] == str(original_root)
+
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "root_ses"},
+    )
+    assert created.status_code == 200
+
+    switched = client.put(
+        "/api/workspace/root",
+        json={"path": str(alternate), "session_id": "root_ses"},
+    )
+    assert switched.status_code == 200
+    body = switched.json()
+    assert body["root"] == str(alternate.resolve())
+    assert body["recent_roots"][:2] == [str(alternate.resolve()), str(original_root)]
+    assert client.app.state.aether_services.prefs.get("workspace.active_root") == str(alternate.resolve())
+    assert get_cwd("root_ses") == str(alternate.resolve())
+
+    tree = client.get("/api/workspace/tree")
+    assert tree.status_code == 200
+    assert [entry["path"] for entry in tree.json()["entries"]] == ["alt.py"]
+
+    invalid = client.put("/api/workspace/root", json={"path": str(alternate / "missing")})
+    assert invalid.status_code == 404
+    assert client.app.state.aether_services.workspace.root == alternate.resolve()
+
+
+def test_create_app_uses_remembered_workspace_root(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AETHER_HOME", str(tmp_path / "home"))
+    remembered = tmp_path / "remembered"
+    remembered.mkdir()
+    prefs = PrefsService()
+    prefs.set("workspace.active_root", str(remembered))
+    prefs.set("workspace.recent_roots", [str(remembered)])
+
+    app = create_app(auth_enabled=False, prefs_service=prefs)
+
+    assert app.state.aether_services.workspace.root == remembered.resolve()
+
+
+def test_workspace_git_routes_expose_status_diff_restore_and_checkpoints(client: TestClient) -> None:
+    root = client.app.state.aether_services.workspace.root
+    _git(root, "init")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Aether Test")
+    _git(root, "add", "app.py")
+    _git(root, "commit", "-m", "initial")
+    (root / "app.py").write_text("print('changed')\n", encoding="utf-8")
+
+    status = client.get("/api/workspace/git/status")
+    assert status.status_code == 200
+    status_body = status.json()
+    assert status_body["available"] is True
+    assert status_body["clean"] is False
+    assert status_body["files"][0]["path"] == "app.py"
+
+    diff = client.get("/api/workspace/git/diff?path=app.py")
+    assert diff.status_code == 200
+    assert "+print('changed')" in diff.json()["diff"]
+
+    checkpoint = client.post("/api/workspace/checkpoints", json={"label": "web checkpoint"})
+    assert checkpoint.status_code == 200
+    assert checkpoint.json()["label"] == "web checkpoint"
+    checkpoint_id = checkpoint.json()["checkpoint_id"]
+
+    restored = client.post("/api/workspace/git/restore", json={"path": "app.py"})
+    assert restored.status_code == 200
+    assert (root / "app.py").read_text(encoding="utf-8") == 'print("hi")\n'
+
+    checkpoints = client.get("/api/workspace/checkpoints")
+    assert checkpoints.status_code == 200
+    assert checkpoints.json()["checkpoints"][0]["checkpoint_id"] == checkpoint_id
+
+    restored_checkpoint = client.post(f"/api/workspace/checkpoints/{checkpoint_id}/restore")
+    assert restored_checkpoint.status_code == 200
+    assert (root / "app.py").read_text(encoding="utf-8") == "print('changed')\n"
+
+    (root / "app.py").write_text("print('agent changed')\n", encoding="utf-8")
+    restored_paths = client.post(
+        f"/api/workspace/checkpoints/{checkpoint_id}/restore-paths",
+        json={"paths": ["app.py"]},
+    )
+    assert restored_paths.status_code == 200
+    assert (root / "app.py").read_text(encoding="utf-8") == "print('changed')\n"
+
+    changes = client.get("/api/workspace/changes")
+    assert changes.status_code == 200
+    assert changes.json()["changes"][0]["path"] == "app.py"
+    current_hash = changes.json()["changes"][0]["current_hash"]
+
+    accepted = client.post("/api/workspace/changes/accept", json={"paths": ["app.py"]})
+    assert accepted.status_code == 200
+    assert accepted.json()["action"] == "accepted"
+    assert client.get("/api/workspace/changes").json()["changes"][0]["accepted"] is True
+
+    (root / "app.py").write_text("print('conflict')\n", encoding="utf-8")
+    conflict = client.post(
+        "/api/workspace/changes/reject",
+        json={"paths": ["app.py"], "expected_hashes": {"app.py": current_hash}},
+    )
+    assert conflict.status_code == 409
+
+    rejected = client.post("/api/workspace/changes/reject", json={"paths": ["app.py"]})
+    assert rejected.status_code == 200
+    assert rejected.json()["action"] == "rejected"
+    assert (root / "app.py").read_text(encoding="utf-8") == 'print("hi")\n'
 
 
 def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> None:
@@ -441,6 +887,10 @@ def test_environment_routes_list_set_reveal_and_delete(client: TestClient) -> No
 
     missing = client.post("/api/env/reveal", json={"key": "OPENAI_API_KEY"})
     assert missing.status_code == 404
+
+
+def _git(root, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True)
 
 
 def test_provider_model_and_auxiliary_routes(client: TestClient) -> None:

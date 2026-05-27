@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from aether.runtime.tasks import TaskRecord, TaskStore
-from aether.services.common import ServiceNotFoundError, ServiceValidationError
-from aether.services.tasks.contracts import TaskChildMessageStream, TaskChildMessagesResult, TaskDeliveredMessage, TaskListResult, TaskMessage, TaskMessagesResult, TaskPendingMessage, TaskResultArtifact, TaskSummary
+from aether.runtime.tasks import TaskRecord, TaskStatus, TaskStore
+from aether.services.common import ServiceConflictError, ServiceNotFoundError, ServiceValidationError
+from aether.services.tasks.contracts import TaskChildMessageStream, TaskChildMessagesResult, TaskDeliveredMessage, TaskListResult, TaskMessage, TaskMessagesResult, TaskPendingMessage, TaskResultArtifact, TaskSendMessageResult, TaskStopResult, TaskSummary
 
 
 TaskStoreFactory = Callable[[], TaskStore]
@@ -165,6 +165,70 @@ class TaskService:
             task_id=normalized,
             result_path=record.result_path,
             result=result,
+        )
+
+    def send_task_message(
+        self,
+        task_id: str,
+        *,
+        message: str,
+        summary: str | None = None,
+    ) -> TaskSendMessageResult:
+        normalized = task_id.strip()
+        if not normalized:
+            raise ServiceValidationError("task_id is required")
+        text = message.strip() if isinstance(message, str) else ""
+        if not text:
+            raise ServiceValidationError("message is required")
+        if summary is not None and not isinstance(summary, str):
+            raise ServiceValidationError("summary must be a string when provided")
+        store = self._store_for_read()
+        record = store.read(normalized)
+        if record is None:
+            raise ServiceNotFoundError("Task not found", details={"task_id": normalized})
+        if record.status != TaskStatus.RUNNING:
+            raise ServiceConflictError(
+                f"cannot send to {normalized!r}: status is {record.status.value!r} (must be 'running')",
+                details={"task_id": normalized, "status": record.status.value},
+            )
+        store.enqueue_pending_message(normalized, text)
+        return TaskSendMessageResult(
+            task_id=normalized,
+            queued=True,
+            status=record.status.value,
+            message="Queued message for the subagent's next iteration boundary.",
+            queued_chars=len(text),
+        )
+
+    def stop_task(self, task_id: str, *, stopper: Callable[[str], bool]) -> TaskStopResult:
+        normalized = task_id.strip()
+        if not normalized:
+            raise ServiceValidationError("task_id is required")
+        store = self._store_for_read()
+        record = store.read(normalized)
+        if record is None:
+            raise ServiceNotFoundError("Task not found", details={"task_id": normalized})
+        if record.status.is_terminal:
+            return TaskStopResult(
+                task_id=normalized,
+                delivered=False,
+                status=record.status.value,
+                message="Task is already terminal.",
+            )
+        delivered = bool(stopper(normalized))
+        if delivered:
+            store.append_message(normalized, {"role": "system", "content": "stop requested from web console"})
+            return TaskStopResult(
+                task_id=normalized,
+                delivered=True,
+                status=record.status.value,
+                message="Stop signal sent to running task.",
+            )
+        return TaskStopResult(
+            task_id=normalized,
+            delivered=False,
+            status=record.status.value,
+            message="Task is not attached to an active runtime manager.",
         )
 
     def delete_session_tasks(self, session_id: str) -> int:

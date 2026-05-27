@@ -2,9 +2,13 @@ import { ArrowLeftRight, Bot, Circle, PanelLeftClose, PanelLeftOpen, PanelRightC
 import type { SessionInfo } from '../../api/types'
 import { AppearanceControls } from '../shared/AppearanceControls'
 
+type SocketConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+
 type Props = {
   session: SessionInfo | null
   online: boolean
+  socketState?: SocketConnectionState
+  socketDetail?: string | null
   workspaceRailOpen: boolean
   panelsSwapped?: boolean
   onToggleWorkspaceRail: () => void
@@ -14,6 +18,8 @@ type Props = {
 export function ChatWorkbenchHeader({
   session,
   online,
+  socketState = 'idle',
+  socketDetail,
   workspaceRailOpen,
   panelsSwapped = false,
   onToggleWorkspaceRail,
@@ -24,6 +30,7 @@ export function ChatWorkbenchHeader({
   const WorkspaceToggleIcon = workspaceRailOpen
     ? (panelsSwapped ? PanelLeftClose : PanelRightClose)
     : (panelsSwapped ? PanelLeftOpen : PanelRightOpen)
+  const socket = socketStatus(socketState, socketDetail)
 
   return (
     <header className="chat-workbench-header">
@@ -44,6 +51,13 @@ export function ChatWorkbenchHeader({
           <span>
             <strong>{online ? 'online' : 'offline'}</strong>
             <small>runtime</small>
+          </span>
+        </span>
+        <span className={'workbench-chip workbench-chip-' + socket.tone} title={socket.title}>
+          <Circle size={9} fill="currentColor" />
+          <span>
+            <strong>{socket.label}</strong>
+            <small>stream</small>
           </span>
         </span>
       </div>
@@ -74,4 +88,12 @@ export function ChatWorkbenchHeader({
       </div>
     </header>
   )
+}
+
+function socketStatus(state: SocketConnectionState, detail?: string | null): { label: string; tone: string; title: string } {
+  if (state === 'connected') return { label: 'connected', tone: 'online', title: detail || 'Run stream connected' }
+  if (state === 'connecting') return { label: 'connecting', tone: 'pending', title: detail || 'Opening run stream' }
+  if (state === 'reconnecting') return { label: 'reconnecting', tone: 'pending', title: detail || 'Reconnecting run stream' }
+  if (state === 'disconnected') return { label: 'disconnected', tone: 'offline', title: detail || 'Run stream disconnected' }
+  return { label: 'idle', tone: 'muted', title: detail || 'Run stream idle' }
 }

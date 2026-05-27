@@ -285,6 +285,10 @@ class ContextAssemblyPipeline:
             outbound_messages,
             context.metadata.get("_llm_attachment_context"),
         )
+        outbound_messages = _append_native_attachment_parts_for_provider(
+            outbound_messages,
+            context.metadata.get("_llm_native_attachment_parts"),
+        )
         prepared_messages = self._services.middleware_pipeline.run_before_llm(
             outbound_messages,
             context,
@@ -321,3 +325,66 @@ def _append_attachment_context_for_provider(
             message["content"] = str(content).rstrip() + marker
         return outbound
     return outbound
+
+
+def _append_native_attachment_parts_for_provider(
+    messages: list[dict[str, Any]],
+    native_parts: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(native_parts, list):
+        return messages
+    parts = [_native_attachment_part(part) for part in native_parts]
+    parts = [part for part in parts if part is not None]
+    if not parts:
+        return messages
+
+    outbound = copy.deepcopy(messages)
+    for message in reversed(outbound):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if isinstance(content, list):
+            message["content"] = [*content, *parts]
+        elif isinstance(content, str):
+            current_parts: list[dict[str, Any]] = []
+            if content:
+                current_parts.append({"type": "text", "text": content})
+            message["content"] = [*current_parts, *parts]
+        else:
+            message["content"] = [{"type": "text", "text": str(content)}, *parts]
+        return outbound
+    return outbound
+
+
+def _native_attachment_part(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    block_type = str(value.get("type") or "").strip()
+    if block_type == "text":
+        text = value.get("text")
+        return {"type": "text", "text": text} if isinstance(text, str) and text else None
+    if block_type in {"image_url", "input_image"}:
+        url = _native_image_url(value)
+        if not url:
+            return None
+        out = {"type": "image_url", "image_url": {"url": url}}
+        mime_type = value.get("mime_type") or value.get("mimeType")
+        if isinstance(mime_type, str) and mime_type.strip():
+            out["mime_type"] = mime_type.strip()
+        name = value.get("name")
+        if isinstance(name, str) and name.strip():
+            out["name"] = name.strip()
+        return out
+    return None
+
+
+def _native_image_url(value: dict[str, Any]) -> str:
+    image_url = value.get("image_url")
+    if isinstance(image_url, str) and image_url.strip():
+        return image_url.strip()
+    if isinstance(image_url, dict):
+        url = image_url.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    url = value.get("url")
+    return url.strip() if isinstance(url, str) and url.strip() else ""

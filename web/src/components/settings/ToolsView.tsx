@@ -1,7 +1,7 @@
-import { Search } from 'lucide-react'
+import { Globe2, Play, RefreshCw, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
-import type { ToolGroup, ToolSummary } from '../../api/types'
+import type { ToolGroup, ToolSummary, WebSearchStatus, WebSearchTestResult } from '../../api/types'
 import { Spinner } from '../shared/Spinner'
 
 type ToolWithGroup = ToolSummary & { group: string }
@@ -38,6 +38,8 @@ export function ToolsView() {
       </header>
       {loading ? <Spinner label="Loading tools" /> : null}
       {error ? <div className="notice notice-error">{error}</div> : null}
+
+      <WebSearchRuntimePanel />
 
       <div className="tools-layout">
         <aside className="tools-index" aria-label="Tool catalog">
@@ -168,4 +170,76 @@ function schemaType(schema: Record<string, unknown>): string {
 function schemaDescription(schema: Record<string, unknown>): string {
   const value = schema.description
   return typeof value === 'string' && value.trim() ? value : '-'
+}
+
+
+function WebSearchRuntimePanel() {
+  const [status, setStatus] = useState<WebSearchStatus | null>(null)
+  const [testResult, setTestResult] = useState<WebSearchTestResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadStatus = () => {
+    setLoading(true)
+    setError(null)
+    api.webSearchStatus()
+      .then(setStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    loadStatus()
+  }, [])
+
+  const runTest = () => {
+    setTesting(true)
+    setError(null)
+    setTestResult(null)
+    api.testWebSearch({ query: 'Aether web search test', max_results: 1 })
+      .then(setTestResult)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setTesting(false))
+  }
+
+  return (
+    <section className="catalog-card web-search-runtime-card" aria-label="Web search runtime">
+      <div className="catalog-card-header">
+        <div>
+          <strong><Globe2 size={15} /> Local web_search</strong>
+          <span>{status?.message || 'Checking local search configuration'}</span>
+        </div>
+        <span className={status?.enabled ? 'tool-status tool-status-enabled' : 'tool-status'}>
+          {status?.status || (loading ? 'checking' : 'unknown')}
+        </span>
+      </div>
+      <div className="web-search-runtime-grid">
+        <div><span>Provider</span><strong>{status?.provider || '-'}</strong></div>
+        <div><span>Credential</span><strong>{status?.api_key_configured ? status.credential_name : 'missing'}</strong></div>
+        <div><span>Supported</span><strong>{supportedWebSearchProviders(status).join(', ')}</strong></div>
+      </div>
+      {error ? <div className="notice notice-error">{error}</div> : null}
+      {testResult ? (
+        <div className={testResult.ok ? 'web-search-test-result' : 'web-search-test-result web-search-test-error'}>
+          <strong>{testResult.ok ? 'Connection test passed' : 'Connection test failed'}</strong>
+          <span>{testResult.message}</span>
+          {testResult.content_preview ? <pre>{testResult.content_preview}</pre> : null}
+        </div>
+      ) : null}
+      <div className="web-search-runtime-actions">
+        <button type="button" onClick={loadStatus} disabled={loading || testing}>
+          <RefreshCw size={14} /> Refresh
+        </button>
+        <button type="button" onClick={runTest} disabled={loading || testing || !status?.enabled}>
+          <Play size={14} /> {testing ? 'Testing' : 'Test search'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function supportedWebSearchProviders(status: WebSearchStatus | null): string[] {
+  const providers = status?.supported_providers
+  return Array.isArray(providers) && providers.length > 0 ? providers : ['brave', 'tavily', 'bocha']
 }

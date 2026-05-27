@@ -7,6 +7,7 @@ import logging
 from email.utils import parsedate_to_datetime
 from time import time as _wallclock
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -148,15 +149,19 @@ class OpenAICompatibleModel(ModelProvider):
 
         if stream_callback is not None and not self._disable_streaming:
             try:
-                return self._with_stale_connection_retry(
-                    lambda: self._streaming_generate(
-                        url=url,
-                        headers=headers,
-                        payload=payload,
-                        stream_callback=stream_callback,
-                        stream_silent_callback=stream_silent_callback,
-                        interrupt_signal=interrupt_signal,
+                return self._with_missing_api_root_retry(
+                    lambda candidate_url: self._with_stale_connection_retry(
+                        lambda: self._streaming_generate(
+                            url=candidate_url,
+                            headers=headers,
+                            payload=payload,
+                            stream_callback=stream_callback,
+                            stream_silent_callback=stream_silent_callback,
+                            interrupt_signal=interrupt_signal,
+                        ),
+                        context=context,
                     ),
+                    url=url,
                     context=context,
                 )
             except StreamStallError as stall:
@@ -173,20 +178,28 @@ class OpenAICompatibleModel(ModelProvider):
                 # stream_callback this time — there's no chunked output to
                 # forward, and the engine will handle the final-response
                 # one-shot fallback if needed.
-                return self._with_stale_connection_retry(
-                    lambda: self._non_streaming_generate(
-                        url=url, headers=headers, payload=payload
+                return self._with_missing_api_root_retry(
+                    lambda candidate_url: self._with_stale_connection_retry(
+                        lambda: self._non_streaming_generate(
+                            url=candidate_url, headers=headers, payload=payload
+                        ),
+                        context=context,
                     ),
+                    url=url,
                     context=context,
                 )
 
-        return self._with_stale_connection_retry(
-            lambda: self._non_streaming_generate(
-                url=url,
-                headers=headers,
-                payload=payload,
-                stream_callback=stream_callback,
+        return self._with_missing_api_root_retry(
+            lambda candidate_url: self._with_stale_connection_retry(
+                lambda: self._non_streaming_generate(
+                    url=candidate_url,
+                    headers=headers,
+                    payload=payload,
+                    stream_callback=stream_callback,
+                ),
+                context=context,
             ),
+            url=url,
             context=context,
         )
 
@@ -309,6 +322,35 @@ class OpenAICompatibleModel(ModelProvider):
             context.metadata["dead_connection_retry"] = True
             logger.info("Rebuilt OpenAI-compatible client after stale connection error")
             return call()
+
+    def _with_missing_api_root_retry(
+        self,
+        call: Callable[[str], NormalizedResponse],
+        *,
+        url: str,
+        context: TurnContext,
+    ) -> NormalizedResponse:
+        try:
+            return call(url)
+        except ProviderInvocationError as exc:
+            fallback_base_url = _missing_v1_api_root_candidate(self.base_url)
+            if fallback_base_url is None:
+                raise
+            fallback_url = f"{fallback_base_url}/chat/completions"
+            if not _should_retry_with_v1_api_root(exc, original_url=url):
+                raise
+
+            original_base_url = self.base_url
+            context.metadata["openai_api_root_retry"] = {
+                "from": original_base_url,
+                "to": fallback_base_url,
+            }
+            logger.info(
+                "Retrying OpenAI-compatible request with /v1 API root after endpoint 404"
+            )
+            result = call(fallback_url)
+            self.base_url = fallback_base_url
+            return result
 
     def _streaming_generate(
         self,
@@ -536,6 +578,50 @@ def _register_interrupt_listener(
 # ---------------------------------------------------------------------------
 # Module-level helpers (used by the single-shot generate path above)
 # ---------------------------------------------------------------------------
+
+
+def _missing_v1_api_root_candidate(base_url: str) -> str | None:
+    """Return a conservative ``/v1`` repair candidate for host-root URLs.
+
+    Some older web sessions persisted the gateway host root
+    (``http://host:port``) while this provider expects an API root
+    (``http://host:port/v1``).  We only synthesize the conventional ``/v1``
+    candidate when the configured URL has no path, so providers with explicit
+    custom API paths keep their exact routing.
+    """
+
+    normalized = base_url.rstrip("/")
+    try:
+        parts = urlsplit(normalized)
+    except Exception:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    path = (parts.path or "").rstrip("/")
+    if path not in {"", "/"}:
+        return None
+    return urlunsplit((parts.scheme, parts.netloc, "/v1", parts.query, parts.fragment)).rstrip("/")
+
+
+def _should_retry_with_v1_api_root(
+    error: ProviderInvocationError,
+    *,
+    original_url: str,
+) -> bool:
+    if error.status_code != 404:
+        return False
+    if not original_url.rstrip("/").endswith("/chat/completions"):
+        return False
+    body = (error.body_summary or "").strip().casefold()
+    if not body:
+        return True
+    # Avoid retrying model-not-found 404s.  Plain framework/router 404s are
+    # the legacy host-root symptom this compatibility path is for.
+    if "model" in body:
+        return False
+    return body in {"404", "404 page not found", "not found"} or (
+        "404 page not found" in body
+    )
 
 
 def _parse_retry_after(headers: Any) -> float | None:

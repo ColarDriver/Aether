@@ -56,6 +56,26 @@ class OpenAIChatCompletionsTransportTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["function"]["parameters"]["required"], ["path"])
         self.assertEqual(payload["tools"][1]["function"]["name"], "web_search")
 
+    def test_user_multimodal_content_preserves_openai_image_parts(self) -> None:
+        converted = self.transport.convert_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(converted[0]["role"], "user")
+        self.assertEqual(converted[0]["content"][0], {"type": "text", "text": "describe"})
+        self.assertEqual(
+            converted[0]["content"][1],
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        )
+
     def test_message_conversion_preserves_assistant_thought_signature(self) -> None:
         converted = self.transport.convert_messages(
             [

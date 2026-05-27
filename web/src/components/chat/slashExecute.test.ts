@@ -14,9 +14,21 @@ const session = {
 }
 
 const commands = [
-  { name: '/help', description: 'Show help', category: 'local' },
   { name: '/clear', description: 'Clear conversation history', category: 'local' },
+  { name: '/exit', description: 'Exit the TUI', category: 'local' },
+  { name: '/help', description: 'Show help', category: 'local' },
+  { name: '/interrupt', description: 'Interrupt the active turn', category: 'control' },
+  { name: '/model', description: 'Show model', category: 'session' },
+  { name: '/new', description: 'New session', category: 'session' },
   { name: '/plan', description: 'Plan mode', category: 'session' },
+  { name: '/refresh', description: 'Refresh visible state', category: 'local' },
+  { name: '/resume', description: 'Resume a session', category: 'session' },
+  { name: '/session', description: 'Show session', category: 'session' },
+  { name: '/sessions', description: 'List sessions', category: 'session' },
+  { name: '/stats', description: 'Show stats', category: 'local' },
+  { name: '/system', description: 'System prompt', category: 'session' },
+  { name: '/tools', description: 'List tools', category: 'remote' },
+  { name: '/verbose', description: 'Toggle verbose', category: 'local' },
 ]
 
 function messageOf(result: WebSlashResult): string {
@@ -37,6 +49,7 @@ describe('slashExecute', () => {
 
     expect(help).toMatchObject({ type: 'notice' })
     expect(messageOf(help)).toContain('`/plan`')
+    expect(messageOf(help)).toContain('`/context`')
     expect(current).toMatchObject({ type: 'notice' })
     expect(messageOf(current)).toContain('session-123456')
   })
@@ -72,6 +85,92 @@ describe('slashExecute', () => {
       type: 'error',
       message: 'Unknown slash command /missing. Type /help for available commands.',
     })
+  })
+
+  it('executes web-local control commands instead of falling back to not-implemented errors', async () => {
+    const closeConsole = vi.fn()
+    const refreshSession = vi.fn().mockResolvedValue(undefined)
+    const cancelRun = vi.fn().mockResolvedValue(undefined)
+    const setVerbose = vi.fn()
+
+    const exit = await executeWebSlashCommand('/exit', { session, commands, closeConsole })
+    expect(exit.type).toBe('notice')
+    expect(messageOf(exit)).not.toContain('not implemented')
+    expect(closeConsole).toHaveBeenCalledOnce()
+
+    const refresh = await executeWebSlashCommand('/refresh', { session, commands, refreshSession })
+    expect(messageOf(refresh)).toContain('Refreshed session')
+    expect(refreshSession).toHaveBeenCalledWith(session.session_id)
+
+    const interrupt = await executeWebSlashCommand('/interrupt', { session, commands, activeRunId: 'run-123', cancelRun })
+    expect(messageOf(interrupt)).toContain('Interrupt requested')
+    expect(cancelRun).toHaveBeenCalledWith(session.session_id, 'run-123')
+
+    const verbose = await executeWebSlashCommand('/verbose on', { session, commands, verbose: false, setVerbose })
+    expect(messageOf(verbose)).toBe('Verbose mode on.')
+    expect(setVerbose).toHaveBeenCalledWith(true)
+  })
+
+  it('handles web-local inspector commands without falling through to unsupported catalog errors', async () => {
+    const result = await executeWebSlashCommand('/context', { session, commands })
+
+    expect(result.type).toBe('notice')
+    expect(messageOf(result)).toContain('composer inspector panel')
+    expect(messageOf(result)).not.toContain('not implemented')
+  })
+
+  it('reports web turn stats from active run status and token usage', async () => {
+    const result = await executeWebSlashCommand('/stats', {
+      session,
+      commands,
+      activeRunId: 'run-123',
+      verbose: true,
+      runStatus: {
+        runId: 'run-123',
+        sessionId: session.session_id,
+        state: 'responding',
+        detail: 'writing final answer',
+        elapsedMs: 1234,
+        tokens: { input_tokens: 100, output_tokens: 23, total_tokens: 123 },
+      },
+    })
+
+    expect(result.type).toBe('notice')
+    expect(messageOf(result)).toContain('# Turn stats')
+    expect(messageOf(result)).toContain('123 tokens')
+    expect(messageOf(result)).toContain('responding')
+    expect(messageOf(result)).toContain('Verbose | on')
+  })
+
+  it('does not report known catalog commands as unimplemented in web', async () => {
+    const context = {
+      session,
+      commands,
+      createSession: vi.fn().mockResolvedValue({ ...session, session_id: 'created' }),
+      loadSessions: vi.fn().mockResolvedValue({ sessions: [session] }),
+      loadToolGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      loadPlanCurrent: vi.fn().mockResolvedValue({
+        session_id: session.session_id,
+        mode: 'plan',
+        has_plan: false,
+        plan_path: '/tmp/plan.md',
+        plan_content: null,
+      }),
+      clearPlan: vi.fn().mockResolvedValue({
+        session_id: session.session_id,
+        mode: 'agent',
+        has_plan: false,
+        plan_path: '/tmp/plan.md',
+        plan_content: null,
+      }),
+      refreshSession: vi.fn().mockResolvedValue(undefined),
+      setVerbose: vi.fn(),
+    }
+
+    for (const command of commands) {
+      const result = await executeWebSlashCommand(command.name, context)
+      expect('message' in result ? result.message : result.type).not.toContain('not implemented in the web console yet')
+    }
   })
 
   it('enables plan mode and sends plan descriptions as agent prompts', async () => {

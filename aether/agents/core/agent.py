@@ -253,6 +253,33 @@ class _WithholdingState:
     compression_attempted_for: set[str] = field(default_factory=set)
 
 
+def _public_exception_metadata(error: Exception) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": type(error).__name__,
+        "message": str(error),
+    }
+    for attr in ("status_code", "retry_after_seconds", "body_summary"):
+        value = getattr(error, attr, None)
+        if value is not None:
+            payload[attr] = _jsonable_metadata_value(value)
+    if bool(getattr(error, "is_network_error", False)):
+        payload["is_network_error"] = True
+    metadata = getattr(error, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        payload["metadata"] = _jsonable_metadata_value(metadata)
+    return payload
+
+
+def _jsonable_metadata_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable_metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable_metadata_value(item) for item in value]
+    return str(value)
+
+
 class AgentEngine:
     """Main agent orchestrator with an explicit run loop state machine."""
 
@@ -300,6 +327,7 @@ class AgentEngine:
                 tool_registry = build_default_tool_registry(
                     cwd=_cwd_for_tools,
                     agent_type_registry=agent_type_registry,
+                    config=self.config,
                 )
             else:
                 tool_registry = ToolRegistry()
@@ -2729,6 +2757,7 @@ class AgentEngine:
             error,
             exc_info=error,
         )
+        context.metadata["error"] = _public_exception_metadata(error)
         self.services.middleware_pipeline.run_on_error(error, state, context)
 
     # ------------------------------------------------------------------

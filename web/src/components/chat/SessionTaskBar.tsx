@@ -1,14 +1,16 @@
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Circle, Clock3, ListTodo, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Circle, Clock3, ListTodo, Square, XCircle } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { TaskSummary } from '../../api/types'
 
 type Props = {
   tasks: TaskSummary[]
   onOpenTask?: (task: TaskSummary) => void
+  onStopTask?: (task: TaskSummary) => Promise<void> | void
 }
 
-export function SessionTaskBar({ tasks, onOpenTask }: Props) {
+export function SessionTaskBar({ tasks, onOpenTask, onStopTask }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const [stoppingTaskIds, setStoppingTaskIds] = useState<Set<string>>(() => new Set())
   const activeCount = tasks.filter((task) => !isTaskTerminal(task)).length
   const completedCount = tasks.filter((task) => task.status === 'completed').length
   const hasActiveTasks = activeCount > 0
@@ -21,6 +23,19 @@ export function SessionTaskBar({ tasks, onOpenTask }: Props) {
   if (tasks.length === 0) return null
 
   const progress = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0
+  const stopTask = (task: TaskSummary) => {
+    if (!onStopTask || stoppingTaskIds.has(task.task_id)) return
+    setStoppingTaskIds((current) => new Set(current).add(task.task_id))
+    Promise.resolve(onStopTask(task))
+      .catch(() => undefined)
+      .finally(() => {
+        setStoppingTaskIds((current) => {
+          const next = new Set(current)
+          next.delete(task.task_id)
+          return next
+        })
+      })
+  }
 
   return (
     <section className="session-task-bar" aria-label="Session tasks">
@@ -44,7 +59,13 @@ export function SessionTaskBar({ tasks, onOpenTask }: Props) {
       {expanded ? (
         <ol className="session-task-list">
           {sortedTasks.map((task) => (
-            <TaskItem key={task.task_id} onOpenTask={onOpenTask} task={task} />
+            <TaskItem
+              key={task.task_id}
+              onOpenTask={onOpenTask}
+              onStopTask={onStopTask ? stopTask : undefined}
+              stopping={stoppingTaskIds.has(task.task_id)}
+              task={task}
+            />
           ))}
         </ol>
       ) : null}
@@ -87,32 +108,46 @@ function taskIndent(task: TaskSummary): number {
   return Math.max(0, Math.min(3, task.child_depth - 1)) * 16
 }
 
-function TaskItem({ task, onOpenTask }: { task: TaskSummary; onOpenTask?: (task: TaskSummary) => void }) {
+function TaskItem({ task, onOpenTask, onStopTask, stopping }: { task: TaskSummary; onOpenTask?: (task: TaskSummary) => void; onStopTask?: (task: TaskSummary) => void; stopping?: boolean }) {
   const Icon = iconForTask(task)
   const tone = toneForTask(task)
   const detail = task.error || task.summary || activityDetail(task)
   const active = !isTaskTerminal(task)
   return (
     <li className={'session-task-item session-task-' + tone} style={{ marginLeft: taskIndent(task) }}>
-      <button
-        type="button"
-        className="session-task-row"
-        onClick={() => onOpenTask?.(task)}
-        aria-label={'Open task ' + task.task_id}
-      >
-        <Icon size={15} aria-hidden="true" />
-        <div>
-          <div className="session-task-main">
-            <span>{task.prompt}</span>
-            <em>{task.subagent_type}</em>
+      <div className="session-task-row-shell">
+        <button
+          type="button"
+          className="session-task-row"
+          onClick={() => onOpenTask?.(task)}
+          aria-label={'Open task ' + task.task_id}
+        >
+          <Icon size={15} aria-hidden="true" />
+          <div>
+            <div className="session-task-main">
+              <span>{task.prompt}</span>
+              <em>{task.subagent_type}</em>
+            </div>
+            {detail ? <p>{detail}</p> : null}
           </div>
-          {detail ? <p>{detail}</p> : null}
-        </div>
-        <span className="session-task-meta">
-          <span className={active ? 'aether-shimmer-text' : undefined}>{task.status}</span>
-          {task.model ? <em>{task.model}</em> : null}
-        </span>
-      </button>
+          <span className="session-task-meta">
+            <span className={active ? 'aether-shimmer-text' : undefined}>{task.status}</span>
+            {task.model ? <em>{task.model}</em> : null}
+          </span>
+        </button>
+        {active && onStopTask ? (
+          <button
+            type="button"
+            className="session-task-stop"
+            aria-label={'Stop task ' + task.task_id}
+            disabled={stopping}
+            onClick={() => onStopTask(task)}
+          >
+            <Square size={13} aria-hidden="true" />
+            <span>{stopping ? 'Stopping' : 'Stop'}</span>
+          </button>
+        ) : null}
+      </div>
     </li>
   )
 }

@@ -17,6 +17,7 @@ from aether.runtime.tools.tool_permissions import (
     ToolPermissionRule,
 )
 from aether.web.serializers import to_jsonable
+from aether.web.ws.prompt_store import WebPromptRecord, WebPromptStore
 
 FrameSender = Callable[[dict[str, Any]], None]
 
@@ -27,6 +28,15 @@ class WebPromptDisconnected(Exception):
     """Raised when the browser socket disappears while a prompt is pending."""
 
 
+@dataclass(frozen=True, slots=True)
+class WebPromptResolveResult:
+    status: str
+    prompt_id: str
+    resolution: dict[str, Any]
+    record: WebPromptRecord | None = None
+    reason: str | None = None
+
+
 @dataclass(slots=True)
 class _PendingPrompt:
     future: Future[dict[str, Any]]
@@ -34,8 +44,9 @@ class _PendingPrompt:
 
 
 class WebPromptBroker:
-    def __init__(self, *, send_frame: FrameSender) -> None:
+    def __init__(self, *, send_frame: FrameSender, prompt_store: WebPromptStore | None = None) -> None:
         self._send_frame = send_frame
+        self._prompt_store = prompt_store
         self._counter = itertools.count(1)
         self._lock = RLock()
         self._pending: dict[str, _PendingPrompt] = {}
@@ -112,18 +123,28 @@ class WebPromptBroker:
         return _decision_from_payload(payload.get("decision", payload))
 
     def resolve(self, prompt_id: str, payload: dict[str, Any]) -> bool:
+        return self.resolve_prompt(prompt_id, payload).status == "resolved"
+
+    def resolve_prompt(self, prompt_id: str, payload: dict[str, Any]) -> WebPromptResolveResult:
         with self._lock:
             pending = self._pending.pop(prompt_id, None)
         if pending is None:
-            return False
+            return self._missing_or_stale_result(prompt_id, payload)
+        self._update_prompt_status(prompt_id, "resolved", resolution=payload)
         pending.future.set_result(payload)
-        return True
+        return WebPromptResolveResult(
+            status="resolved",
+            prompt_id=prompt_id,
+            resolution=payload,
+            record=self._prompt_store.get(prompt_id) if self._prompt_store is not None else None,
+        )
 
     def reject_all(self, message: str = "browser disconnected") -> None:
         with self._lock:
-            pending = list(self._pending.values())
+            pending = list(self._pending.items())
             self._pending.clear()
-        for prompt in pending:
+        for prompt_id, prompt in pending:
+            self._update_prompt_status(prompt_id, "disconnected", reason=message)
             if not prompt.future.done():
                 prompt.future.set_exception(WebPromptDisconnected(message))
 
@@ -134,8 +155,9 @@ class WebPromptBroker:
                 for prompt_id, prompt in self._pending.items()
                 if _payload_run_id(prompt.frame) == run_id
             ]
-            pending = [self._pending.pop(prompt_id) for prompt_id in matching]
-        for prompt in pending:
+            pending = [(prompt_id, self._pending.pop(prompt_id)) for prompt_id in matching]
+        for prompt_id, prompt in pending:
+            self._update_prompt_status(prompt_id, "disconnected", reason=message)
             if not prompt.future.done():
                 prompt.future.set_exception(WebPromptDisconnected(message))
 
@@ -145,6 +167,8 @@ class WebPromptBroker:
         future: Future[dict[str, Any]],
         frame: dict[str, Any],
     ) -> None:
+        if self._prompt_store is not None:
+            self._prompt_store.put_pending(prompt_id, frame)
         with self._lock:
             self._pending[prompt_id] = _PendingPrompt(future=future, frame=frame)
         self._send_frame(frame)
@@ -161,9 +185,61 @@ class WebPromptBroker:
     ) -> dict[str, Any]:
         try:
             return future.result(timeout=timeout)
+        except TimeoutError:
+            self._update_prompt_status(prompt_id, "expired", reason="prompt timed out")
+            raise
         finally:
             with self._lock:
                 self._pending.pop(prompt_id, None)
+
+    def _missing_or_stale_result(self, prompt_id: str, payload: dict[str, Any]) -> WebPromptResolveResult:
+        if self._prompt_store is None:
+            return WebPromptResolveResult(
+                status="missing",
+                prompt_id=prompt_id,
+                resolution=payload,
+                reason="Prompt is not pending in this backend process.",
+            )
+        record = self._prompt_store.get(prompt_id)
+        if record is None:
+            return WebPromptResolveResult(
+                status="missing",
+                prompt_id=prompt_id,
+                resolution=payload,
+                reason="Prompt is not known to this backend process.",
+            )
+        if record.status == "pending":
+            record = self._prompt_store.update_status(
+                prompt_id,
+                "stale",
+                reason="Prompt record is pending but no active backend future owns it.",
+            ) or record
+        if record.status in {"stale", "expired", "disconnected"}:
+            return WebPromptResolveResult(
+                status=record.status,
+                prompt_id=prompt_id,
+                resolution=payload,
+                record=record,
+                reason=record.reason,
+            )
+        return WebPromptResolveResult(
+            status="missing",
+            prompt_id=prompt_id,
+            resolution=payload,
+            record=record,
+            reason=f"Prompt is already {record.status}.",
+        )
+
+    def _update_prompt_status(
+        self,
+        prompt_id: str,
+        status: str,
+        *,
+        resolution: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if self._prompt_store is not None:
+            self._prompt_store.update_status(prompt_id, status, resolution=resolution, reason=reason)
 
 
 class WebApprovalPrompter:
@@ -321,5 +397,6 @@ __all__ = [
     "WebApprovalPrompter",
     "WebPromptBroker",
     "WebPromptDisconnected",
+    "WebPromptResolveResult",
     "WebToolPermissionPrompter",
 ]

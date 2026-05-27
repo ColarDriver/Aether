@@ -51,9 +51,21 @@ afterEach(() => {
 describe('ToolsView', () => {
   it('renders searchable tool details and parameter schema', async () => {
     vi.spyOn(api, 'toolGroups').mockResolvedValue({ groups })
+    vi.spyOn(api, 'webSearchStatus').mockResolvedValue({
+      enabled: true,
+      provider: 'brave',
+      supported_providers: ['bocha', 'brave', 'tavily'],
+      api_key_configured: true,
+      credential_name: 'WEB_SEARCH_API_KEY',
+      api_key_source: 'env',
+      status: 'ready',
+      message: 'Local web_search is configured for brave.',
+    })
 
     render(<ToolsView />)
 
+    expect(await screen.findByText('Local web_search')).toBeTruthy()
+    expect(screen.getByText('WEB_SEARCH_API_KEY')).toBeTruthy()
     expect((await screen.findAllByText('read_file')).length).toBeGreaterThan(1)
     expect(screen.getByText('File path to read')).toBeTruthy()
     expect(screen.getByText('yes')).toBeTruthy()

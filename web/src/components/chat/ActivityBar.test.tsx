@@ -42,4 +42,16 @@ describe('ActivityBar', () => {
     expect(screen.getByText('Running tool')).toBeTruthy()
     expect(screen.queryByText('LLM_CALL')).toBeNull()
   })
+
+  it('includes run details in verbose mode', () => {
+    render(
+      <ActivityBar
+        activeRunId="run-abcdef123"
+        verbose
+        status={{ runId: 'run-abcdef123', sessionId: 'session-1', state: 'responding', elapsedMs: 1200 }}
+      />,
+    )
+
+    expect(screen.getByText('run run-abcd · 1.20s · responding')).toBeTruthy()
+  })
 })

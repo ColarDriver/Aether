@@ -28,6 +28,7 @@ export function ApprovalRequestBlock({ block, onRespond }: Props) {
         questions={block.questions}
         onSubmitAnswers={(answers) => onRespond?.({ confirmed: true, answers })}
       />
+      {block.statusMessage ? <p className="prompt-inline-status">{block.statusMessage}</p> : null}
       {block.state === 'pending' && onRespond && !isQuestionApproval ? (
         <footer>
           <button type="button" onClick={() => onRespond({ confirmed: false })}>Reject</button>
@@ -41,6 +42,7 @@ export function ApprovalRequestBlock({ block, onRespond }: Props) {
 function approvalIcon(state: string, isQuestionApproval: boolean) {
   if (state === 'approved' || state === 'answered') return CheckCircle2
   if (state === 'rejected') return XCircle
+  if (state === 'expired' || state === 'stale' || state === 'missing' || state === 'disconnected') return XCircle
   if (isQuestionApproval) return HelpCircle
   return ClipboardCheck
 }

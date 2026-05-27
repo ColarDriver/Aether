@@ -128,7 +128,7 @@ export function WorkspaceFilePanel({ preview, onClose, onSave }: Props) {
             </button>
           ) : null}
           {onClose ? (
-            <button type="button" aria-label="Close workspace file preview" onClick={onClose}>
+            <button type="button" aria-label="Close file preview" onClick={onClose}>
               <X size={15} />
             </button>
           ) : null}

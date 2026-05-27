@@ -2,6 +2,7 @@ import type {
   AnalyticsReport,
   CommandCatalog,
   ConfigPaths,
+  ContextStatus,
   DocContent,
   DocIndex,
   EffectiveConfig,
@@ -12,24 +13,52 @@ import type {
   HealthStatus,
   LogFileSummary,
   LogReadResult,
+  McpConfigList,
+  McpConfigMutationResult,
+  McpResourceList,
+  McpResourceReadResult,
+  McpStatus,
   PlanCurrent,
   PrefMutationResult,
   ProviderModelList,
+  ProviderPreflightStatus,
   ProviderRuntimeStatus,
   ProviderSelectionResult,
   ProviderSummary,
+  SessionDetail,
+  SessionCheckpointActionBody,
+  SessionCheckpointActionResult,
+  SessionExportResult,
+  SessionForkResult,
+  SessionImportResult,
   SessionInfo,
+  SessionMessageActionsResult,
+  SessionRewindResult,
+  SessionTurnCheckpointsResult,
   SkillSummary,
   StatusResponse,
   TaskChildMessagesResult,
   TaskListResult,
   TaskMessagesResult,
   TaskResultArtifact,
+  TaskSendMessageResult,
+  TaskStopResult,
   TaskSummary,
   ToolGroup,
   ToolSummary,
   TranscriptMessage,
+  WebSearchStatus,
+  WebSearchTestResult,
+  WorkspaceChangeActionResult,
+  WorkspaceChangeList,
+  WorkspaceChangeVerificationResult,
+  WorkspaceCheckpoint,
+  WorkspaceCheckpointList,
+  WorkspaceEntry,
   WorkspaceFile,
+  WorkspaceGitDiff,
+  WorkspaceGitStatus,
+  WorkspaceRootInfo,
   WorkspaceSearchResult,
   WorkspaceTree,
 } from './types'
@@ -238,13 +267,46 @@ export const api = {
     const suffix = path ? '?path=' + encodeURIComponent(path) : ''
     return request<WorkspaceTree>('GET', '/api/workspace/tree' + suffix)
   },
+  workspaceRoot: () => request<WorkspaceRootInfo>('GET', '/api/workspace/root'),
+  switchWorkspaceRoot: (body: { path: string; session_id?: string | null; remember?: boolean }) =>
+    request<WorkspaceRootInfo>('PUT', '/api/workspace/root', body),
   workspaceFile: (path: string) => request<WorkspaceFile>('GET', '/api/workspace/file?path=' + encodeURIComponent(path)),
   workspaceFileBlob: (path: string) => requestBlob('GET', '/api/workspace/raw?path=' + encodeURIComponent(path)),
   workspaceSaveFile: (path: string, content: string) => request<WorkspaceFile>('PUT', '/api/workspace/file', { path, content }),
+  workspaceCreateFile: (path: string, content = '') => request<WorkspaceFile>('POST', '/api/workspace/file', { path, content }),
+  workspaceCreateDirectory: (path: string) => request<WorkspaceEntry>('POST', '/api/workspace/directory', { path }),
+  workspaceRenamePath: (path: string, newPath: string) => request<WorkspaceEntry>('PATCH', '/api/workspace/path', { path, new_path: newPath }),
+  workspaceDeletePath: (path: string, recursive = false) => {
+    const query = new URLSearchParams({ path, recursive: recursive ? 'true' : 'false' })
+    return request<void>('DELETE', '/api/workspace/path?' + query.toString())
+  },
   workspaceSearch: (q: string, limit = 100) => {
     const query = new URLSearchParams({ q, limit: String(limit) })
     return request<WorkspaceSearchResult>('GET', '/api/workspace/search?' + query.toString())
   },
+  workspaceGitStatus: () => request<WorkspaceGitStatus>('GET', '/api/workspace/git/status'),
+  workspaceGitDiff: (path?: string | null, staged = false) => {
+    const query = new URLSearchParams()
+    if (path) query.set('path', path)
+    if (staged) query.set('staged', 'true')
+    const suffix = query.toString() ? '?' + query.toString() : ''
+    return request<WorkspaceGitDiff>('GET', '/api/workspace/git/diff' + suffix)
+  },
+  workspaceGitRestore: (path: string) => request<WorkspaceGitStatus>('POST', '/api/workspace/git/restore', { path }),
+  workspaceChanges: () => request<WorkspaceChangeList>('GET', '/api/workspace/changes'),
+  acceptWorkspaceChanges: (paths: string[]) =>
+    request<WorkspaceChangeActionResult>('POST', '/api/workspace/changes/accept', { paths }),
+  rejectWorkspaceChanges: (body: { paths: string[]; checkpoint_id?: string | null; expected_hashes?: Record<string, string> | null }) =>
+    request<WorkspaceChangeActionResult>('POST', '/api/workspace/changes/reject', body),
+  verifyWorkspaceChanges: (body: { paths: string[]; command?: string[] | null; timeout_seconds?: number }) =>
+    request<WorkspaceChangeVerificationResult>('POST', '/api/workspace/changes/verify', body),
+  workspaceCheckpoints: () => request<WorkspaceCheckpointList>('GET', '/api/workspace/checkpoints'),
+  createWorkspaceCheckpoint: (body: { label?: string | null } = {}) =>
+    request<WorkspaceCheckpoint>('POST', '/api/workspace/checkpoints', body),
+  restoreWorkspaceCheckpoint: (checkpointId: string) =>
+    request<WorkspaceCheckpoint>('POST', '/api/workspace/checkpoints/' + encodeURIComponent(checkpointId) + '/restore'),
+  restoreWorkspaceCheckpointPaths: (checkpointId: string, paths: string[]) =>
+    request<WorkspaceGitStatus>('POST', '/api/workspace/checkpoints/' + encodeURIComponent(checkpointId) + '/restore-paths', { paths }),
   sessions: () => request<{ sessions: SessionInfo[] }>('GET', '/api/sessions'),
   createSession: (body: { provider: string; model: string; base_url?: string | null; system_prompt?: string | null }) =>
     request<SessionInfo>('POST', '/api/sessions', body),
@@ -253,9 +315,31 @@ export const api = {
   searchSessions: (query: string, limit = 50) =>
     request<{ sessions: SessionInfo[] }>('GET', '/api/sessions/search?q=' + encodeURIComponent(query) + '&limit=' + encodeURIComponent(String(limit))),
   sessionDetail: (sessionId: string) =>
-    request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('GET', '/api/sessions/' + encodeURIComponent(sessionId)),
+    request<SessionDetail>('GET', '/api/sessions/' + encodeURIComponent(sessionId)),
   resumeSession: (sessionId: string) =>
-    request<{ session_id: string; info: SessionInfo; messages: TranscriptMessage[] }>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/resume'),
+    request<SessionDetail>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/resume'),
+  forkSession: (sessionId: string, body: { message_index: number; new_session_id?: string | null }) =>
+    request<SessionForkResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/fork', body),
+  rewindSession: (sessionId: string, body: { message_index?: number | null; target_user_message_id?: string | null; user_message_index?: number | null; expected_content?: string | null }) =>
+    request<SessionRewindResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/rewind', body),
+  sessionTurnCheckpoints: (sessionId: string) =>
+    request<SessionTurnCheckpointsResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/turn-checkpoints'),
+  sessionMessageActions: (sessionId: string, messageIndex: number) =>
+    request<SessionMessageActionsResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/message-actions/' + encodeURIComponent(String(messageIndex))),
+  sessionActionFork: (sessionId: string, body: SessionCheckpointActionBody) =>
+    request<SessionForkResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/actions/fork', body),
+  sessionActionRewind: (sessionId: string, body: SessionCheckpointActionBody) =>
+    request<SessionCheckpointActionResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/actions/rewind', body),
+  sessionActionUndoRun: (sessionId: string, body: SessionCheckpointActionBody) =>
+    request<SessionCheckpointActionResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/actions/undo-run', body),
+  sessionActionRetry: (sessionId: string, body: SessionCheckpointActionBody) =>
+    request<SessionCheckpointActionResult>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/actions/retry', body),
+  renameSession: (sessionId: string, newSessionId: string) =>
+    request<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(sessionId) + '/rename', { new_session_id: newSessionId }),
+  exportSession: (sessionId: string) =>
+    request<SessionExportResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/export'),
+  importSession: (body: { data: Record<string, unknown>; new_session_id?: string | null; overwrite?: boolean; make_current?: boolean }) =>
+    request<SessionImportResult>('POST', '/api/sessions/import', body),
   sessionMessages: (sessionId: string) =>
     request<{ session_id: string; messages: TranscriptMessage[] }>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/messages'),
   deleteSession: (sessionId: string) => request<void>("DELETE", "/api/sessions/" + encodeURIComponent(sessionId)),
@@ -265,13 +349,43 @@ export const api = {
     request<PlanCurrent>('PUT', '/api/plan/' + encodeURIComponent(sessionId) + '/mode', { mode }),
   clearPlan: (sessionId: string) =>
     request<PlanCurrent>('POST', '/api/plan/' + encodeURIComponent(sessionId) + '/clear'),
+  contextStatus: (sessionId: string) =>
+    request<ContextStatus>('GET', '/api/context/' + encodeURIComponent(sessionId) + '/status'),
+  estimateContext: (sessionId: string, body: { draft?: string; attachments?: Array<Record<string, unknown>> } = {}) =>
+    request<ContextStatus>('POST', '/api/context/' + encodeURIComponent(sessionId) + '/estimate', body),
+  compressContext: (sessionId: string, body: { focus?: string | null; force?: boolean } = {}) =>
+    request<ContextStatus>('POST', '/api/context/' + encodeURIComponent(sessionId) + '/compress', body),
   providers: () => request<{ providers: ProviderSummary[] }>('GET', '/api/providers'),
   currentProvider: () => request<ProviderRuntimeStatus>('GET', '/api/providers/current'),
+  providerPreflight: (params: { provider?: string | null; model?: string | null; baseUrl?: string | null } = {}) => {
+    const query = new URLSearchParams()
+    if (params.provider) query.set('provider', params.provider)
+    if (params.model) query.set('model', params.model)
+    if (params.baseUrl) query.set('base_url', params.baseUrl)
+    const suffix = query.toString() ? '?' + query.toString() : ''
+    return request<ProviderPreflightStatus>('GET', '/api/providers/preflight' + suffix)
+  },
   providerModels: (provider: string) => request<ProviderModelList>('GET', '/api/providers/' + encodeURIComponent(provider) + '/models'),
   selectModel: (body: { provider: string; model: string; persist_last_model?: boolean }) =>
     request<ProviderSelectionResult>('POST', '/api/model/select', body),
   toolGroups: () => request<{ groups: ToolGroup[] }>('GET', '/api/tools/groups'),
   tools: () => request<{ tools: ToolSummary[] }>('GET', '/api/tools'),
+  mcpStatus: () => request<McpStatus>('GET', '/api/mcp/status'),
+  mcpConfig: () => request<McpConfigList>('GET', '/api/mcp/config'),
+  upsertMcpServer: (body: { name: string; command?: string | null; args?: string[]; env?: Record<string, string>; url?: string | null; headers?: Record<string, string>; transport?: string | null; timeout?: number | null; connect_timeout?: number | null; enabled?: boolean }) =>
+    request<McpConfigMutationResult>('PUT', '/api/mcp/servers', body),
+  deleteMcpServer: (name: string) => request<McpConfigMutationResult>('DELETE', '/api/mcp/servers/' + encodeURIComponent(name)),
+  refreshMcp: () => request<McpStatus>('POST', '/api/mcp/refresh'),
+  mcpResources: (server?: string | null) => {
+    const suffix = server ? '?server=' + encodeURIComponent(server) : ''
+    return request<McpResourceList>('GET', '/api/mcp/resources' + suffix)
+  },
+  mcpResourceRead: (server: string, uri: string) => {
+    const query = new URLSearchParams({ server, uri })
+    return request<McpResourceReadResult>('GET', '/api/mcp/resources/read?' + query.toString())
+  },
+  webSearchStatus: () => request<WebSearchStatus>('GET', '/api/web-search/status'),
+  testWebSearch: (body: { query: string; max_results?: number }) => request<WebSearchTestResult>('POST', '/api/web-search/test', body),
   skills: () => request<{ skills: SkillSummary[] }>('GET', '/api/skills'),
   tasks: (params: { sessionId?: string; activeOnly?: boolean; includeOutputTail?: boolean; limit?: number } = {}) => {
     const query = taskQuery(params)
@@ -294,6 +408,9 @@ export const api = {
     return request<TaskChildMessagesResult>('GET', '/api/tasks/' + encodeURIComponent(taskId) + '/children/messages' + suffix)
   },
   taskResult: (taskId: string) => request<TaskResultArtifact>('GET', '/api/tasks/' + encodeURIComponent(taskId) + '/result'),
+  sendTaskMessage: (taskId: string, body: { message: string; summary?: string | null }) =>
+    request<TaskSendMessageResult>('POST', '/api/tasks/' + encodeURIComponent(taskId) + '/messages', body),
+  stopTask: (taskId: string) => request<TaskStopResult>('POST', '/api/tasks/' + encodeURIComponent(taskId) + '/stop'),
   diagnostics: () => request<HealthStatus>('GET', '/api/health'),
   logFiles: () => request<{ files: LogFileSummary[] }>('GET', '/api/logs/files'),
   logs: (params: { file?: string; lines?: number; level?: string; component?: string; search?: string }) => {

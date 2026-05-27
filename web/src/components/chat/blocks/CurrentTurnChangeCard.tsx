@@ -1,4 +1,4 @@
-import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileCode2, Info } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Check, ChevronDown, ChevronRight, FileCode2, Info, RotateCcw, ShieldCheck, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { DiagnosticEntry, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock } from '../../../chat-rendering'
 import { CopyButton } from '../../shared/CopyButton'
@@ -7,10 +7,42 @@ import { DiffViewer, parseUnifiedDiff } from '../DiffViewer'
 type Props = {
   diffs: DiffChatBlock[]
   diagnostics?: DiagnosticsChatBlock[]
+  verifications?: CurrentTurnVerification[]
+  checkpoint?: CurrentTurnCheckpoint | null
+  onAcceptFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onRevertFile?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
 }
 
-type FileChangeKind = 'created' | 'deleted' | 'modified'
+export type FileChangeKind = 'created' | 'deleted' | 'modified'
 type DiagnosticTone = 'error' | 'warning' | 'info'
+type ChangeResolution = 'accepting' | 'accepted' | 'reverting' | 'reverted' | 'error'
+
+export type CurrentTurnFileChangeAction = {
+  path: string
+  kind: FileChangeKind
+  diff: string
+  oldText?: string | null
+  newText?: string | null
+  checkpointId?: string | null
+  checkpointFiles?: string[]
+}
+
+export type CurrentTurnCheckpoint = {
+  checkpointId: string
+  label?: string | null
+  files?: string[]
+}
+
+export type CurrentTurnVerification = {
+  id: string
+  toolName: string
+  label: string
+  command?: string | null
+  status: 'passed' | 'failed' | 'warning'
+  exitCode?: number | null
+  durationMs?: number | null
+  summary?: string | null
+}
 
 type FileChange = {
   path: string
@@ -20,6 +52,8 @@ type FileChange = {
   removals: number
   hunks: number
   diagnostics: DiagnosticEntry[]
+  oldText?: string | null
+  newText?: string | null
 }
 
 type DiagnosticCounts = {
@@ -29,11 +63,61 @@ type DiagnosticCounts = {
   infos: number
 }
 
-export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
+export function CurrentTurnChangeCard({ diffs, diagnostics = [], verifications = [], checkpoint = null, onAcceptFile, onRevertFile }: Props) {
   const changes = useMemo(() => summarizeDiffs(diffs, diagnostics), [diffs, diagnostics])
   const [expanded, setExpanded] = useState(false)
+  const [resolutionByPath, setResolutionByPath] = useState<Record<string, ChangeResolution>>({})
+  const [errorByPath, setErrorByPath] = useState<Record<string, string>>({})
   if (changes.length === 0) return null
   const totals = summarizeChanges(changes)
+  const verificationTotals = summarizeVerifications(verifications)
+  const acceptChange = (change: FileChange) => {
+    if (resolutionByPath[change.path] === 'accepting') return
+    setResolutionByPath((current) => ({ ...current, [change.path]: onAcceptFile ? 'accepting' : 'accepted' }))
+    setErrorByPath((current) => {
+      const next = { ...current }
+      delete next[change.path]
+      return next
+    })
+    if (!onAcceptFile) return
+    Promise.resolve(onAcceptFile({
+      ...change,
+      ...(checkpoint?.checkpointId ? { checkpointId: checkpoint.checkpointId, checkpointFiles: checkpoint.files ?? [] } : {}),
+    }))
+      .then(() => {
+        setResolutionByPath((current) => ({ ...current, [change.path]: 'accepted' }))
+      })
+      .catch((error: unknown) => {
+        setResolutionByPath((current) => ({ ...current, [change.path]: 'error' }))
+        setErrorByPath((current) => ({
+          ...current,
+          [change.path]: error instanceof Error ? error.message : String(error),
+        }))
+      })
+  }
+  const revertChange = (change: FileChange) => {
+    if (!onRevertFile || (!checkpoint?.checkpointId && change.oldText == null) || resolutionByPath[change.path] === 'reverting') return
+    setResolutionByPath((current) => ({ ...current, [change.path]: 'reverting' }))
+    setErrorByPath((current) => {
+      const next = { ...current }
+      delete next[change.path]
+      return next
+    })
+    Promise.resolve(onRevertFile({
+      ...change,
+      ...(checkpoint?.checkpointId ? { checkpointId: checkpoint.checkpointId, checkpointFiles: checkpoint.files ?? [] } : {}),
+    }))
+      .then(() => {
+        setResolutionByPath((current) => ({ ...current, [change.path]: 'reverted' }))
+      })
+      .catch((error: unknown) => {
+        setResolutionByPath((current) => ({ ...current, [change.path]: 'error' }))
+        setErrorByPath((current) => ({
+          ...current,
+          [change.path]: error instanceof Error ? error.message : String(error),
+        }))
+      })
+  }
 
   return (
     <section className="current-turn-change-card" aria-label="Changed files">
@@ -52,6 +136,8 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
           {totals.deleted > 0 ? <em className="change-deleted">{totals.deleted} deleted</em> : null}
         </span>
         <DiagnosticPills counts={totals.diagnostics} compact />
+        {verifications.length > 0 ? <VerificationPill totals={verificationTotals} /> : null}
+        {checkpoint?.checkpointId ? <span className="current-turn-change-checkpoint">checkpoint {checkpoint.checkpointId.slice(0, 8)}</span> : null}
         <span className="current-turn-change-stats">
           <em className="change-add">+{totals.additions}</em>
           <em className="change-remove">-{totals.removals}</em>
@@ -60,16 +146,31 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
       <div className="current-turn-change-files">
         {changes.map((change) => {
           const diagnosticCounts = countDiagnostics(change.diagnostics)
+          const resolution = resolutionByPath[change.path]
+          const canRevert = Boolean(onRevertFile && (change.oldText != null || checkpoint?.checkpointId))
           return (
             <div className={'current-turn-change-file current-turn-change-file-' + change.kind} key={change.path}>
               <span className="current-turn-change-path">{change.path}</span>
               <em className={'current-turn-change-kind change-' + change.kind}>{change.kind}</em>
+              {resolution ? <em className={'current-turn-change-resolution current-turn-change-resolution-' + resolution}>{resolutionLabel(resolution)}</em> : null}
               <DiagnosticPills counts={diagnosticCounts} compact />
               <span className="current-turn-change-file-stats">
                 {change.hunks > 0 ? <em>{change.hunks} hunk{change.hunks === 1 ? '' : 's'}</em> : null}
                 <em className="change-add">+{change.additions}</em>
                 <em className="change-remove">-{change.removals}</em>
               </span>
+              <div className="current-turn-change-actions">
+                <button type="button" onClick={() => acceptChange(change)} disabled={resolution === 'accepting' || resolution === 'accepted' || resolution === 'reverted'}>
+                  <Check size={12} aria-hidden="true" />
+                  {resolution === 'accepting' ? 'Accepting' : 'Accept'}
+                </button>
+                {canRevert ? (
+                  <button type="button" onClick={() => revertChange(change)} disabled={resolution === 'reverting' || resolution === 'reverted'}>
+                    <RotateCcw size={12} aria-hidden="true" />
+                    {resolution === 'reverting' ? 'Reverting' : 'Revert'}
+                  </button>
+                ) : null}
+              </div>
               <CopyButton
                 text={change.path}
                 label={'Copy ' + change.path}
@@ -77,10 +178,12 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
                 displayCopiedLabel="Copied"
                 className="current-turn-change-copy"
               />
+              {errorByPath[change.path] ? <span className="current-turn-change-error">{errorByPath[change.path]}</span> : null}
             </div>
           )
         })}
       </div>
+      <VerificationBundle verifications={verifications} />
       {expanded ? (
         <div className="current-turn-change-diffs">
           {changes.map((change) => (
@@ -89,6 +192,7 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
                 <span>{change.path}</span>
                 <span className="current-turn-change-diff-meta">
                   <DiagnosticPills counts={countDiagnostics(change.diagnostics)} />
+                  {resolutionByPath[change.path] ? <em className={'current-turn-change-resolution current-turn-change-resolution-' + resolutionByPath[change.path]}>{resolutionLabel(resolutionByPath[change.path]!)}</em> : null}
                   <em className={'change-' + change.kind}>{change.kind}</em>
                 </span>
               </header>
@@ -102,20 +206,100 @@ export function CurrentTurnChangeCard({ diffs, diagnostics = [] }: Props) {
   )
 }
 
+function VerificationPill({ totals }: { totals: VerificationTotals }) {
+  const failed = totals.failed > 0
+  const warning = !failed && totals.warning > 0
+  const Icon = failed ? XCircle : ShieldCheck
+  const label = failed
+    ? totals.failed + ' failed'
+    : warning
+      ? totals.warning + ' warning' + plural(totals.warning)
+      : totals.passed + ' passed'
+  return (
+    <span className={'current-turn-change-verification-pill current-turn-change-verification-pill-' + (failed ? 'failed' : warning ? 'warning' : 'passed')}>
+      <Icon size={11} aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
+function VerificationBundle({ verifications }: { verifications: CurrentTurnVerification[] }) {
+  if (verifications.length === 0) return null
+  return (
+    <section className="current-turn-verification-bundle" aria-label="Post-edit verification">
+      <header>
+        <span><ShieldCheck size={13} aria-hidden="true" /> Verification</span>
+        <em>{verifications.length} check{verifications.length === 1 ? '' : 's'}</em>
+      </header>
+      <div>
+        {verifications.map((verification) => {
+          const failed = verification.status === 'failed'
+          const Icon = failed ? XCircle : ShieldCheck
+          return (
+            <article className={'current-turn-verification current-turn-verification-' + verification.status} key={verification.id}>
+              <span>
+                <Icon size={13} aria-hidden="true" />
+                <strong>{verification.label}</strong>
+              </span>
+              <em>{verification.status}</em>
+              {verification.command ? <code>{verification.command}</code> : null}
+              <small>{verificationMeta(verification).join(' · ')}</small>
+              {verification.summary ? <p>{verification.summary}</p> : null}
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+type VerificationTotals = {
+  passed: number
+  failed: number
+  warning: number
+}
+
+function summarizeVerifications(verifications: CurrentTurnVerification[]): VerificationTotals {
+  return verifications.reduce((acc, verification) => ({
+    passed: acc.passed + (verification.status === 'passed' ? 1 : 0),
+    failed: acc.failed + (verification.status === 'failed' ? 1 : 0),
+    warning: acc.warning + (verification.status === 'warning' ? 1 : 0),
+  }), { passed: 0, failed: 0, warning: 0 })
+}
+
+function verificationMeta(verification: CurrentTurnVerification): string[] {
+  return [
+    verification.toolName,
+    verification.exitCode != null ? 'exit ' + verification.exitCode : null,
+    verification.durationMs != null ? formatDurationMs(verification.durationMs) : null,
+  ].filter((item): item is string => Boolean(item))
+}
+
+function formatDurationMs(ms: number): string {
+  const seconds = Math.max(0, ms / 1000)
+  if (seconds < 10) return seconds.toFixed(1) + 's'
+  if (seconds < 60) return Math.round(seconds) + 's'
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return minutes + 'm ' + rest + 's'
+}
+
 function summarizeDiffs(diffs: DiffChatBlock[], diagnostics: DiagnosticsChatBlock[]): FileChange[] {
-  const byPath = new Map<string, string[]>()
+  const byPath = new Map<string, { chunks: string[]; oldText: string | null; newText: string | null }>()
   for (const diffBlock of diffs) {
     const diff = diffBlock.diff ?? diffFromOldNew(diffBlock.oldText ?? '', diffBlock.newText ?? '')
     if (!diff.trim()) continue
     const parsedHeader = parseUnifiedDiffHeader(diff)
     const path = cleanPath(diffBlock.path) || parsedHeader.path || 'Changed file'
-    const existing = byPath.get(path) ?? []
-    existing.push(diff)
+    const existing = byPath.get(path) ?? { chunks: [], oldText: null, newText: null }
+    existing.chunks.push(diff)
+    if (existing.oldText === null && diffBlock.oldText != null) existing.oldText = diffBlock.oldText
+    if (existing.newText === null && diffBlock.newText != null) existing.newText = diffBlock.newText
     byPath.set(path, existing)
   }
   const diagnosticFiles = flattenDiagnostics(diagnostics)
-  return Array.from(byPath.entries()).map(([path, chunks]) => {
-    const diff = chunks.join('\n')
+  return Array.from(byPath.entries()).map(([path, entry]) => {
+    const diff = entry.chunks.join('\n')
     const parsed = parseUnifiedDiff(diff)
     const header = parseUnifiedDiffHeader(diff)
     return {
@@ -126,8 +310,18 @@ function summarizeDiffs(diffs: DiffChatBlock[], diagnostics: DiagnosticsChatBloc
       removals: parsed.filter((line) => line.kind === 'remove').length,
       hunks: diff.split('\n').filter((line) => line.startsWith('@@')).length,
       diagnostics: diagnosticsForPath(path, diagnosticFiles),
+      oldText: entry.oldText,
+      newText: entry.newText,
     }
   })
+}
+
+function resolutionLabel(value: ChangeResolution): string {
+  if (value === 'accepting') return 'accepting'
+  if (value === 'accepted') return 'accepted'
+  if (value === 'reverting') return 'reverting'
+  if (value === 'reverted') return 'reverted'
+  return 'revert failed'
 }
 
 function summarizeChanges(changes: FileChange[]) {

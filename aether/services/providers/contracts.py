@@ -90,6 +90,23 @@ class ProviderRuntimeStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderPreflightStatus:
+    family: str
+    provider_name: str
+    model: str
+    base_url: str | None
+    chat_completions_url: str | None
+    models_url: str | None
+    status: str
+    ready: bool
+    credential: CredentialStatus | None = None
+    discovery: ModelDiscoveryStatus | None = None
+    issues: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class AuxiliarySlotStatus:
     slot: str
     provider_family: str
@@ -125,6 +142,7 @@ __all__ = [
     "ModelDiscoveryStatus",
     "ModelSummary",
     "ProviderModelList",
+    "ProviderPreflightStatus",
     "ProviderRuntimeStatus",
     "ProviderSelectionRequest",
     "ProviderSelectionResult",

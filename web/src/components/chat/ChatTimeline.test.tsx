@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatBlock } from '../../chat-rendering'
 import { ChatTimeline } from './ChatTimeline'
@@ -64,6 +64,49 @@ describe('ChatTimeline', () => {
     expect(onEdit).toHaveBeenCalledWith(userBlock)
     expect(onQuoteUser).toHaveBeenCalledWith(userBlock)
     expect(onQuoteAssistant).toHaveBeenCalledWith(assistantBlock)
+  })
+
+  it('exposes backend-backed fork actions for persisted user and assistant messages', () => {
+    const onFork = vi.fn()
+    const onRewind = vi.fn()
+    const onRetryAssistant = vi.fn()
+    const userBlock: ChatBlock = {
+      ...base,
+      id: 'u-fork',
+      source: 'transcript',
+      messageIndex: 2,
+      kind: 'user_message',
+      content: 'fork this prompt',
+    }
+    const assistantBlock: ChatBlock = {
+      ...base,
+      id: 'a-fork',
+      source: 'transcript',
+      messageIndex: 3,
+      kind: 'assistant_message',
+      content: 'fork this reply',
+    }
+
+    render(
+      <ChatTimeline
+        blocks={[userBlock, assistantBlock]}
+        onForkMessage={onFork}
+        onRetryAssistantMessage={onRetryAssistant}
+        onRewindMessage={onRewind}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind to prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fork from prompt' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry reply' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind to reply' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fork from reply' }))
+
+    expect(onFork).toHaveBeenNthCalledWith(1, userBlock)
+    expect(onFork).toHaveBeenNthCalledWith(2, assistantBlock)
+    expect(onRetryAssistant).toHaveBeenCalledWith(assistantBlock)
+    expect(onRewind).toHaveBeenNthCalledWith(1, userBlock)
+    expect(onRewind).toHaveBeenNthCalledWith(2, assistantBlock)
   })
 
   it('renders prompt blocks with actions', () => {
@@ -179,6 +222,137 @@ describe('ChatTimeline', () => {
     expect(screen.getAllByText('-1').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('1 error').length).toBeGreaterThanOrEqual(1)
   })
+
+  it('supports accepting and reverting oldText-backed file changes', async () => {
+    const onRevert = vi.fn().mockResolvedValue(undefined)
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'u-change-actions', kind: 'user_message', content: 'Patch auth' },
+      {
+        ...base,
+        id: 'diff-change-actions',
+        kind: 'diff',
+        origin: 'tool_result',
+        path: 'src/auth.ts',
+        oldText: 'old auth\n',
+        newText: 'new auth\n',
+      },
+    ]
+
+    render(<ChatTimeline blocks={blocks} onRevertFileChange={onRevert} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByText('accepted')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+
+    await waitFor(() => expect(onRevert).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'src/auth.ts',
+      kind: 'modified',
+      oldText: 'old auth\n',
+      newText: 'new auth\n',
+    })))
+    await waitFor(() => expect(screen.getByText('reverted')).toBeTruthy())
+  })
+
+  it('passes run checkpoint metadata to changed-file revert actions', async () => {
+    const onRevert = vi.fn().mockResolvedValue(undefined)
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'u-checkpoint-change', kind: 'user_message', content: 'Patch auth' },
+      {
+        ...base,
+        id: 'diff-checkpoint-change',
+        kind: 'diff',
+        origin: 'tool_result',
+        path: 'src/auth.ts',
+        diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+      },
+      {
+        ...base,
+        id: 'assistant-checkpoint-change',
+        kind: 'assistant_message',
+        content: 'Changed auth.',
+        metadata: {
+          workspace_checkpoint: {
+            checkpoint_id: '20260527010101-abcdef12',
+            label: 'Before web run',
+            files: [{ path: 'src/preexisting.ts' }],
+          },
+        },
+      },
+    ]
+
+    render(<ChatTimeline blocks={blocks} onRevertFileChange={onRevert} />)
+
+    expect(screen.getByText('checkpoint 20260527')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+
+    await waitFor(() => expect(onRevert).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'src/auth.ts',
+      checkpointId: '20260527010101-abcdef12',
+      checkpointFiles: ['src/preexisting.ts'],
+    })))
+  })
+
+  it('attaches same-turn verification tool results to the changed-file summary', () => {
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'u-verify-change', kind: 'user_message', content: 'Patch auth and verify' },
+      { ...base, id: 'tc-edit-verify', kind: 'tool_call', toolCallId: 'call-edit-verify', toolName: 'file_edit', arguments: { path: 'src/auth.ts' }, status: 'finished' },
+      { ...base, id: 'tr-edit-verify', kind: 'tool_result', toolCallId: 'call-edit-verify', toolName: 'file_edit', content: 'edited', isError: false, metadata: {} },
+      { ...base, id: 'diff-call-edit-verify', kind: 'diff', origin: 'tool_result', path: 'src/auth.ts', diff: '@@ -1,1 +1,1 @@\n-old auth\n+new auth' },
+      { ...base, id: 'tc-typecheck', kind: 'tool_call', toolCallId: 'call-typecheck', toolName: 'bash', arguments: { command: 'npm run typecheck' }, status: 'finished' },
+      {
+        ...base,
+        id: 'tr-typecheck',
+        kind: 'tool_result',
+        toolCallId: 'call-typecheck',
+        toolName: 'bash',
+        content: 'tsc --noEmit -p tsconfig.json',
+        isError: false,
+        metadata: { exit_code: 0, duration_ms: 1520 },
+      },
+      { ...base, id: 'tc-test', kind: 'tool_call', toolCallId: 'call-test', toolName: 'shell', arguments: { cmd: 'npm test -- auth.test.ts' }, status: 'failed' },
+      {
+        ...base,
+        id: 'tr-test',
+        kind: 'tool_result',
+        toolCallId: 'call-test',
+        toolName: 'shell',
+        content: '1 test failed',
+        isError: true,
+        metadata: { exit_code: 1, duration_ms: 33000 },
+      },
+    ]
+
+    render(<ChatTimeline blocks={blocks} />)
+
+    expect(screen.getByRole('region', { name: 'Changed files' })).toBeTruthy()
+    const verification = within(screen.getByRole('region', { name: 'Post-edit verification' }))
+    expect(verification.getByText('Typecheck')).toBeTruthy()
+    expect(verification.getByText('npm run typecheck')).toBeTruthy()
+    expect(verification.getByText('bash · exit 0 · 1.5s')).toBeTruthy()
+    expect(verification.getByText('Tests')).toBeTruthy()
+    expect(verification.getByText('npm test -- auth.test.ts')).toBeTruthy()
+    expect(verification.getByText('shell · exit 1 · 33s')).toBeTruthy()
+    expect(screen.getByText('1 failed')).toBeTruthy()
+  })
+
+  it('does not attach ordinary shell commands as post-edit verification', () => {
+    const blocks: ChatBlock[] = [
+      { ...base, id: 'u-nonverify-change', kind: 'user_message', content: 'Patch auth' },
+      { ...base, id: 'tc-edit-nonverify', kind: 'tool_call', toolCallId: 'call-edit-nonverify', toolName: 'file_edit', arguments: { path: 'src/auth.ts' }, status: 'finished' },
+      { ...base, id: 'tr-edit-nonverify', kind: 'tool_result', toolCallId: 'call-edit-nonverify', toolName: 'file_edit', content: 'edited', isError: false, metadata: {} },
+      { ...base, id: 'diff-call-edit-nonverify', kind: 'diff', origin: 'tool_result', path: 'src/auth.ts', diff: '@@ -1,1 +1,1 @@\n-old auth\n+new auth' },
+      { ...base, id: 'tc-ls', kind: 'tool_call', toolCallId: 'call-ls', toolName: 'bash', arguments: { command: 'ls src' }, status: 'finished' },
+      { ...base, id: 'tr-ls', kind: 'tool_result', toolCallId: 'call-ls', toolName: 'bash', content: 'auth.ts', isError: false, metadata: { exit_code: 0 } },
+    ]
+
+    render(<ChatTimeline blocks={blocks} />)
+
+    expect(screen.getByRole('region', { name: 'Changed files' })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: 'Post-edit verification' })).toBeNull()
+    expect(screen.queryByText('Command check')).toBeNull()
+  })
+
   it('groups multiple consecutive tool calls behind an activity summary', () => {
     const blocks: ChatBlock[] = [
       { ...base, id: 'tc1', kind: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', arguments: { path: 'README.md' }, status: 'finished' },

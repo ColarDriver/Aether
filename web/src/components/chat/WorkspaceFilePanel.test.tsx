@@ -38,7 +38,7 @@ describe('WorkspaceFilePanel', () => {
     expect(screen.getByLabelText('Workspace file preview')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Aether' })).toBeTruthy()
     expect(screen.getByText('Workspace preview body.')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Close workspace file preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Close file preview' })).toBeTruthy()
   })
 
   it('saves edited text files through the panel action', async () => {

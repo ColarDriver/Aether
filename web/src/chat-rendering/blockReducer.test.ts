@@ -224,6 +224,36 @@ describe('reduceRunFrame', () => {
     })
   })
 
+  it('marks stale prompt frames as terminal without applying an optimistic decision', () => {
+    const withPermission = reduceRunFrame(
+      createChatRenderState(),
+      frame('permission.requested', {
+        session_id: 's1',
+        run_id: 'r1',
+        prompt_id: 'permission-stale',
+        request: { tool_name: 'write_file' },
+      }),
+    )
+
+    const stale = reduceRunFrame(
+      withPermission,
+      frame('prompt.stale', {
+        prompt_id: 'permission-stale',
+        status: 'stale',
+        reason: 'Backend restarted before this prompt was resolved.',
+        result: { decision: { type: 'allow_once' } },
+      }),
+    )
+
+    expect(stale.pendingPermissionBlock).toBeNull()
+    expect(stale.blocksBySession.s1?.[0]).toMatchObject({
+      kind: 'permission_request',
+      promptId: 'permission-stale',
+      state: 'stale',
+      statusMessage: 'Backend restarted before this prompt was resolved.',
+    })
+  })
+
   it('accepts permission frames whose session id only exists inside the request payload', () => {
     const state = reduceRunFrame(
       createChatRenderState(),
@@ -277,6 +307,48 @@ describe('reduceRunFrame', () => {
     })
   })
 
+  it('shows lifecycle status for accepted and cancelled runs', () => {
+    const accepted = reduceRunFrame(
+      createChatRenderState(),
+      frame('run.accepted', { session_id: 's1', run_id: 'r1' }),
+    )
+
+    expect(accepted.activeRunId).toBe('r1')
+    expect(accepted.statusByRun.r1).toMatchObject({ state: 'starting', detail: 'run accepted' })
+    expect(accepted.blocksBySession.s1?.[0]).toMatchObject({ kind: 'streaming_status', state: 'starting' })
+
+    const cancelling = reduceRunFrame(
+      accepted,
+      frame('run.cancel.accepted', { session_id: 's1', run_id: 'r1', cancelled: true }),
+    )
+
+    expect(cancelling.statusByRun.r1).toMatchObject({ state: 'cancelling', detail: 'interrupt requested' })
+    expect(cancelling.blocksBySession.s1?.[0]).toMatchObject({ kind: 'streaming_status', state: 'cancelling' })
+  })
+
+  it('renders service error frames with session details as visible errors', () => {
+    const state = reduceRunFrame(
+      createChatRenderState(),
+      frame('error', {
+        code: 'RUN_ALREADY_ACTIVE',
+        message: 'run already active',
+        details: { session_id: 's1', run_id: 'r1' },
+      }),
+    )
+
+    expect(state.activeRunId).toBeNull()
+    expect(state.blocksBySession.s1?.[0]).toMatchObject({
+      kind: 'error',
+      message: 'run already active',
+      code: 'RUN_ALREADY_ACTIVE',
+      details: [
+        { label: 'Session Id', value: 's1' },
+        { label: 'Run Id', value: 'r1' },
+      ],
+      suggestions: ['Wait for the active run to finish, or cancel it before starting a new run in this session.'],
+    })
+  })
+
   it('clears streaming flags on finish and creates visible errors on failure', () => {
     const streaming = reduceRunFrame(
       createChatRenderState(),
@@ -289,6 +361,85 @@ describe('reduceRunFrame', () => {
 
     expect(failed.blocksBySession.s1?.[0]).toMatchObject({ kind: 'assistant_message', isStreaming: false, isError: true })
     expect(failed.blocksBySession.s1?.[1]).toMatchObject({ kind: 'error', message: 'boom' })
+  })
+
+  it('renders error run results even when a run.failed frame was missed', () => {
+    const accepted = reduceRunFrame(
+      createChatRenderState(),
+      frame('run.accepted', { session_id: 's1', run_id: 'r-provider' }),
+    )
+    const failed = reduceRunFrame(
+      accepted,
+      frame('run.result', {
+        session_id: 's1',
+        run_id: 'r-provider',
+        final_text: '',
+        exit_reason: 'error',
+        metadata: {
+          error: {
+            type: 'ProviderInvocationError',
+            message: 'provider HTTP 404: 404 page not found',
+            status_code: 404,
+            body_summary: '404 page not found',
+            metadata: { url: 'https://provider.test/chat/completions' },
+          },
+        },
+      }),
+    )
+
+    expect(failed.activeRunId).toBeNull()
+    expect(failed.blocksBySession.s1?.at(-1)).toMatchObject({
+      kind: 'error',
+      code: 'ProviderInvocationError',
+      message: 'provider HTTP 404: 404 page not found',
+      details: [
+        { label: 'HTTP status', value: '404' },
+        { label: 'Endpoint', value: 'https://provider.test/chat/completions' },
+        { label: 'Response body', value: '404 page not found' },
+      ],
+      suggestions: expect.arrayContaining([
+        expect.stringContaining('provider base URL'),
+        expect.stringContaining('selected model'),
+      ]),
+    })
+  })
+
+  it('attaches run.result metadata to the last tool result when no assistant text is available', () => {
+    const started = reduceRunFrame(
+      createChatRenderState(),
+      frame('tool.started', {
+        session_id: 's1',
+        run_id: 'r-tool-only',
+        tool_call_id: 'call-1',
+        tool_name: 'file_edit',
+        arguments: { path: 'app.py' },
+      }),
+    )
+    const toolFinished = reduceRunFrame(
+      started,
+      frame('tool.finished', {
+        session_id: 's1',
+        run_id: 'r-tool-only',
+        tool_call_id: 'call-1',
+        tool_name: 'file_edit',
+        content: 'edited',
+      }),
+    )
+
+    const finished = reduceRunFrame(
+      toolFinished,
+      frame('run.result', {
+        session_id: 's1',
+        run_id: 'r-tool-only',
+        final_text: '',
+        metadata: { workspace_checkpoint: { checkpoint_id: 'cp-1' } },
+      }),
+    )
+
+    expect(finished.blocksBySession.s1?.find((block) => block.kind === 'tool_result')).toMatchObject({
+      kind: 'tool_result',
+      metadata: { workspace_checkpoint: { checkpoint_id: 'cp-1' } },
+    })
   })
 })
 

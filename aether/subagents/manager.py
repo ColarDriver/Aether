@@ -142,6 +142,13 @@ class SubagentManager:
         with self._stop_events_lock:
             return task_id in self._active_children
 
+    def has_active_tasks(self) -> bool:
+        with self._stop_events_lock:
+            if self._active_children:
+                return True
+        with self._async_lock:
+            return any(not future.done() for future in self._async_futures.values())
+
     # ---------------------------------------------------------- async path
 
     def run_task_async(self, *, parent, task: SubagentTask) -> str:

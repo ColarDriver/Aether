@@ -68,6 +68,8 @@ class AgentRunService:
         self._builder = builder or RunDependencyBuilder()
         self._registry = registry or RunRegistry()
         self._lock = threading.Lock()
+        self._subagent_manager_lock = threading.Lock()
+        self._subagent_managers_by_run: dict[str, Any] = {}
         self._snapshots_by_run: dict[str, AgentRunSnapshot] = {}
         self._latest_run_by_session: dict[str, str] = {}
 
@@ -98,6 +100,7 @@ class AgentRunService:
         )
         emitter.emit(RunStarted(session_id=record.session_id, run_id=run_id))
 
+        subagent_manager: Any | None = None
         try:
             provider = self._builder.build_provider(record)
             config = self._builder.build_engine_config(request.options)
@@ -106,6 +109,7 @@ class AgentRunService:
             agent_type_registry = self._builder.build_agent_type_registry(config)
             task_store = self._builder.build_task_store(config)
             subagent_manager = self._builder.build_subagent_manager(config)
+            self._register_subagent_manager(run_id, subagent_manager)
             engine = self._builder.build_engine(
                 provider=provider,
                 tool_registry=tool_registry,
@@ -127,15 +131,18 @@ class AgentRunService:
                 loop_state_callback=emitter.loop_state,
             )
             engine_result = engine.run_loop(engine_request)
-            self._sessions.persist_run_result(
-                record.session_id,
-                messages=engine_result.messages,
-                system_prompt=engine_result.system_prompt or record.system_prompt,
-            )
             result = _result_from_engine_result(
                 session_id=record.session_id,
                 run_id=run_id,
                 result=engine_result,
+            )
+            self._sessions.persist_run_result(
+                record.session_id,
+                messages=_messages_with_persisted_run_metadata(
+                    engine_result.messages,
+                    result.metadata,
+                ),
+                system_prompt=engine_result.system_prompt or record.system_prompt,
             )
             emitter.usage(result.usage)
             _emit_terminal_event(emitter, engine_result, result)
@@ -173,6 +180,7 @@ class AgentRunService:
             return result
         finally:
             self._registry.unregister(record.session_id, handle)
+            self._unregister_subagent_manager_if_idle(run_id, subagent_manager)
 
     def cancel(self, request: AgentRunCancelRequest) -> bool:
         return self._registry.cancel(
@@ -180,6 +188,28 @@ class AgentRunService:
             run_id=request.run_id,
             reason=request.reason or "rpc-cancel",
         )
+
+    def stop_task(self, task_id: str) -> bool:
+        normalized = _require_non_empty(task_id, "task_id")
+        delivered = False
+        with self._subagent_manager_lock:
+            managers = list(self._subagent_managers_by_run.items())
+        stale_run_ids: list[str] = []
+        for run_id, manager in managers:
+            if manager is None:
+                stale_run_ids.append(run_id)
+                continue
+            stop_fn = getattr(manager, "stop_task", None)
+            if callable(stop_fn) and bool(stop_fn(normalized)):
+                delivered = True
+            active_fn = getattr(manager, "has_active_tasks", None)
+            if callable(active_fn) and not bool(active_fn()):
+                stale_run_ids.append(run_id)
+        if stale_run_ids:
+            with self._subagent_manager_lock:
+                for run_id in stale_run_ids:
+                    self._subagent_managers_by_run.pop(run_id, None)
+        return delivered
 
     def status(self, run_id_or_session_id: str) -> AgentRunSnapshot | None:
         key = run_id_or_session_id.strip()
@@ -204,6 +234,22 @@ class AgentRunService:
     def final_result(self, run_id_or_session_id: str) -> AgentRunResult | None:
         snapshot = self.status(run_id_or_session_id)
         return snapshot.result if snapshot is not None else None
+
+    def _register_subagent_manager(self, run_id: str, manager: Any | None) -> None:
+        if manager is None:
+            return
+        with self._subagent_manager_lock:
+            self._subagent_managers_by_run[run_id] = manager
+
+    def _unregister_subagent_manager_if_idle(self, run_id: str, manager: Any | None) -> None:
+        if manager is None:
+            return
+        active_fn = getattr(manager, "has_active_tasks", None)
+        if callable(active_fn) and bool(active_fn()):
+            return
+        with self._subagent_manager_lock:
+            if self._subagent_managers_by_run.get(run_id) is manager:
+                self._subagent_managers_by_run.pop(run_id, None)
 
     def _set_snapshot(self, snapshot: AgentRunSnapshot) -> None:
         with self._lock:
@@ -452,6 +498,10 @@ def _result_from_engine_result(
     result: EngineResult,
 ) -> AgentRunResult:
     metadata = dict(result.metadata or {})
+    _promote_turn_metadata(metadata, "workspace_checkpoint")
+    _promote_turn_metadata(metadata, "workspace_checkpoint_error")
+    if result.status == EngineStatus.FAILED and "error" not in metadata:
+        metadata["error"] = _engine_result_error_metadata(result, metadata)
     interrupt = metadata.get("interrupt") if isinstance(metadata, dict) else None
     partial_text = ""
     if isinstance(interrupt, dict):
@@ -465,6 +515,94 @@ def _result_from_engine_result(
         usage=_usage_from_metadata(metadata),
         metadata=metadata,
     )
+
+
+def _engine_result_error_metadata(
+    result: EngineResult,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    turn = metadata.get("turn")
+    if isinstance(turn, Mapping):
+        error = turn.get("error")
+        if isinstance(error, Mapping):
+            payload = _json_safe_value(error)
+            if isinstance(payload, dict):
+                return payload
+    return {
+        "type": result.exit_reason.value,
+        "message": result.error or result.exit_reason.value,
+    }
+
+
+_PERSISTED_RESULT_METADATA_KEYS = frozenset(
+    {
+        "api_calls",
+        "compaction",
+        "compression_lineage",
+        "context_engine",
+        "empty_recovery",
+        "exit",
+        "iteration_budget",
+        "memory",
+        "reasoning",
+        "recovery",
+        "runtime",
+        "tool_errors",
+        "tool_permissions",
+        "usage",
+        "workspace_checkpoint",
+        "workspace_checkpoint_error",
+    }
+)
+
+
+def _promote_turn_metadata(metadata: dict[str, Any], key: str) -> None:
+    if key in metadata:
+        return
+    turn = metadata.get("turn")
+    if not isinstance(turn, Mapping) or key not in turn:
+        return
+    metadata[key] = _json_safe_value(turn[key])
+
+
+def _messages_with_persisted_run_metadata(
+    messages: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    selected = _select_persisted_result_metadata(metadata)
+    if not selected:
+        return messages
+
+    copied = [dict(message) if isinstance(message, dict) else message for message in messages]
+    for index in range(len(copied) - 1, -1, -1):
+        message = copied[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        existing = message.get("metadata")
+        merged = dict(existing) if isinstance(existing, Mapping) else {}
+        merged.update(selected)
+        message["metadata"] = merged
+        return copied
+    return messages
+
+
+def _select_persisted_result_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    for key in _PERSISTED_RESULT_METADATA_KEYS:
+        if key not in metadata:
+            continue
+        selected[key] = _json_safe_value(metadata[key])
+    return selected
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe_value(item) for item in value]
+    return str(value)
 
 
 def _wire_exit_reason(result: EngineResult) -> str:
@@ -523,13 +661,25 @@ def _error_result(session_id: str, run_id: str, exc: BaseException) -> AgentRunR
         final_text="",
         exit_reason="error",
         usage=_usage_from_metadata({}),
-        metadata={
-            "error": {
-                "type": type(exc).__name__,
-                "message": str(exc),
-            }
-        },
+        metadata={"error": _exception_error_metadata(exc)},
     )
+
+
+def _exception_error_metadata(exc: BaseException) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+    for attr in ("status_code", "retry_after_seconds", "body_summary"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            payload[attr] = _json_safe_value(value)
+    if bool(getattr(exc, "is_network_error", False)):
+        payload["is_network_error"] = True
+    metadata = getattr(exc, "metadata", None)
+    if isinstance(metadata, Mapping) and metadata:
+        payload["metadata"] = _json_safe_value(metadata)
+    return payload
 
 
 def _status_from_result(result: AgentRunResult) -> AgentRunStatus:

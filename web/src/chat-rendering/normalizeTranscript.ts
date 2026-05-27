@@ -29,6 +29,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           id: 'persisted-' + index + '-task-notification',
           sessionId,
           runId,
+          messageIndex: index,
           timestamp,
           source: 'transcript',
           kind: 'task_notification',
@@ -42,6 +43,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           id: 'persisted-' + index + '-diagnostics',
           sessionId,
           runId,
+          messageIndex: index,
           timestamp,
           source: 'transcript',
           kind: 'diagnostics',
@@ -57,6 +59,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
         id: 'persisted-' + index + '-user',
         sessionId,
         runId,
+        messageIndex: index,
         timestamp,
         source: 'transcript',
         kind: 'user_message',
@@ -78,6 +81,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           id: 'persisted-' + index + '-assistant',
           sessionId,
           runId,
+          messageIndex: index,
           timestamp,
           source: 'transcript',
           kind: 'assistant_message',
@@ -92,6 +96,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           id: 'persisted-' + index + '-tool-' + toolCall.id,
           sessionId,
           runId,
+          messageIndex: index,
           timestamp,
           toolCallId: toolCall.id,
           toolName: toolCall.name || 'tool',
@@ -122,6 +127,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
         id: 'persisted-' + index + '-result-' + toolCallId,
         sessionId,
         runId,
+        messageIndex: index,
         timestamp,
         source: 'transcript',
         kind: 'tool_result',
@@ -138,6 +144,7 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
           id: 'persisted-' + index + '-diff-' + toolCallId,
           sessionId,
           runId,
+          messageIndex: index,
           timestamp,
           source: 'transcript',
           kind: 'diff',
@@ -155,6 +162,7 @@ function toolCallBlock(input: {
   id: string
   sessionId: string
   runId: string
+  messageIndex: number
   timestamp: number
   toolCallId: string
   toolName: string
@@ -166,6 +174,7 @@ function toolCallBlock(input: {
       id: input.id,
       sessionId: input.sessionId,
       runId: input.runId,
+      messageIndex: input.messageIndex,
       timestamp: input.timestamp,
       source: 'transcript',
       kind: 'ask_user_question',
@@ -179,6 +188,7 @@ function toolCallBlock(input: {
     id: input.id,
     sessionId: input.sessionId,
     runId: input.runId,
+    messageIndex: input.messageIndex,
     timestamp: input.timestamp,
     source: 'transcript',
     kind: 'tool_call',

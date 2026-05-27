@@ -46,6 +46,25 @@ class AnthropicMessagesTransportTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["input_schema"]["type"], "object")
         self.assertEqual(payload["tools"][0]["input_schema"]["required"], ["path"])
 
+    def test_user_multimodal_content_converts_base64_image_parts(self) -> None:
+        _system, messages = self.transport.convert_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"][0], {"type": "text", "text": "describe"})
+        self.assertEqual(messages[0]["content"][1]["type"], "image")
+        self.assertEqual(messages[0]["content"][1]["source"]["media_type"], "image/png")
+        self.assertEqual(messages[0]["content"][1]["source"]["data"], "abc")
+
     def test_convert_messages_preserves_assistant_tool_and_tool_result(self) -> None:
         system, messages = self.transport.convert_messages(
             [

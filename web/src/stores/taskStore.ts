@@ -7,6 +7,7 @@ type TaskState = {
   isLoadingBySession: Record<string, boolean>
   errorBySession: Record<string, string | null>
   loadSessionTasks: (sessionId: string) => Promise<void>
+  applyTaskSnapshot: (sessionId: string, tasks: TaskSummary[]) => void
   clearSessionTasks: (sessionId: string) => void
 }
 
@@ -14,6 +15,14 @@ export const useTaskStore = create<TaskState>((set) => ({
   tasksBySession: {},
   isLoadingBySession: {},
   errorBySession: {},
+  applyTaskSnapshot: (sessionId, tasks) => {
+    if (!sessionId) return
+    set((state) => ({
+      tasksBySession: { ...state.tasksBySession, [sessionId]: tasks },
+      isLoadingBySession: { ...state.isLoadingBySession, [sessionId]: false },
+      errorBySession: { ...state.errorBySession, [sessionId]: null },
+    }))
+  },
   clearSessionTasks: (sessionId) => {
     set((state) => {
       const { [sessionId]: _tasks, ...tasksBySession } = state.tasksBySession

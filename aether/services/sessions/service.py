@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict
-from datetime import datetime
+import copy
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
 from aether.cli.sessions import (
     SessionRecord,
+    assistant_turn_count,
     delete_session,
+    first_user_message,
     list_sessions,
     load_session,
     save_session,
     update_session_from_state,
 )
-from aether.runtime.session.plan_artifact import clear_plan
-from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
+from aether.runtime.session.plan_artifact import clear_plan, read_plan, write_plan
+from aether.runtime.session.session_state import SessionMode, clear_cwd, clear_mode, get_cwd, get_mode, set_cwd, set_mode
 from aether.runtime.tools.tool_result_storage import cleanup_session_spills
 from aether.services.common import (
     ServiceConflictError,
@@ -32,10 +36,22 @@ from aether.services.sessions.contracts import (
     SessionDeleteRequest,
     SessionExportRequest,
     SessionExportResult,
+    SessionForkRequest,
+    SessionForkResult,
+    SessionImportRequest,
+    SessionImportResult,
     SessionInfo,
     SessionListResult,
+    SessionMessageAction,
+    SessionMessageActionsResult,
     SessionRenameRequest,
     SessionResumeRequest,
+    SessionRewindRequest,
+    SessionRewindResult,
+    SessionTurnCheckpoint,
+    SessionTurnCheckpointsResult,
+    SessionTurnCodeSnapshot,
+    SessionTurnTarget,
     SessionUpdateRequest,
     TranscriptAttachment,
     TranscriptMessage,
@@ -46,7 +62,18 @@ CurrentGetter = Callable[[], str | None]
 CurrentSetter = Callable[[str | None], None]
 
 _ALLOWED_ROLES = frozenset({"user", "assistant", "system", "tool"})
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _LOCAL_CURRENT_SESSION: str | None = None
+
+
+@dataclass(slots=True)
+class _CompletedTurn:
+    message_index: int
+    message_id: str
+    user_message_index: int
+    user_message_count: int
+    content: str | None
+    response_end_index: int
 
 
 def _get_local_current_session() -> str | None:
@@ -82,6 +109,7 @@ class SessionService:
             system_prompt=request.system_prompt,
         )
         clear_mode(record.session_id)
+        clear_cwd(record.session_id)
         clear_plan(record.session_id)
         record.mode = "agent"
         save_session(record, base=self._session_dir)
@@ -163,6 +191,7 @@ class SessionService:
             self._current_setter(None)
         if deleted:
             clear_mode(session_id)
+            clear_cwd(session_id)
             clear_plan(session_id)
             cleanup_session_spills(session_id=session_id, max_age_seconds=0)
         return deleted
@@ -177,7 +206,7 @@ class SessionService:
 
     def rename(self, request: SessionRenameRequest) -> SessionInfo:
         session_id = _require_non_empty(request.session_id, "session_id")
-        new_session_id = _require_non_empty(request.new_session_id, "new_session_id")
+        new_session_id = _require_safe_session_id(request.new_session_id, "new_session_id")
         record = load_session(session_id, base=self._session_dir)
         if record is None:
             raise ServiceNotFoundError(
@@ -189,18 +218,270 @@ class SessionService:
                 f"session already exists: {new_session_id}",
                 details={"session_id": new_session_id},
             )
+        mode = get_mode(session_id)
+        cwd = get_cwd(session_id)
+        plan = read_plan(session_id)
         delete_session(session_id, base=self._session_dir)
         record.session_id = new_session_id
         save_session(record, base=self._session_dir)
+        clear_mode(session_id)
+        clear_cwd(session_id)
+        set_mode(new_session_id, mode)
+        if cwd is not None:
+            set_cwd(new_session_id, cwd)
+        clear_plan(session_id)
+        if plan is not None:
+            write_plan(new_session_id, plan)
         if self._current_getter() == session_id:
             self._current_setter(new_session_id)
         return self.info(record)
+
+    def fork(self, request: SessionForkRequest) -> SessionForkResult:
+        source = self.resolve_record(
+            _require_non_empty(request.session_id_or_prefix, "session_id")
+        )
+        message_index = request.message_index
+        if not isinstance(message_index, int) or isinstance(message_index, bool):
+            raise ServiceValidationError(
+                "message_index must be an integer",
+                details={"message_index": message_index},
+            )
+        if message_index < 0 or message_index >= len(source.messages):
+            raise ServiceValidationError(
+                "message_index is outside the session transcript",
+                details={
+                    "message_index": message_index,
+                    "message_count": len(source.messages),
+                },
+            )
+        fork_id = (
+            request.new_session_id.strip()
+            if isinstance(request.new_session_id, str) and request.new_session_id.strip()
+            else str(uuid.uuid4())
+        )
+        if load_session(fork_id, base=self._session_dir) is not None:
+            raise ServiceConflictError(
+                f"session already exists: {fork_id}",
+                details={"session_id": fork_id},
+            )
+        copied_messages = copy.deepcopy(source.messages[: message_index + 1])
+        fork = SessionRecord.new(
+            session_id=fork_id,
+            provider=source.provider,
+            model=source.model,
+            base_url=source.base_url,
+            system_prompt=source.system_prompt,
+        )
+        fork.messages = copied_messages
+        fork.mode = "agent"
+        fork.turn_count = assistant_turn_count(copied_messages)
+        fork.first_user_message = first_user_message(copied_messages)[:200]
+        clear_mode(fork.session_id)
+        clear_plan(fork.session_id)
+        save_session(fork, base=self._session_dir)
+        self._current_setter(fork.session_id)
+        info = self.info(fork)
+        return SessionForkResult(
+            source_session_id=source.session_id,
+            forked_from_index=message_index,
+            messages_copied=len(copied_messages),
+            info=info,
+            messages=[message_to_transcript(message) for message in fork.messages],
+        )
+
+    def rewind(self, request: SessionRewindRequest) -> SessionRewindResult:
+        record = self.resolve_record(
+            _require_non_empty(request.session_id_or_prefix, "session_id")
+        )
+        message_index = _resolve_message_index(
+            record,
+            message_index=request.message_index,
+            target_user_message_id=request.target_user_message_id,
+            user_message_index=request.user_message_index,
+            expected_content=request.expected_content,
+            rewind_before_target=request.rewind_before_target,
+        )
+        if not isinstance(message_index, int) or isinstance(message_index, bool):
+            raise ServiceValidationError(
+                "message_index must be an integer",
+                details={"message_index": message_index},
+            )
+        if message_index < -1 or message_index >= len(record.messages):
+            raise ServiceValidationError(
+                "message_index is outside the session transcript",
+                details={
+                    "message_index": message_index,
+                    "message_count": len(record.messages),
+                    "minimum": -1,
+                },
+            )
+        original_count = len(record.messages)
+        record.messages = copy.deepcopy(record.messages[: message_index + 1])
+        record.turn_count = assistant_turn_count(record.messages)
+        record.first_user_message = first_user_message(record.messages)[:200]
+        save_session(record, base=self._session_dir)
+        self._current_setter(record.session_id)
+        info = self.info(record)
+        return SessionRewindResult(
+            session_id=record.session_id,
+            rewound_to_index=message_index,
+            messages_kept=len(record.messages),
+            messages_removed=max(0, original_count - len(record.messages)),
+            info=info,
+            messages=[message_to_transcript(message) for message in record.messages],
+        )
+
+    def turn_checkpoints(self, session_id_or_prefix: str) -> SessionTurnCheckpointsResult:
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        checkpoints: list[SessionTurnCheckpoint] = []
+        for turn in _completed_turns(record.messages):
+            messages = record.messages[turn.message_index + 1 : turn.response_end_index]
+            checkpoint = _workspace_checkpoint_from_messages(messages)
+            files_changed = _files_changed_for_turn(messages, checkpoint)
+            insertions, deletions = _diff_stats_for_turn(messages)
+            checkpoint_id = _checkpoint_id(checkpoint)
+            if not checkpoint_id and not files_changed and insertions == 0 and deletions == 0:
+                continue
+            checkpoints.append(
+                SessionTurnCheckpoint(
+                    target=SessionTurnTarget(
+                        target_user_message_id=turn.message_id,
+                        user_message_index=turn.user_message_index,
+                        user_message_count=turn.user_message_count,
+                        message_index=turn.message_index,
+                        content=turn.content,
+                    ),
+                    code=SessionTurnCodeSnapshot(
+                        available=True,
+                        files_changed=files_changed,
+                        insertions=insertions,
+                        deletions=deletions,
+                        checkpoint_id=checkpoint_id,
+                    ),
+                    work_dir=_first_string_from_mapping(checkpoint, "root", "cwd", "work_dir", "workDir"),
+                    conversation={
+                        "messages_removed": max(0, len(record.messages) - turn.response_end_index),
+                        "removed_message_ids": [
+                            _message_stable_id(message, index)
+                            for index, message in enumerate(record.messages[turn.response_end_index :], start=turn.response_end_index)
+                        ],
+                    },
+                )
+            )
+        return SessionTurnCheckpointsResult(session_id=record.session_id, checkpoints=checkpoints)
+
+    def message_actions(self, session_id_or_prefix: str, message_index: int) -> SessionMessageActionsResult:
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        if not isinstance(message_index, int) or isinstance(message_index, bool):
+            raise ServiceValidationError("message_index must be an integer", details={"message_index": message_index})
+        if message_index < 0 or message_index >= len(record.messages):
+            raise ServiceValidationError(
+                "message_index is outside the session transcript",
+                details={"message_index": message_index, "message_count": len(record.messages)},
+            )
+        message = record.messages[message_index]
+        role = str(message.get("role") or "user")
+        turn = _turn_for_message_index(record.messages, message_index)
+        checkpoint_id = None
+        target_id = None
+        user_message_index = None
+        if turn is not None:
+            checkpoint_id = _checkpoint_id(_workspace_checkpoint_from_messages(record.messages[turn.message_index + 1 : turn.response_end_index]))
+            target_id = turn.message_id
+            user_message_index = turn.user_message_index
+        actions = [
+            SessionMessageAction(name="quote", supported=True, label="Quote message"),
+            SessionMessageAction(
+                name="fork",
+                supported=True,
+                label="Fork transcript",
+            ),
+            SessionMessageAction(
+                name="rewind",
+                supported=True,
+                label="Rewind transcript",
+                destructive=True,
+            ),
+            SessionMessageAction(
+                name="retry",
+                supported=turn is not None,
+                label="Retry from prompt" if turn is not None else "Retry",
+                reason=None if turn is not None else "No completed user turn owns this message.",
+                checkpoint_id=checkpoint_id,
+                destructive=True,
+            ),
+            SessionMessageAction(
+                name="rewind_restore",
+                supported=checkpoint_id is not None,
+                label="Rewind and restore workspace",
+                reason=None if checkpoint_id is not None else "No checkpoint metadata is available for this turn.",
+                checkpoint_id=checkpoint_id,
+                destructive=True,
+            ),
+            SessionMessageAction(
+                name="undo_run",
+                supported=turn is not None and checkpoint_id is not None,
+                label="Undo run",
+                reason=None if turn is not None and checkpoint_id is not None else "Undo run requires a completed checkpointed turn.",
+                checkpoint_id=checkpoint_id,
+                destructive=True,
+            ),
+        ]
+        return SessionMessageActionsResult(
+            session_id=record.session_id,
+            message_index=message_index,
+            role=role,
+            target_user_message_id=target_id,
+            user_message_index=user_message_index,
+            actions=actions,
+        )
 
     def export(self, request: SessionExportRequest) -> SessionExportResult:
         record = self.resolve_record(
             _require_non_empty(request.session_id_or_prefix, "session_id")
         )
         return SessionExportResult(session_id=record.session_id, data=record.to_json())
+
+    def import_session(self, request: SessionImportRequest) -> SessionImportResult:
+        if not isinstance(request.data, dict):
+            raise ServiceValidationError(
+                "session import requires a JSON object",
+                details={"field": "data"},
+            )
+        record = _record_from_import_data(request.data)
+        source_session_id = record.session_id or None
+        target_session_id = (
+            _require_safe_session_id(request.new_session_id, "new_session_id")
+            if isinstance(request.new_session_id, str) and request.new_session_id.strip()
+            else _safe_or_generated_session_id(record.session_id)
+        )
+        existing = load_session(target_session_id, base=self._session_dir)
+        overwritten = existing is not None
+        if overwritten and not request.overwrite:
+            raise ServiceConflictError(
+                f"session already exists: {target_session_id}",
+                details={"session_id": target_session_id},
+            )
+
+        record.session_id = target_session_id
+        _normalize_imported_record(record)
+        if overwritten:
+            delete_session(target_session_id, base=self._session_dir)
+            clear_mode(target_session_id)
+            clear_cwd(target_session_id)
+            clear_plan(target_session_id)
+            cleanup_session_spills(session_id=target_session_id, max_age_seconds=0)
+        save_session(record, base=self._session_dir)
+        set_mode(record.session_id, record.mode)
+        if request.make_current:
+            self._current_setter(record.session_id)
+        info = self.info(record)
+        return SessionImportResult(
+            source_session_id=source_session_id,
+            overwritten=overwritten,
+            info=info,
+            messages=[message_to_transcript(message) for message in record.messages],
+        )
 
     def transcript(self, session_id_or_prefix: str) -> list[TranscriptMessage]:
         record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
@@ -222,6 +503,12 @@ class SessionService:
             base_url=record.base_url,
             system_prompt=system_prompt or record.system_prompt,
         )
+        save_session(record, base=self._session_dir)
+        return self.info(record)
+
+    def persist_context_status(self, session_id: str, status: dict[str, Any]) -> SessionInfo:
+        record = self.resolve_record(_require_non_empty(session_id, "session_id"))
+        record.metadata["context_status"] = dict(status)
         save_session(record, base=self._session_dir)
         return self.info(record)
 
@@ -258,6 +545,7 @@ class SessionService:
             message_count=len(record.messages),
             summary=record.first_user_message or None,
             mode=mode,
+            cwd=get_cwd(record.session_id),
         )
 
 
@@ -449,6 +737,228 @@ def extract_tool_calls(msg: dict[str, Any]) -> list[TranscriptToolCall]:
     return out
 
 
+def _completed_turns(messages: list[dict[str, Any]]) -> list[_CompletedTurn]:
+    user_message_count = sum(1 for message in messages if message.get("role") == "user")
+    turns: list[_CompletedTurn] = []
+    current: _CompletedTurn | None = None
+    user_message_index = -1
+    has_response = False
+    for index, message in enumerate(messages):
+        if message.get("role") == "user":
+            if current is not None and has_response:
+                current.response_end_index = index
+                turns.append(current)
+            user_message_index += 1
+            text, _attachments = extract_message_content(
+                message.get("content"),
+                metadata=message.get("metadata") if isinstance(message.get("metadata"), dict) else None,
+            )
+            current = _CompletedTurn(
+                message_index=index,
+                message_id=_message_stable_id(message, index),
+                user_message_index=user_message_index,
+                user_message_count=user_message_count,
+                content=text,
+                response_end_index=len(messages),
+            )
+            has_response = False
+            continue
+        if current is not None and message.get("role") in {"assistant", "tool"}:
+            has_response = True
+    if current is not None and has_response:
+        current.response_end_index = len(messages)
+        turns.append(current)
+    return turns
+
+
+def _turn_for_message_index(messages: list[dict[str, Any]], message_index: int) -> _CompletedTurn | None:
+    for turn in _completed_turns(messages):
+        if turn.message_index <= message_index < turn.response_end_index:
+            return turn
+    return None
+
+
+def _resolve_message_index(
+    record: SessionRecord,
+    *,
+    message_index: int | None,
+    target_user_message_id: str | None,
+    user_message_index: int | None,
+    expected_content: str | None,
+    rewind_before_target: bool = False,
+) -> int:
+    if message_index is not None:
+        if expected_content is not None:
+            _assert_expected_content(record, message_index, expected_content)
+        return message_index
+    target = _resolve_turn_target(
+        record.messages,
+        target_user_message_id=target_user_message_id,
+        user_message_index=user_message_index,
+    )
+    if target is None:
+        raise ServiceValidationError(
+            "message target is required",
+            details={
+                "target_user_message_id": target_user_message_id,
+                "user_message_index": user_message_index,
+            },
+        )
+    if expected_content is not None and target.content != expected_content:
+        raise ServiceConflictError(
+            "message content changed",
+            details={
+                "target_user_message_id": target.message_id,
+                "user_message_index": target.user_message_index,
+            },
+        )
+    return target.message_index - 1 if rewind_before_target else target.message_index
+
+
+def _resolve_turn_target(
+    messages: list[dict[str, Any]],
+    *,
+    target_user_message_id: str | None,
+    user_message_index: int | None,
+) -> _CompletedTurn | None:
+    turns = _completed_turns(messages)
+    if isinstance(target_user_message_id, str) and target_user_message_id.strip():
+        wanted = target_user_message_id.strip()
+        for turn in turns:
+            if turn.message_id == wanted:
+                return turn
+    if isinstance(user_message_index, int) and not isinstance(user_message_index, bool):
+        for turn in turns:
+            if turn.user_message_index == user_message_index:
+                return turn
+    return None
+
+
+def _assert_expected_content(record: SessionRecord, message_index: int, expected_content: str) -> None:
+    if message_index < 0 or message_index >= len(record.messages):
+        return
+    message = record.messages[message_index]
+    if message.get("role") != "user":
+        return
+    text, _attachments = extract_message_content(
+        message.get("content"),
+        metadata=message.get("metadata") if isinstance(message.get("metadata"), dict) else None,
+    )
+    if text != expected_content:
+        raise ServiceConflictError(
+            "message content changed",
+            details={"message_index": message_index},
+        )
+
+
+def _message_stable_id(message: dict[str, Any], index: int) -> str:
+    for value in (
+        message.get("id"),
+        message.get("message_id"),
+        message.get("messageId"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("id", "message_id", "messageId", "uuid"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return f"message-{index}"
+
+
+def _workspace_checkpoint_from_messages(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    for message in messages:
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        checkpoint = _dict_from_unknown(metadata.get("workspace_checkpoint"))
+        if checkpoint:
+            return checkpoint
+        turn = metadata.get("turn")
+        if isinstance(turn, dict):
+            checkpoint = _dict_from_unknown(turn.get("workspace_checkpoint"))
+            if checkpoint:
+                return checkpoint
+    return {}
+
+
+def _checkpoint_id(checkpoint: dict[str, Any]) -> str | None:
+    value = checkpoint.get("checkpoint_id") or checkpoint.get("checkpointId")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _files_changed_for_turn(messages: list[dict[str, Any]], checkpoint: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for item in checkpoint.get("files") if isinstance(checkpoint.get("files"), list) else []:
+        if isinstance(item, dict):
+            path = item.get("path")
+            if isinstance(path, str) and path.strip():
+                paths.append(path.strip())
+    for message in messages:
+        paths.extend(_paths_from_message(message))
+    return _unique_strings(paths)
+
+
+def _paths_from_message(message: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("path", "file_path", "filePath"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+    for call in extract_tool_calls(message):
+        for key in ("path", "file_path", "filePath"):
+            value = call.arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+    return paths
+
+
+def _diff_stats_for_turn(messages: list[dict[str, Any]]) -> tuple[int, int]:
+    insertions = 0
+    deletions = 0
+    for message in messages:
+        content = message.get("content")
+        text = content if isinstance(content, str) else ""
+        if "@@" not in text:
+            continue
+        for line in text.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                insertions += 1
+            elif line.startswith("-"):
+                deletions += 1
+    return insertions, deletions
+
+
+def _first_string_from_mapping(mapping: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _dict_from_unknown(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def _first_string(*values: Any) -> str | None:
     for value in values:
         if isinstance(value, str) and value:
@@ -509,6 +1019,45 @@ def _message_search_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def _record_from_import_data(data: dict[str, Any]) -> SessionRecord:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    if not isinstance(payload, dict):
+        raise ServiceValidationError(
+            "session import requires a JSON object",
+            details={"field": "data"},
+        )
+    try:
+        return SessionRecord.from_json(payload)
+    except (TypeError, ValueError) as exc:
+        raise ServiceValidationError(
+            "session import payload is not a valid Aether session record",
+            details={"error": str(exc)},
+        ) from exc
+
+
+def _normalize_imported_record(record: SessionRecord) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    record.created_at = record.created_at or now
+    record.updated_at = record.updated_at or record.created_at
+    record.provider = _require_non_empty(record.provider, "provider")
+    record.model = _require_non_empty(record.model, "model")
+    record.mode = _require_session_mode(record.mode)
+    record.messages = [dict(message) for message in record.messages if isinstance(message, dict)]
+    record.turn_count = assistant_turn_count(record.messages)
+    record.first_user_message = first_user_message(record.messages)[:200]
+    if not isinstance(record.metadata, dict):
+        record.metadata = {}
+
+
+def _safe_or_generated_session_id(value: str | None) -> str:
+    if isinstance(value, str) and value.strip():
+        try:
+            return _require_safe_session_id(value, "session_id")
+        except ServiceValidationError:
+            pass
+    return str(uuid.uuid4())
+
+
 def session_info_to_dict(info: SessionInfo) -> dict[str, Any]:
     return {key: value for key, value in asdict(info).items() if value is not None}
 
@@ -526,6 +1075,16 @@ def _require_non_empty(value: str | None, field: str) -> str:
             details={"field": field},
         )
     return value.strip()
+
+
+def _require_safe_session_id(value: str | None, field: str) -> str:
+    text = _require_non_empty(value, field)
+    if not _SAFE_SESSION_ID_RE.fullmatch(text):
+        raise ServiceValidationError(
+            f"session id contains unsafe characters: {text!r}",
+            details={"field": field},
+        )
+    return text
 
 
 def _require_session_mode(value: str | None) -> str:

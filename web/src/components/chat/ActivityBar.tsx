@@ -8,17 +8,26 @@ type Props = {
   tokens?: TokenUsage
   sessionId?: string | null
   model?: string | null
+  verbose?: boolean
 }
 
-export function ActivityBar({ activeRunId, status, tokens, sessionId, model }: Props) {
+export function ActivityBar({ activeRunId, status, tokens, sessionId, model, verbose = false }: Props) {
   if (!activeRunId) return null
   const state = status?.state || 'thinking'
   const label = activityLabel(state)
   const detail = friendlyDetail(status?.detail)
   const tokenSummary = tokenUsageSummary(tokens ?? status?.tokens)
   const Icon = activityIcon(state)
+  const verboseMeta = verbose
+    ? [
+      activeRunId ? 'run ' + activeRunId.slice(0, 8) : null,
+      status?.elapsedMs ? formatDuration(status.elapsedMs) : null,
+      state || null,
+    ]
+    : []
   const meta = [
     tokenSummary,
+    ...verboseMeta,
     sessionId ? sessionId.slice(0, 8) : null,
     model || null,
   ].filter((item): item is string => Boolean(item))
@@ -38,6 +47,7 @@ function activityLabel(state: string): string {
   if (state === 'responding') return 'Responding'
   if (state === 'tool_use') return 'Running tool'
   if (state === 'starting') return 'Starting'
+  if (state === 'cancelling') return 'Cancelling'
   return state || 'Working'
 }
 
@@ -45,6 +55,12 @@ function friendlyDetail(detail?: string | null): string | null {
   if (!detail) return null
   if (/^[A-Z][A-Z0-9_]*$/.test(detail)) return null
   return detail.replace(/_/g, ' ')
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0ms'
+  if (ms < 1000) return Math.round(ms) + 'ms'
+  return (ms / 1000).toFixed(2).replace(/\.00$/, '') + 's'
 }
 
 function activityIcon(state: string) {
@@ -58,6 +74,7 @@ function activityTone(state: string): string {
   if (state === 'thinking') return 'thinking'
   if (state === 'responding') return 'responding'
   if (state === 'tool_use') return 'tool'
+  if (state === 'cancelling') return 'working'
   return 'working'
 }
 

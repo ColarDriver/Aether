@@ -208,6 +208,41 @@ class ProviderGenerateContractTests(unittest.TestCase):
         self.assertIsNone(cm.exception.retry_after_seconds)
         self.assertFalse(cm.exception.is_network_error)
 
+    def test_host_root_404_retries_v1_api_root_once(self) -> None:
+        seen_urls: list[str] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_urls.append(str(req.url))
+            if str(req.url) == "https://gateway.test/chat/completions":
+                return httpx.Response(404, text="404 page not found")
+            return _good_response()
+
+        transport = httpx.MockTransport(handler)
+        self._install_transport(transport)
+        provider = OpenAICompatibleModel(
+            model="m1",
+            api_key="sk-test",
+            base_url="https://gateway.test",
+            request_timeout_sec=5,
+        )
+        ctx = _ctx()
+
+        result = provider.generate([], [], ModelCallConfig(), ctx)
+
+        self.assertEqual(result.content, "hi")
+        self.assertEqual(
+            seen_urls,
+            [
+                "https://gateway.test/chat/completions",
+                "https://gateway.test/v1/chat/completions",
+            ],
+        )
+        self.assertEqual(provider.base_url, "https://gateway.test/v1")
+        self.assertEqual(
+            ctx.metadata["openai_api_root_retry"],
+            {"from": "https://gateway.test", "to": "https://gateway.test/v1"},
+        )
+
     def test_transport_error_marks_network_error(self) -> None:
         def handler(req: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("could not connect")

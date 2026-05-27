@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel
 
 from aether.web.serializers import to_jsonable
 
 router = APIRouter()
+
+
+class TaskMessageBody(BaseModel):
+    message: str
+    summary: str | None = None
 
 
 @router.get("/api/tasks")
@@ -63,6 +69,22 @@ async def task_messages(
     return to_jsonable(services.tasks.get_task_messages(task_id, limit=limit))
 
 
+@router.post("/api/tasks/{task_id}/messages")
+async def task_send_message(
+    task_id: str,
+    request: Request,
+    body: TaskMessageBody,
+) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.tasks.send_task_message(
+            task_id,
+            message=body.message,
+            summary=body.summary,
+        )
+    )
+
+
 @router.get("/api/tasks/{task_id}/children/messages")
 async def task_child_messages(
     task_id: str,
@@ -84,6 +106,17 @@ async def task_child_messages(
 async def task_result(task_id: str, request: Request) -> dict[str, object]:
     services = request.app.state.aether_services
     return to_jsonable(services.tasks.get_task_result(task_id))
+
+
+@router.post("/api/tasks/{task_id}/stop")
+async def task_stop(task_id: str, request: Request) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.tasks.stop_task(
+            task_id,
+            stopper=services.runs.stop_task,
+        )
+    )
 
 
 __all__ = ["router"]

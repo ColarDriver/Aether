@@ -351,6 +351,54 @@ class StreamingDispatchTests(unittest.TestCase):
         # decision about rate, not a problem with the streaming protocol.
         self.assertFalse(provider._disable_streaming)
 
+    def test_streaming_host_root_404_retries_v1_api_root(self) -> None:
+        # Older web sessions sometimes persisted only the gateway root.  A
+        # plain router 404 from /chat/completions should be repaired once by
+        # retrying the conventional OpenAI-compatible /v1 API root.
+        sse_body = (
+            b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        seen_urls: list[str] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_urls.append(str(req.url))
+            if str(req.url) == "https://gateway.test/chat/completions":
+                return httpx.Response(404, text="404 page not found")
+            return httpx.Response(
+                200,
+                content=sse_body,
+                headers={"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        self._install_transport(transport)
+        provider = OpenAICompatibleModel(
+            model="m1",
+            api_key="sk-test",
+            base_url="https://gateway.test",
+            request_timeout_sec=5,
+        )
+        chunks: list[str] = []
+        ctx = _ctx()
+
+        result = provider.generate([], [], ModelCallConfig(), ctx, stream_callback=chunks.append)
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(chunks, ["ok"])
+        self.assertEqual(
+            seen_urls,
+            [
+                "https://gateway.test/chat/completions",
+                "https://gateway.test/v1/chat/completions",
+            ],
+        )
+        self.assertEqual(provider.base_url, "https://gateway.test/v1")
+        self.assertEqual(
+            ctx.metadata["openai_api_root_retry"],
+            {"from": "https://gateway.test", "to": "https://gateway.test/v1"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # StreamStallError surface

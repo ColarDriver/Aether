@@ -4,6 +4,7 @@ export type ChatBlockBase = {
   id: string
   sessionId: string
   runId?: string | null
+  messageIndex?: number | null
   timestamp: number
   source: ChatBlockSource
 }
@@ -60,7 +61,7 @@ export type AskUserQuestion = {
 
 export type PromptResolution = {
   promptId: string
-  state: 'pending' | 'allowed' | 'denied' | 'approved' | 'rejected' | 'answered' | 'expired' | 'aborted'
+  state: 'pending' | 'allowed' | 'denied' | 'approved' | 'rejected' | 'answered' | 'expired' | 'aborted' | 'stale' | 'missing' | 'disconnected'
   answers?: Record<string, string>
 }
 
@@ -148,7 +149,8 @@ export type PermissionRequestBlock = ChatBlockBase & {
   reason?: string | null
   preview?: PermissionPreview | null
   allowSession?: boolean
-  state: 'pending' | 'allowed' | 'denied' | 'expired' | 'aborted'
+  state: 'pending' | 'allowed' | 'denied' | 'expired' | 'aborted' | 'stale' | 'missing' | 'disconnected'
+  statusMessage?: string | null
 }
 
 export type ApprovalRequestBlock = ChatBlockBase & {
@@ -158,7 +160,8 @@ export type ApprovalRequestBlock = ChatBlockBase & {
   planText?: string | null
   planPath?: string | null
   questions: AskUserQuestion[]
-  state: 'pending' | 'approved' | 'rejected' | 'answered' | 'expired'
+  state: 'pending' | 'approved' | 'rejected' | 'answered' | 'expired' | 'stale' | 'missing' | 'disconnected'
+  statusMessage?: string | null
 }
 
 export type AskUserQuestionBlock = ChatBlockBase & {
@@ -200,10 +203,17 @@ export type SystemNoticeBlock = ChatBlockBase & {
   content: string
 }
 
+export type ErrorDiagnosticDetail = {
+  label: string
+  value: string
+}
+
 export type ErrorBlock = ChatBlockBase & {
   kind: 'error'
   message: string
   code?: string | null
+  details?: ErrorDiagnosticDetail[]
+  suggestions?: string[]
 }
 
 export type ChatBlock =

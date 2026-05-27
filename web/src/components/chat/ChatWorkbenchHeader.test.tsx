@@ -24,6 +24,8 @@ describe('ChatWorkbenchHeader', () => {
           mode: 'plan',
         }}
         online
+        socketState="reconnecting"
+        socketDetail="Reconnecting run stream"
         workspaceRailOpen
         onToggleWorkspaceRail={onToggleWorkspaceRail}
         onSwapPanels={onSwapPanels}
@@ -33,6 +35,7 @@ describe('ChatWorkbenchHeader', () => {
     expect(screen.getByText('Refine web UI')).toBeTruthy()
     expect(screen.getByText('4 messages')).toBeTruthy()
     expect(screen.getByText('online')).toBeTruthy()
+    expect(screen.getByText('reconnecting')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Swap sessions and workspace panels' }))
     expect(onSwapPanels).toHaveBeenCalledOnce()

@@ -83,7 +83,7 @@ class CodexResponsesTransport:
                 continue
 
             if role == "user":
-                input_items.append({"role": "user", "content": content})
+                input_items.append({"role": "user", "content": self.convert_user_content(msg.get("content"))})
                 continue
 
             if role == "assistant":
@@ -116,6 +116,48 @@ class CodexResponsesTransport:
 
         instructions = "\n\n".join(part for part in instructions_parts if part) or "You are a helpful assistant."
         return instructions, input_items
+
+    def convert_user_content(self, content: Any) -> str | list[dict[str, Any]]:
+        if not isinstance(content, list):
+            return self.normalize_content(content)
+        parts: list[dict[str, Any]] = []
+        has_image = False
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append({"type": "input_text", "text": item})
+                continue
+            if not isinstance(item, dict):
+                text = self.normalize_content(item)
+                if text:
+                    parts.append({"type": "input_text", "text": text})
+                continue
+            image_url = self._image_url_from_part(item)
+            if image_url:
+                has_image = True
+                parts.append({"type": "input_image", "image_url": image_url})
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append({"type": "input_text", "text": text})
+        if has_image:
+            return parts or ""
+        return "\n".join(str(part.get("text") or "") for part in parts if part.get("text"))
+
+    @staticmethod
+    def _image_url_from_part(part: dict[str, Any]) -> str:
+        part_type = str(part.get("type") or "")
+        if part_type not in {"image_url", "input_image"}:
+            return ""
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            return image_url.strip()
+        if isinstance(image_url, dict):
+            url = image_url.get("url")
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+        url = part.get("url")
+        return url.strip() if isinstance(url, str) and url.strip() else ""
 
     def normalize_content(self, content: Any) -> str:
         if content is None:

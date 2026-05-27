@@ -27,6 +27,7 @@ from aether.services.providers.contracts import (
     ModelDiscoveryStatus,
     ModelSummary,
     ProviderModelList,
+    ProviderPreflightStatus,
     ProviderRuntimeStatus,
     ProviderSummary,
 )
@@ -169,6 +170,107 @@ class ProviderService:
             if runtime.api_key_env_names
             else None,
             extra=dict(public.get("extra") or {}),
+        )
+
+    def preflight(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        current_session_id: str | None = None,
+    ) -> ProviderPreflightStatus:
+        runtime = _runtime_from_values(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            environ=self._environ,
+        )
+        credential = default_credential_lookup(environ=self._environ).get_first(
+            runtime.api_key_env_names
+        )
+        credential_status = _credential_status_from_public(
+            credential.public_metadata()
+            if credential is not None
+            else {
+                "source": "env",
+                "name": runtime.api_key_env_names[0] if runtime.api_key_env_names else "",
+                "configured": False,
+                "redacted": "",
+            }
+        ) if runtime.api_key_env_names else None
+
+        issues: list[str] = []
+        suggestions: list[str] = []
+        discovery: ModelDiscoveryStatus | None = None
+        models_url: str | None = None
+        chat_url = _chat_completions_url(runtime.provider_name, runtime.base_url)
+        hard_error = False
+
+        if runtime.api_key_env_names and credential is None:
+            hard_error = True
+            joined = " or ".join(runtime.api_key_env_names)
+            issues.append(f"Missing provider credential: {joined}.")
+            suggestions.append(f"Set one of {joined} before starting a run.")
+
+        if runtime.provider_name == "openai":
+            effective_base = runtime.base_url or "https://api.openai.com/v1"
+            candidate_model_urls = candidate_urls(effective_base)
+            models_url = candidate_model_urls[0] if candidate_model_urls else None
+            if credential is not None:
+                model_list = self.list_models(
+                    runtime.provider_name,
+                    base_url=runtime.base_url,
+                    current_session_id=current_session_id,
+                )
+                discovery = model_list.discovery
+                models_url = discovery.url or models_url
+                if discovery.suggested_base_url:
+                    issues.append("Configured base URL appears to be missing the provider API root.")
+                    suggestions.append(
+                        "Use base_url "
+                        f"{discovery.suggested_base_url} for this session or set OPENAI_BASE_URL="
+                        f"{discovery.suggested_base_url}."
+                    )
+                if discovery.kind != "live":
+                    if discovery.reason == "list_models_error":
+                        issues.append(
+                            "Model discovery failed"
+                            + (f": {discovery.error}" if discovery.error else ".")
+                        )
+                    elif discovery.reason:
+                        issues.append(f"Model discovery fell back to the static catalog: {discovery.reason}.")
+                if discovery.kind == "live":
+                    live_ids = {entry.id for entry in model_list.models}
+                    if runtime.model not in live_ids:
+                        issues.append(f"Selected model {runtime.model!r} was not returned by provider discovery.")
+                        suggestions.append("Select a model returned by the provider before starting a run.")
+        elif credential is not None:
+            suggestions.append(
+                "This provider does not expose an OpenAI-compatible models preflight; "
+                "credential presence is the only lightweight check."
+            )
+
+        status = "error" if hard_error else ("warning" if issues else "ready")
+        return ProviderPreflightStatus(
+            family=runtime.family,
+            provider_name=runtime.provider_name,
+            model=runtime.model,
+            base_url=runtime.base_url,
+            chat_completions_url=chat_url,
+            models_url=models_url,
+            status=status,
+            ready=status != "error",
+            credential=credential_status,
+            discovery=discovery,
+            issues=issues,
+            suggestions=_dedupe_preserve_order(suggestions),
+            extra={
+                "api_key_env_names": list(runtime.api_key_env_names),
+                "model_env_names": list(runtime.model_env_names),
+                "base_url_env_names": list(runtime.base_url_env_names),
+                "source": runtime.source,
+            },
         )
 
     def auxiliary_slots(self, slots: list[str] | None = None) -> list[AuxiliarySlotStatus]:
@@ -446,6 +548,24 @@ def _dedupe_sorted_strings(values: object) -> list[str]:
             cleaned.append(candidate)
     cleaned.sort()
     return cleaned
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _chat_completions_url(provider_name: str, base_url: str | None) -> str | None:
+    if resolve_provider_name(provider_name) != "openai":
+        return None
+    effective_base = base_url or "https://api.openai.com/v1"
+    return effective_base.rstrip("/") + "/chat/completions"
 
 
 def _discovery_from_dict(payload: dict[str, Any]) -> ModelDiscoveryStatus:

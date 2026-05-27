@@ -24,6 +24,7 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
         preview={block.preview}
         reason={block.reason}
       />
+      {block.statusMessage ? <p className="prompt-inline-status">{block.statusMessage}</p> : null}
       {block.state === 'pending' && onRespond ? (
         <footer>
           <button type="button" onClick={() => onRespond({ type: 'deny' })}>Deny</button>
@@ -40,6 +41,6 @@ export function PermissionRequestBlock({ block, onRespond }: Props) {
 function promptStateIcon(state: string) {
   if (state === 'allowed') return CheckCircle2
   if (state === 'denied' || state === 'aborted') return XCircle
-  if (state === 'expired') return CircleAlert
+  if (state === 'expired' || state === 'stale' || state === 'missing' || state === 'disconnected') return CircleAlert
   return ShieldQuestion
 }

@@ -1,9 +1,11 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
 import { runSocket } from '../api/runSocket'
-import type { RunSocketFrame } from '../api/types'
+import type { RunSocketFrame, TaskSummary, TranscriptMessage } from '../api/types'
 import type { ChatAttachment, ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
 import { frameSessionId, normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
+import { useSessionStore } from './sessionStore'
+import { useTaskStore } from './taskStore'
 
 export type PermissionPrompt = {
   promptId: string
@@ -39,8 +41,12 @@ export type ApprovalPrompt = {
   questions: Array<Record<string, unknown>>
 }
 
+export type SocketConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+
 type ChatState = {
   connected: boolean
+  socketState: SocketConnectionState
+  socketDetail: string | null
   frames: RunSocketFrame[]
   activeRunId: string | null
   blocksBySession: Record<string, ChatBlock[]>
@@ -51,6 +57,7 @@ type ChatState = {
   pendingPermissionQueue: PermissionPrompt[]
   pendingApprovalQueue: ApprovalPrompt[]
   loadTranscript: (sessionId: string) => Promise<void>
+  replaceTranscript: (sessionId: string, messages: TranscriptMessage[]) => void
   connect: () => void
   startRun: (sessionId: string, message: string, attachments?: ChatAttachment[]) => string
   cancelRun: (sessionId: string) => void
@@ -66,6 +73,8 @@ let localBlockSequence = 0
 
 export const useChatStore = create<ChatState>((set, get) => ({
   connected: false,
+  socketState: 'idle',
+  socketDetail: null,
   frames: [],
   activeRunId: null,
   blocksBySession: {},
@@ -85,13 +94,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     }))
   },
+  replaceTranscript: (sessionId, messages) => {
+    const blocks = normalizeTranscript(sessionId, messages)
+    set((state) => ({
+      blocksBySession: {
+        ...state.blocksBySession,
+        [sessionId]: blocks,
+      },
+    }))
+  },
   connect: () => {
     runSocket.connect()
     if (unsubscribeSocket) return
     unsubscribeSocket = runSocket.onFrame((frame) => {
       set((state) => ({
         frames: [...state.frames, frame],
-        connected: frame.type === 'ready' ? true : state.connected,
+        connected: frame.type === 'ready' || frame.type === 'socket.open'
+          ? true
+          : frame.type === 'socket.closed'
+            ? false
+            : state.connected,
+        ...socketConnectionStateFromFrame(frame, state),
         activeRunId:
           frame.type === 'run.accepted' && typeof frame.payload?.run_id === 'string'
             ? frame.payload.run_id
@@ -99,6 +122,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }))
       applyRenderFrame(frame, set)
       applyPromptFrame(frame, set)
+      applyTaskFrame(frame)
+      if (frame.type === 'ready') void backfillActiveSessionAfterReady(set)
     })
   },
   startRun: (sessionId, message, attachments = []) => {
@@ -193,6 +218,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 }))
 
+function socketConnectionStateFromFrame(frame: RunSocketFrame, state: ChatState): Pick<ChatState, 'socketState' | 'socketDetail'> {
+  if (frame.type === 'ready' || frame.type === 'socket.open') {
+    return { socketState: 'connected', socketDetail: null }
+  }
+  if (frame.type === 'socket.connecting') {
+    return { socketState: state.connected ? 'connected' : 'connecting', socketDetail: 'Opening run stream' }
+  }
+  if (frame.type === 'socket.closed') {
+    const payload = frame.payload ?? {}
+    const reconnecting = payload.reconnecting !== false
+    const detail = typeof payload.reason === 'string' && payload.reason.trim()
+      ? payload.reason.trim()
+      : reconnecting
+        ? 'Reconnecting run stream'
+        : 'Run stream disconnected'
+    return {
+      socketState: reconnecting ? 'reconnecting' : 'disconnected',
+      socketDetail: detail,
+    }
+  }
+  return { socketState: state.socketState, socketDetail: state.socketDetail }
+}
+
 function nextLocalBlockId(prefix: string): string {
   localBlockSequence += 1
   return prefix + '-' + Date.now() + '-' + localBlockSequence
@@ -235,13 +283,80 @@ function appendLocalBlock(state: ChatState, block: ChatBlock): Partial<ChatState
   }
 }
 
+async function backfillActiveSessionAfterReady(
+  set: (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void,
+): Promise<void> {
+  const sessionId = useSessionStore.getState().activeSessionId
+  if (!sessionId) return
+
+  const [messagesResult, tasksResult] = await Promise.allSettled([
+    api.sessionMessages(sessionId),
+    api.sessionTasks(sessionId, { limit: 100 }),
+    useSessionStore.getState().loadSessions(),
+  ]).then((results) => [results[0], results[1]] as const)
+
+  if (messagesResult.status === 'fulfilled') {
+    const backfilled = normalizeTranscript(sessionId, messagesResult.value.messages)
+    set((state) => ({
+      blocksBySession: {
+        ...state.blocksBySession,
+        [sessionId]: mergeBackfilledBlocks(state.blocksBySession[sessionId] ?? [], backfilled),
+      },
+    }))
+  }
+
+  if (tasksResult.status === 'fulfilled') {
+    useTaskStore.getState().applyTaskSnapshot(sessionId, tasksResult.value.tasks)
+  }
+}
+
+function mergeBackfilledBlocks(existing: ChatBlock[], backfilled: ChatBlock[]): ChatBlock[] {
+  if (existing.length === 0) return backfilled
+  const next = [...backfilled]
+  for (const block of existing) {
+    if (block.source === 'transcript') continue
+    if (hasEquivalentBackfilledBlock(backfilled, block)) continue
+    next.push(block)
+  }
+  return next
+}
+
+function hasEquivalentBackfilledBlock(backfilled: ChatBlock[], block: ChatBlock): boolean {
+  if (block.kind === 'user_message') {
+    return backfilled.some((item) => item.kind === 'user_message' && item.content === block.content)
+  }
+  if (block.kind === 'assistant_message') {
+    return backfilled.some((item) => item.kind === 'assistant_message' && item.content === block.content)
+  }
+  if (block.kind === 'tool_call' || block.kind === 'tool_result' || block.kind === 'ask_user_question') {
+    return backfilled.some((item) => (
+      (item.kind === 'tool_call' || item.kind === 'tool_result' || item.kind === 'ask_user_question')
+      && item.toolCallId === block.toolCallId
+    ))
+  }
+  if (block.kind === 'diff') {
+    return backfilled.some((item) => item.kind === 'diff' && item.path === block.path && item.diff === block.diff)
+  }
+  return false
+}
+
+
+function applyTaskFrame(frame: RunSocketFrame) {
+  if (frame.type !== 'tasks.snapshot') return
+  const payload = frame.payload ?? {}
+  const sessionId = asString(payload.session_id)
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks.filter(isRecord) as TaskSummary[] : []
+  if (!sessionId) return
+  useTaskStore.getState().applyTaskSnapshot(sessionId, tasks)
+}
+
 function applyPromptFrame(
   frame: RunSocketFrame,
   set: (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void,
 ) {
   const payload = frame.payload ?? {}
 
-  if (frame.type === 'prompt.resolved') {
+  if (isPromptTerminalFrame(frame.type)) {
     const promptId = asString(payload.prompt_id)
     set((state) => resolvePromptQueues(state, promptId))
     return
@@ -285,6 +400,14 @@ function applyPromptFrame(
     set((state) => enqueueApprovalPrompt(state, prompt))
     return
   }
+}
+
+function isPromptTerminalFrame(type: string): boolean {
+  return type === 'prompt.resolved'
+    || type === 'prompt.stale'
+    || type === 'prompt.expired'
+    || type === 'prompt.disconnected'
+    || type === 'prompt.missing'
 }
 
 function applyRenderFrame(

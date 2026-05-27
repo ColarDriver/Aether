@@ -113,4 +113,59 @@ describe("SessionsView", () => {
     expect(screen.getByRole("table", { name: "Code diff" })).toBeTruthy()
     expect(screen.getByText("new")).toBeTruthy()
   })
+
+  it("renames, exports, and imports session json through real web actions", async () => {
+    vi.spyOn(api, "sessions").mockResolvedValue({ sessions: [sessionOne] })
+    vi.spyOn(api, "sessionDetail").mockImplementation(async (sessionId) => ({
+      session_id: sessionId,
+      info: sessionId === "session-imported"
+        ? { ...sessionOne, session_id: "session-imported" }
+        : sessionId === "session-renamed"
+          ? { ...sessionOne, session_id: "session-renamed" }
+          : sessionOne,
+      messages: [{ role: "user", text: sessionId === "session-imported" ? "Imported hello" : "First hello" }],
+    }))
+    const renameSession = vi.spyOn(api, "renameSession").mockResolvedValue({ ...sessionOne, session_id: "session-renamed" })
+    const exportSession = vi.spyOn(api, "exportSession").mockResolvedValue({
+      session_id: "session-renamed",
+      data: { session_id: "session-renamed", provider: "codex", model: "gpt-5.4" },
+    })
+    const importSession = vi.spyOn(api, "importSession").mockResolvedValue({
+      source_session_id: "session-renamed",
+      overwritten: false,
+      info: { ...sessionOne, session_id: "session-imported" },
+      messages: [{ role: "user", text: "Imported hello" }],
+    })
+    const createObjectURL = vi.fn(() => "blob:session-export")
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true })
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true })
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
+
+    render(<SessionsView />)
+
+    expect(await screen.findByText("First hello")).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename ID" }))
+    fireEvent.change(screen.getByLabelText("New session ID"), { target: { value: "session-renamed" } })
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }))
+    await waitFor(() => expect(renameSession).toHaveBeenCalledWith("session-one", "session-renamed"))
+
+    fireEvent.click(screen.getByRole("button", { name: "Export JSON" }))
+    await waitFor(() => expect(exportSession).toHaveBeenCalledWith("session-renamed"))
+    expect(createObjectURL).toHaveBeenCalled()
+    expect(anchorClick).toHaveBeenCalled()
+
+    const file = new File([JSON.stringify({ session_id: "session-renamed" })], "session.json", { type: "application/json" })
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify({ session_id: "session-renamed" }) })
+    fireEvent.change(screen.getByLabelText("Import session JSON"), { target: { files: [file] } })
+
+    await waitFor(() => expect(importSession).toHaveBeenCalledWith({
+      data: { session_id: "session-renamed" },
+      new_session_id: undefined,
+      overwrite: undefined,
+      make_current: undefined,
+    }))
+    expect(await screen.findByText("Imported hello")).toBeTruthy()
+  })
 })

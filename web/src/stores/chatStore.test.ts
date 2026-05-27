@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../api/client'
 import type { RunSocketFrame } from '../api/types'
 import { useChatStore } from './chatStore'
+import { useSessionStore } from './sessionStore'
+import { useTaskStore } from './taskStore'
 
 const socketHarness = vi.hoisted(() => ({
   handler: null as ((frame: RunSocketFrame) => void) | null,
@@ -28,8 +31,22 @@ vi.mock('../api/runSocket', () => ({
 
 afterEach(() => {
   vi.clearAllMocks()
+  vi.restoreAllMocks()
+  useTaskStore.setState({
+    tasksBySession: {},
+    isLoadingBySession: {},
+    errorBySession: {},
+  })
+  useSessionStore.setState({
+    sessions: [],
+    activeSessionId: null,
+    isLoading: false,
+    error: null,
+  })
   useChatStore.setState({
     connected: false,
+    socketState: 'idle',
+    socketDetail: null,
     frames: [],
     activeRunId: null,
     blocksBySession: {},
@@ -39,6 +56,108 @@ afterEach(() => {
     pendingApproval: null,
     pendingPermissionQueue: [],
     pendingApprovalQueue: [],
+  })
+})
+
+describe('chatStore socket connection state', () => {
+  it('tracks local socket open and reconnecting frames', () => {
+    dispatchFrame(frame('socket.connecting', {}))
+    expect(useChatStore.getState().socketState).toBe('connecting')
+
+    dispatchFrame(frame('socket.open', {}))
+    expect(useChatStore.getState().connected).toBe(true)
+    expect(useChatStore.getState().socketState).toBe('connected')
+
+    dispatchFrame(frame('socket.closed', { reconnecting: true }))
+    expect(useChatStore.getState().connected).toBe(false)
+    expect(useChatStore.getState().socketState).toBe('reconnecting')
+    expect(useChatStore.getState().socketDetail).toBe('Reconnecting run stream')
+
+    dispatchFrame(frame('ready', {}))
+    expect(useChatStore.getState().connected).toBe(true)
+    expect(useChatStore.getState().socketState).toBe('connected')
+  })
+})
+
+describe('chatStore reconnect backfill', () => {
+  it('refreshes active session transcript and task list when the run socket becomes ready', async () => {
+    useSessionStore.setState({
+      sessions: [{
+        session_id: 's1',
+        created_at: 1,
+        updated_at: 2,
+        provider: 'openai',
+        model: 'gpt-5.4',
+        message_count: 2,
+      }],
+      activeSessionId: 's1',
+    })
+    vi.spyOn(api, 'sessions').mockResolvedValue({ sessions: useSessionStore.getState().sessions })
+    vi.spyOn(api, 'sessionMessages').mockResolvedValue({
+      session_id: 's1',
+      messages: [
+        { role: 'user', text: 'hello from transcript' },
+        { role: 'assistant', text: 'backfilled answer' },
+      ],
+    })
+    vi.spyOn(api, 'sessionTasks').mockResolvedValue({
+      active_count: 1,
+      total_count: 1,
+      tasks: [{
+        task_id: 'task-backfill',
+        parent_session_id: 's1',
+        subagent_type: 'explorer',
+        prompt: 'Inspect',
+        status: 'running',
+        started_at: 1,
+        last_heartbeat: 1,
+        child_depth: 1,
+        background: true,
+        tool_use_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        iterations: 0,
+      }],
+    })
+    useChatStore.getState().appendLocalNotice('s1', 'local notice survives reconnect')
+
+    dispatchFrame(frame('ready', {}))
+
+    await vi.waitFor(() => {
+      expect(useChatStore.getState().blocksBySession.s1?.some((block) => block.kind === 'assistant_message' && block.content === 'backfilled answer')).toBe(true)
+      expect(useTaskStore.getState().tasksBySession.s1?.[0]?.task_id).toBe('task-backfill')
+    })
+    expect(useChatStore.getState().blocksBySession.s1?.some((block) => block.kind === 'system_notice' && block.content === 'local notice survives reconnect')).toBe(true)
+  })
+})
+
+describe('chatStore task snapshots', () => {
+  it('applies pushed task snapshots to the task store', () => {
+    dispatchFrame(frame('tasks.snapshot', {
+      session_id: 's1',
+      tasks: [
+        {
+          task_id: 'task-1',
+          parent_session_id: 's1',
+          subagent_type: 'explorer',
+          prompt: 'Inspect',
+          status: 'running',
+          started_at: 1,
+          last_heartbeat: 1,
+          child_depth: 1,
+          background: true,
+          tool_use_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          iterations: 0,
+        },
+      ],
+    }))
+
+    expect(useTaskStore.getState().tasksBySession.s1?.[0]).toMatchObject({
+      task_id: 'task-1',
+      status: 'running',
+    })
   })
 })
 
@@ -86,6 +205,25 @@ describe('chatStore prompt queue', () => {
     expect(useChatStore.getState().pendingPermission?.promptId).toBe('perm-1')
     expect(useChatStore.getState().pendingApproval).toBeNull()
     expect(useChatStore.getState().pendingApprovalQueue).toEqual([])
+  })
+
+  it('clears stale prompts from queues and marks the historical block stale', () => {
+    dispatchFrame(permissionFrame('perm-stale', 's1', { tool_name: 'write_file' }))
+    dispatchFrame(permissionFrame('perm-active', 's1', { tool_name: 'shell' }))
+
+    dispatchFrame(frame('prompt.stale', {
+      prompt_id: 'perm-stale',
+      reason: 'Backend restarted before this prompt was resolved.',
+      result: { decision: { type: 'allow_once' } },
+    }))
+
+    expect(useChatStore.getState().pendingPermission?.promptId).toBe('perm-active')
+    expect(useChatStore.getState().pendingPermissionQueue.map((prompt) => prompt.promptId)).toEqual(['perm-active'])
+    expect(useChatStore.getState().blocksBySession.s1?.find((block) => block.id === 'permission-perm-stale')).toMatchObject({
+      kind: 'permission_request',
+      state: 'stale',
+      statusMessage: 'Backend restarted before this prompt was resolved.',
+    })
   })
 
   it('replaces duplicate replayed prompt ids instead of duplicating queue entries', () => {

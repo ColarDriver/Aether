@@ -38,6 +38,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from aether.config.schema import EngineConfig
+from aether.runtime.mcp import McpRuntime, get_default_mcp_runtime, register_mcp_tools
 from aether.tools.builtins.agent_tool import AgentTool
 from aether.tools.builtins.ask_user_question import AskUserQuestionTool
 from aether.tools.builtins.enter_plan_mode import EnterPlanModeTool
@@ -77,6 +79,8 @@ def build_default_tool_registry(
     approval_prompter: Any | None = None,
     lsp_manager: Any | None = None,
     browser_manager: Any | None = None,
+    config: EngineConfig | None = None,
+    mcp_runtime: McpRuntime | None = None,
 ) -> ToolRegistry:
     """Return a :class:`ToolRegistry` populated with the bundled tool kit.
 
@@ -141,6 +145,11 @@ def build_default_tool_registry(
     registry.register(MemoryWriteTool())
     registry.register(MemoryUpdateTool())
     registry.register(MemoryForgetTool())
+    if config is not None and bool(getattr(config, "mcp_enabled", True)):
+        runtime = mcp_runtime or get_default_mcp_runtime(
+            server_source=getattr(config, "mcp_servers", None) or None
+        )
+        register_mcp_tools(registry, runtime)
     return registry
 
 

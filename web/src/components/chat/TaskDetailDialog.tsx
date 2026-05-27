@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ExternalLink, FileArchive, FileCode2, FileText, GitBranch, Mail, MessageSquareText, RefreshCw, Terminal, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, FileArchive, FileCode2, FileText, GitBranch, Mail, MessageSquareText, RefreshCw, Send, Square, Terminal, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { TaskChildMessageStream, TaskDeliveredMessage, TaskMessage, TaskPendingMessage, TaskResultArtifact, TaskSummary } from '../../api/types'
@@ -19,7 +19,13 @@ export function TaskDetailDialog({ taskId, initialTask, sessionTasks = [], onOpe
   const [task, setTask] = useState<TaskSummary | null>(initialTask ?? null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [sendingMessage, setSendingMessage] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [stopMessage, setStopMessage] = useState<string | null>(null)
+  const [messageDraft, setMessageDraft] = useState('')
+  const [sendMessageNotice, setSendMessageNotice] = useState<string | null>(null)
+  const [sendMessageError, setSendMessageError] = useState<string | null>(null)
   const [messages, setMessages] = useState<TaskMessage[]>([])
   const [pendingMessages, setPendingMessages] = useState<TaskPendingMessage[]>([])
   const [deliveredMessages, setDeliveredMessages] = useState<TaskDeliveredMessage[]>([])
@@ -34,6 +40,11 @@ export function TaskDetailDialog({ taskId, initialTask, sessionTasks = [], onOpe
     setTask(initialTask ?? null)
     setLoading(true)
     setError(null)
+    setStopMessage(null)
+    setSendingMessage(false)
+    setMessageDraft('')
+    setSendMessageNotice(null)
+    setSendMessageError(null)
     setMessages([])
     setPendingMessages([])
     setDeliveredMessages([])
@@ -115,6 +126,41 @@ export function TaskDetailDialog({ taskId, initialTask, sessionTasks = [], onOpe
     return () => window.clearInterval(interval)
   }, [loadTask, task])
 
+  const stopTask = async () => {
+    if (!task || isTaskTerminal(task) || stopping) return
+    setStopping(true)
+    setStopMessage(null)
+    setError(null)
+    try {
+      const result = await api.stopTask(task.task_id)
+      setStopMessage(result.message)
+      await loadTask()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      if (mountedRef.current) setStopping(false)
+    }
+  }
+
+  const sendTaskMessage = async () => {
+    if (!task || isTaskTerminal(task) || sendingMessage) return
+    const message = messageDraft.trim()
+    if (!message) return
+    setSendingMessage(true)
+    setSendMessageNotice(null)
+    setSendMessageError(null)
+    try {
+      const result = await api.sendTaskMessage(task.task_id, { message })
+      setMessageDraft('')
+      setSendMessageNotice(result.message || 'Queued message for the subagent.')
+      await loadTask()
+    } catch (reason) {
+      setSendMessageError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      if (mountedRef.current) setSendingMessage(false)
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="prompt-modal task-detail-modal" role="dialog" aria-modal="true" aria-label="Task details">
@@ -124,6 +170,11 @@ export function TaskDetailDialog({ taskId, initialTask, sessionTasks = [], onOpe
             <span>{taskId}</span>
           </div>
           <div className="task-detail-actions">
+            {task && !isTaskTerminal(task) ? (
+              <button type="button" aria-label="Stop task" disabled={stopping} onClick={() => void stopTask()}>
+                <Square size={16} aria-hidden="true" />
+              </button>
+            ) : null}
             <button type="button" aria-label="Refresh task details" disabled={refreshing} onClick={() => void loadTask()}>
               <RefreshCw size={16} aria-hidden="true" />
             </button>
@@ -134,7 +185,35 @@ export function TaskDetailDialog({ taskId, initialTask, sessionTasks = [], onOpe
         </header>
         <div className="prompt-body task-detail-body">
           {error ? <div className="chat-block chat-block-error">{error}</div> : null}
+          {stopMessage ? <div className="task-detail-refreshing">{stopMessage}</div> : null}
+          {sendMessageNotice ? <div className="task-detail-refreshing">{sendMessageNotice}</div> : null}
+          {sendMessageError ? <div className="chat-block chat-block-error">{sendMessageError}</div> : null}
           {refreshing && task ? <div className="task-detail-refreshing">Refreshing task details...</div> : null}
+          {task && !isTaskTerminal(task) ? (
+            <form
+              className="task-send-message"
+              aria-label="Send message to task"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void sendTaskMessage()
+              }}
+            >
+              <label>
+                <span>Follow-up message</span>
+                <textarea
+                  aria-label="Task follow-up message"
+                  disabled={sendingMessage}
+                  placeholder="Send guidance to this running subagent"
+                  value={messageDraft}
+                  onChange={(event) => setMessageDraft(event.target.value)}
+                />
+              </label>
+              <button type="submit" disabled={sendingMessage || !messageDraft.trim()} aria-label="Send task message">
+                <Send size={14} aria-hidden="true" />
+                <span>{sendingMessage ? 'Sending' : 'Send'}</span>
+              </button>
+            </form>
+          ) : null}
           {task ? <TaskDetailContent task={task} messages={messages} pendingMessages={pendingMessages} deliveredMessages={deliveredMessages} messagesError={messagesError} childStreams={childStreams} childStreamsError={childStreamsError} taskResult={taskResult} resultError={resultError} sessionTasks={sessionTasks} onOpenTask={onOpenTask} /> : loading ? <div className="empty-chat">Loading task details...</div> : null}
         </div>
       </section>

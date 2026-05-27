@@ -48,6 +48,7 @@ class SessionRecord:
     messages: list[dict[str, Any]] = field(default_factory=list)
     first_user_message: str = ""
     turn_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
     version: int = SESSION_FORMAT_VERSION
 
     # ------- factories --------------------------------------------------
@@ -93,6 +94,7 @@ class SessionRecord:
             messages=list(data.get("messages") or []),
             first_user_message=str(data.get("first_user_message") or ""),
             turn_count=int(data.get("turn_count") or 0),
+            metadata=dict(data.get("metadata") or {}) if isinstance(data.get("metadata"), dict) else {},
             version=int(data.get("version") or 0),
         )
 

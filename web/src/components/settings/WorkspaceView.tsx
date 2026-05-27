@@ -1,156 +1,119 @@
-import { ChevronLeft, File, Folder, RefreshCw, Search } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { WorkspaceEntry, WorkspaceFile, WorkspaceTree } from '../../api/types'
-import { MarkdownRenderer } from '../chat/MarkdownRenderer'
-import { Spinner } from '../shared/Spinner'
+import { WorkspaceFilePanel } from '../chat/WorkspaceFilePanel'
+import { WorkspaceRail } from '../chat/WorkspaceRail'
 
 export function WorkspaceView() {
-  const [tree, setTree] = useState<WorkspaceTree | null>(null)
-  const [activeFile, setActiveFile] = useState<WorkspaceFile | null>(null)
-  const [query, setQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<WorkspaceEntry[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const autoSelectedInitialFile = useRef(false)
+  const [previewPath, setPreviewPath] = useState<string | null>(null)
+  const [previewFile, setPreviewFile] = useState<WorkspaceFile | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
 
-  const visibleEntries = searchResults ?? tree?.entries ?? []
-  const title = tree?.path ? tree.path : 'Project root'
-  const rootLabel = tree?.root ?? ''
-
-  const loadTree = (path = tree?.path ?? '') => {
-    setLoading(true)
-    setError(null)
-    setSearchResults(null)
-    api.workspaceTree(path)
-      .then((nextTree) => {
-        setTree(nextTree)
-        if (!activeFile && nextTree.entries.length > 0) {
-          const firstFile = nextTree.entries.find((entry) => entry.kind === 'file')
-          if (firstFile) void openFile(firstFile.path)
-        }
+  const openFile = useCallback((path: string) => {
+    setPreviewPath(path)
+    setPreviewFile(null)
+    setPreviewError(null)
+    setPreviewLoading(true)
+    api.workspaceFile(path)
+      .then((file) => {
+        setPreviewFile(file)
+        setPreviewError(null)
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(() => {
-    loadTree('')
+      .catch((err: unknown) => {
+        setPreviewFile(null)
+        setPreviewError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => setPreviewLoading(false))
   }, [])
 
-  const runSearch = () => {
-    const value = query.trim()
-    if (!value) {
-      setSearchResults(null)
+  const closePreview = useCallback(() => {
+    setPreviewPath(null)
+    setPreviewFile(null)
+    setPreviewError(null)
+    setPreviewLoading(false)
+  }, [])
+
+  const saveFile = useCallback(async (path: string, content: string) => {
+    const saved = await api.workspaceSaveFile(path, content)
+    const nextFile = { ...saved, path: saved.path || path }
+    setPreviewFile(nextFile)
+    setPreviewPath(nextFile.path)
+    setPreviewError(null)
+    return nextFile
+  }, [])
+
+  const handleDeletedPath = useCallback((path: string) => {
+    const activePath = normalizeWorkspacePath(previewPath ?? '')
+    const deletedPath = normalizeWorkspacePath(path)
+    if (!activePath || !deletedPath) return
+    if (activePath === deletedPath || activePath.startsWith(deletedPath + '/')) {
+      closePreview()
+    }
+  }, [closePreview, previewPath])
+
+  const handleRenamedPath = useCallback((path: string, newPath: string, kind: WorkspaceEntry['kind']) => {
+    const activePath = normalizeWorkspacePath(previewPath ?? '')
+    const oldPath = normalizeWorkspacePath(path)
+    const renamedPath = normalizeWorkspacePath(newPath)
+    if (!activePath || !oldPath || !renamedPath) return
+    if (activePath === oldPath && kind === 'file') {
+      openFile(renamedPath)
       return
     }
-    setLoading(true)
-    setError(null)
-    api.workspaceSearch(value, 150)
-      .then((result) => setSearchResults(result.entries))
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
-  }
-
-  const openEntry = (entry: WorkspaceEntry) => {
-    if (entry.kind === 'directory') {
-      loadTree(entry.path)
-      return
+    if (kind === 'directory' && activePath.startsWith(oldPath + '/')) {
+      openFile(renamedPath + activePath.slice(oldPath.length))
     }
-    void openFile(entry.path)
-  }
+  }, [openFile, previewPath])
 
-  const openFile = (path: string) => {
-    setLoading(true)
-    setError(null)
-    return api.workspaceFile(path)
-      .then(setActiveFile)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
-  }
+  const handleTreeLoaded = useCallback((tree: WorkspaceTree) => {
+    if (autoSelectedInitialFile.current || previewPath || tree.path) return
+    const firstFile = tree.entries.find((entry) => entry.kind === 'file' && entry.name.toLowerCase() === 'readme.md')
+      ?? tree.entries.find((entry) => entry.kind === 'file')
+    if (!firstFile) return
+    autoSelectedInitialFile.current = true
+    openFile(firstFile.path)
+  }, [openFile, previewPath])
 
-  const lineCount = useMemo(() => activeFile?.content.split('\n').length ?? 0, [activeFile])
+  const handleWorkspaceRootChanged = useCallback(() => {
+    autoSelectedInitialFile.current = false
+    closePreview()
+  }, [closePreview])
 
   return (
-    <div className="settings-panel workspace-panel">
+    <div className="settings-panel workspace-panel workspace-panel-full">
       <header className="panel-header">
         <div>
           <h2>Workspace</h2>
-          <p>{rootLabel}</p>
+          <p>Browse, edit, create, rename, and delete project files within the configured workspace root.</p>
         </div>
-        <button type="button" onClick={() => loadTree(tree?.path ?? '')} disabled={loading}>
-          <RefreshCw size={15} /> Refresh
-        </button>
       </header>
 
-      <div className="workspace-layout">
-        <aside className="workspace-browser" aria-label="Workspace browser">
-          <div className="workspace-browser-header">
-            <strong>{title}</strong>
-            {tree?.parent_path !== null && tree?.parent_path !== undefined ? (
-              <button type="button" onClick={() => loadTree(tree.parent_path ?? '')} aria-label="Open parent directory">
-                <ChevronLeft size={14} /> Parent
-              </button>
-            ) : null}
-          </div>
-          <form className="workspace-search" onSubmit={(event) => { event.preventDefault(); runSearch() }}>
-            <Search size={14} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files" />
-            <button type="submit">Search</button>
-          </form>
-          {searchResults ? (
-            <button type="button" className="workspace-clear-search" onClick={() => { setSearchResults(null); setQuery('') }}>
-              Clear search
-            </button>
-          ) : null}
-          <div className="workspace-entry-list">
-            {visibleEntries.length === 0 && !loading ? <div className="empty-chat">No files found.</div> : null}
-            {visibleEntries.map((entry) => (
-              <button
-                type="button"
-                key={entry.path || '__root__'}
-                className={activeFile?.path === entry.path ? 'active' : ''}
-                onClick={() => openEntry(entry)}
-              >
-                {entry.kind === 'directory' ? <Folder size={15} /> : <File size={15} />}
-                <span>{entry.name}</span>
-                <small>{entry.path || '.'}</small>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="workspace-preview" aria-label="Workspace file preview">
-          {loading ? <Spinner label="Loading workspace" /> : null}
-          {error ? <div className="notice notice-error">{error}</div> : null}
-          {activeFile ? (
-            <>
-              <div className="workspace-preview-header">
-                <div>
-                  <strong>{activeFile.path}</strong>
-                  <span>{activeFile.language} · {formatBytes(activeFile.size_bytes)} · {lineCount} lines</span>
-                </div>
-                {activeFile.truncated ? <span className="workspace-pill">truncated</span> : null}
-                {activeFile.binary ? <span className="workspace-pill">binary</span> : null}
-              </div>
-              {activeFile.binary ? (
-                <div className="empty-chat">Binary file preview is disabled.</div>
-              ) : activeFile.language === 'markdown' ? (
-                <div className="workspace-markdown"><MarkdownRenderer text={activeFile.content} /></div>
-              ) : (
-                <pre className="workspace-code">{activeFile.content}</pre>
-              )}
-            </>
-          ) : !loading ? (
-            <div className="empty-chat">Select a file to preview.</div>
-          ) : null}
-        </section>
+      <div className="workspace-layout workspace-full-layout">
+        <WorkspaceRail
+          selectedFilePath={previewPath}
+          onSelectFile={openFile}
+          onDeletedPath={handleDeletedPath}
+          onRenamedPath={handleRenamedPath}
+          onTreeLoaded={handleTreeLoaded}
+          onWorkspaceRootChanged={handleWorkspaceRootChanged}
+        />
+        <WorkspaceFilePanel
+          preview={{
+            path: previewPath,
+            file: previewFile,
+            loading: previewLoading,
+            error: previewError,
+          }}
+          onClose={closePreview}
+          onSave={saveFile}
+        />
       </div>
     </div>
   )
 }
 
-function formatBytes(value: number): string {
-  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + ' MB'
-  if (value >= 1_000) return (value / 1_000).toFixed(1) + ' KB'
-  return value + ' B'
+function normalizeWorkspacePath(path: string): string {
+  return path.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }

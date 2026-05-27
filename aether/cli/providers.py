@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from aether.config.provider_runtime import (
@@ -75,7 +76,7 @@ def build_provider(
                 "OpenAI provider requires an API key. "
                 "Set OPENAI_API_KEY or ANTHROPIC_AUTH_TOKEN or pass --api-key."
             )
-        resolved_url = runtime.base_url or d["base_url"]
+        resolved_url = _prefer_configured_openai_api_root(runtime.base_url or d["base_url"])
         return OpenAICompatibleModel(
             model=runtime.model or d["model"],
             api_key=resolved_key,
@@ -116,3 +117,35 @@ def get_provider_defaults(name: str) -> dict[str, Any]:
 def _credential_value(value: object) -> str | None:
     raw = getattr(value, "value", None)
     return raw if isinstance(raw, str) and raw else None
+
+
+def _prefer_configured_openai_api_root(
+    base_url: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Use the configured API root when an older session stored only the host root.
+
+    Session records persist ``base_url`` so old conversations can keep their
+    provider settings.  Some earlier web flows saved the gateway root
+    (``http://host:port``) while the OpenAI-compatible chat transport expects
+    an API root (``http://host:port/v1``).  If the environment now points at
+    the same root plus a conventional API suffix, prefer that env value for the
+    run without mutating historical session files.
+    """
+
+    normalized = base_url.rstrip("/")
+    env = os.environ if environ is None else environ
+    for key in ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"):
+        configured = env.get(key)
+        if not isinstance(configured, str) or not configured.strip():
+            continue
+        configured = configured.strip().rstrip("/")
+        if configured == normalized:
+            return configured
+        if not configured.startswith(f"{normalized}/"):
+            continue
+        suffix = configured[len(normalized) :]
+        if suffix in {"/v1", "/api", "/api/v1"} or suffix.endswith("/v1"):
+            return configured
+    return normalized

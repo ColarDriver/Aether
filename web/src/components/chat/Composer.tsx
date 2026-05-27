@@ -15,7 +15,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
 import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
-import { isSlashCommandInput } from './slashExecute'
+import { isSlashCommandInput, WEB_LOCAL_INSPECTOR_COMMANDS } from './slashExecute'
 import { mergeWorkspaceAttachment, syncWorkspaceReferenceAttachmentsForValue, workspaceReferenceTokenExists } from './workspaceReferences'
 
 type ComposerDraft = {
@@ -53,9 +53,11 @@ type Props = {
   inputTokens?: number | null
   outputTokens?: number | null
   tokens?: TokenUsage | null
+  runMetadata?: Record<string, unknown> | null
   sessionSummary?: string | null
   messageCount?: number | null
   draftPatch?: ComposerDraftPatch | null
+  workspaceRootVersion?: number
 }
 
 export function Composer({
@@ -72,9 +74,11 @@ export function Composer({
   inputTokens,
   outputTokens,
   tokens,
+  runMetadata,
   sessionSummary,
   messageCount,
   draftPatch,
+  workspaceRootVersion = 0,
 }: Props) {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
@@ -92,6 +96,7 @@ export function Composer({
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
   const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
   const appliedDraftPatchIdRef = useRef<number | null>(null)
+  const workspaceRootVersionRef = useRef(workspaceRootVersion)
   const draftKey = sessionId ?? NEW_SESSION_DRAFT_KEY
   const draftMapRef = useRef(new Map<string, ComposerDraft>())
   const draftKeyRef = useRef(draftKey)
@@ -171,8 +176,20 @@ export function Composer({
 
   useEffect(() => {
     if (disabled) return
+    const rootChanged = workspaceRootVersionRef.current !== workspaceRootVersion
+    workspaceRootVersionRef.current = workspaceRootVersion
+    if (rootChanged) {
+      const paths = attachmentsRef.current
+        .filter((attachment) => attachment.note === 'workspace reference' && attachment.path)
+        .map((attachment) => attachment.path || '')
+      if (paths.length > 0) {
+        setAttachments((current) => current.filter((attachment) => attachment.note !== 'workspace reference'))
+        setValue((current) => removeWorkspaceReferenceTokens(current, paths))
+      }
+      setWorkspacePreview({ status: 'idle' })
+    }
     let cancelled = false
-    api.workspaceTree('')
+    api.workspaceRoot()
       .then((result) => {
         if (cancelled) return
         setWorkspaceRoot(result.root)
@@ -186,7 +203,7 @@ export function Composer({
     return () => {
       cancelled = true
     }
-  }, [disabled])
+  }, [disabled, workspaceRootVersion])
 
   const submit = () => {
     const text = value.trim()
@@ -408,6 +425,7 @@ export function Composer({
           inputTokens={inputTokens}
           outputTokens={outputTokens}
           tokens={tokens}
+          runMetadata={runMetadata}
           onClose={() => setInspectorKind(null)}
         />
       ) : null}
@@ -542,19 +560,12 @@ export function Composer({
   )
 }
 
-const LOCAL_INSPECTOR_COMMANDS: SlashCommandInfo[] = [
-  { name: '/status', description: 'Show runtime and session status', category: 'local' },
-  { name: '/context', description: 'Show active context usage', category: 'local' },
-  { name: '/cost', description: 'Show local usage analytics', category: 'local' },
-  { name: '/skills', description: 'Show available skills', category: 'local' },
-  { name: '/mcp', description: 'Show MCP integration status', category: 'local' },
-]
 
 function mergeLocalInspectorCommands(commands: SlashCommandInfo[] | undefined): SlashCommandInfo[] {
   const remoteCommands = Array.isArray(commands) ? commands : []
   const seen = new Set<string>()
   const merged: SlashCommandInfo[] = []
-  for (const command of [...LOCAL_INSPECTOR_COMMANDS, ...remoteCommands]) {
+  for (const command of [...WEB_LOCAL_INSPECTOR_COMMANDS, ...remoteCommands]) {
     if (seen.has(command.name)) continue
     seen.add(command.name)
     merged.push(command)

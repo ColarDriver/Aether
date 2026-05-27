@@ -106,4 +106,21 @@ class TaskListResult:
     total_count: int
 
 
-__all__ = ["TaskChildMessageStream", "TaskChildMessagesResult", "TaskDeliveredMessage", "TaskListResult", "TaskMessage", "TaskMessagesResult", "TaskPendingMessage", "TaskResultArtifact", "TaskSummary"]
+@dataclass(frozen=True, slots=True)
+class TaskStopResult:
+    task_id: str
+    delivered: bool
+    status: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSendMessageResult:
+    task_id: str
+    queued: bool
+    status: str
+    message: str
+    queued_chars: int = 0
+
+
+__all__ = ["TaskChildMessageStream", "TaskChildMessagesResult", "TaskDeliveredMessage", "TaskListResult", "TaskMessage", "TaskMessagesResult", "TaskPendingMessage", "TaskResultArtifact", "TaskSendMessageResult", "TaskStopResult", "TaskSummary"]

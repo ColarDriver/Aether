@@ -21,12 +21,14 @@ export class RunSocketClient {
       return
     }
     this.closed = false
+    this.emit({ type: 'socket.connecting' })
     const ws = new WebSocket(buildRunSocketUrl())
     this.ws = ws
     let opened = false
     ws.onopen = () => {
       opened = true
       this.reconnectAttempt = 0
+      this.emit({ type: 'socket.open' })
       this.startPing()
       while (this.pending.length > 0 && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(this.pending.shift()))
@@ -35,11 +37,12 @@ export class RunSocketClient {
     ws.onmessage = (event) => {
       const frame = parseFrame(event.data)
       if (!frame) return
-      for (const handler of this.handlers) handler(frame)
+      this.emit(frame)
     }
     ws.onclose = () => {
       this.stopPing()
       if (this.closed) return
+      this.emit({ type: 'socket.closed', payload: { reconnecting: true, opened } })
       if (!opened) {
         this.recoverSessionTokenAndReconnect()
         return
@@ -72,6 +75,10 @@ export class RunSocketClient {
     return () => this.handlers.delete(handler)
   }
 
+  private emit(frame: RunSocketFrame) {
+    for (const handler of this.handlers) handler(frame)
+  }
+
   startRun(sessionId: string, userMessage: string, attachments: RunAttachment[] = []) {
     const id = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
@@ -82,6 +89,7 @@ export class RunSocketClient {
       payload: {
         session_id: sessionId,
         user_message: userMessage,
+        options: { workspace_checkpoint: true },
         ...(attachments.length > 0 ? { attachments } : {}),
       },
     })

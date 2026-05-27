@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/client'
 import { WorkspaceView } from './WorkspaceView'
@@ -36,6 +36,13 @@ const readme = {
   binary: false,
 }
 
+const savedReadme = {
+  ...readme,
+  content: '# Aether\n\nSaved.',
+  size_bytes: 18,
+  updated_at: 4,
+}
+
 const appFile = {
   root: '/workspace/Aether',
   path: 'aether/app.py',
@@ -54,24 +61,53 @@ afterEach(() => {
 })
 
 describe('WorkspaceView', () => {
-  it('browses directories, previews files, and searches paths', async () => {
+  it('browses, searches, previews, and edits workspace files through the shared panels', async () => {
     vi.spyOn(api, 'workspaceTree').mockImplementation(async (path = '') => (path === 'aether' ? nestedTree : rootTree))
     vi.spyOn(api, 'workspaceFile').mockImplementation(async (path: string) => (path === 'aether/app.py' ? appFile : readme))
+    const saveFile = vi.spyOn(api, 'workspaceSaveFile').mockResolvedValue(savedReadme)
     const search = vi.spyOn(api, 'workspaceSearch').mockResolvedValue({ root: '/workspace/Aether', query: 'app', entries: nestedTree.entries })
 
     render(<WorkspaceView />)
 
-    expect((await screen.findAllByText('README.md')).length).toBeGreaterThan(1)
+    const workspaceFiles = screen.getByLabelText('Workspace files')
+    expect(await within(workspaceFiles).findByTitle('README.md')).toBeTruthy()
     expect(await screen.findByText('Hello.')).toBeTruthy()
 
-    fireEvent.click(screen.getAllByText('aether')[0])
-    expect((await screen.findAllByText('app.py')).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit workspace file' }))
+    const editor = screen.getByLabelText('Workspace file editor')
+    fireEvent.change(editor, { target: { value: '# Aether\n\nSaved.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save workspace file' }))
+
+    await waitFor(() => expect(saveFile).toHaveBeenCalledWith('README.md', '# Aether\n\nSaved.'))
+    expect(await screen.findByText('Saved.')).toBeTruthy()
+
+    fireEvent.click(screen.getByTitle('aether'))
+    expect(await screen.findByTitle('aether/app.py')).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Search files'), { target: { value: 'app' } })
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
-    await waitFor(() => expect(search).toHaveBeenCalledWith('app', 150))
-    fireEvent.click(screen.getAllByText('app.py')[0])
+    await waitFor(() => expect(search).toHaveBeenCalledWith('app', 80))
+    fireEvent.click(screen.getByTitle('aether/app.py'))
     expect(await screen.findByText(/print/)).toBeTruthy()
+  })
+
+  it('closes the preview when the selected workspace file is deleted', async () => {
+    vi.spyOn(api, 'workspaceTree').mockResolvedValue(rootTree)
+    vi.spyOn(api, 'workspaceFile').mockResolvedValue(readme)
+    const deletePath = vi.spyOn(api, 'workspaceDeletePath').mockResolvedValue(undefined)
+
+    render(<WorkspaceView />)
+
+    const workspaceFiles = screen.getByLabelText('Workspace files')
+    fireEvent.click(await within(workspaceFiles).findByTitle('README.md'))
+    expect(await screen.findByText('Hello.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete README.md' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete workspace path' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(deletePath).toHaveBeenCalledWith('README.md', false))
+    expect(await screen.findByText('No file selected.')).toBeTruthy()
   })
 })

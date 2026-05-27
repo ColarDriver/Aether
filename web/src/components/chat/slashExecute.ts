@@ -1,10 +1,19 @@
 import { api } from '../../api/client'
 import type { CommandCatalog, ConsoleView, PlanCurrent, SessionInfo, SlashCommandInfo, ToolGroup } from '../../api/types'
+import { tokenUsageBreakdown, tokenUsageSummary, type RunStatusSnapshot, type TokenUsage } from '../../chat-rendering'
 
 export type ParsedSlashCommand = {
   name: string
   arg: string
 }
+
+export const WEB_LOCAL_INSPECTOR_COMMANDS: SlashCommandInfo[] = [
+  { name: '/status', description: 'Show runtime and session status', category: 'local' },
+  { name: '/context', description: 'Show active context usage', category: 'local' },
+  { name: '/cost', description: 'Show local usage analytics', category: 'local' },
+  { name: '/skills', description: 'Show available skills', category: 'local' },
+  { name: '/mcp', description: 'Show MCP integration status', category: 'local' },
+]
 
 export type WebSlashResult =
   | { type: 'notice'; message: string }
@@ -21,8 +30,16 @@ type SlashExecutionContext = {
   loadPlanCurrent?: (sessionId: string) => Promise<PlanCurrent>
   setPlanMode?: (sessionId: string, mode: 'agent' | 'plan') => Promise<PlanCurrent>
   clearPlan?: (sessionId: string) => Promise<PlanCurrent>
+  activeRunId?: string | null
+  runStatus?: RunStatusSnapshot | null
+  tokens?: TokenUsage | null
+  verbose?: boolean
   onSessionMode?: (sessionId: string, mode: 'agent' | 'plan') => void
   openView?: (view: ConsoleView) => void
+  refreshSession?: (sessionId: string) => Promise<void> | void
+  cancelRun?: (sessionId: string, runId?: string | null) => Promise<void> | void
+  setVerbose?: (enabled: boolean) => void
+  closeConsole?: () => void
   createSession?: (input: { provider: string; model: string }) => Promise<SessionInfo>
   resumeSession?: (sessionId: string) => Promise<SessionInfo>
   updateSession?: (
@@ -56,6 +73,22 @@ export async function executeWebSlashCommand(
   switch (parsed.name) {
     case 'help':
       return { type: 'notice', message: formatHelp(await loadCommandCatalog(context)) }
+    case 'exit':
+      return executeExitCommand(context)
+    case 'refresh':
+      return executeRefreshCommand(context)
+    case 'stats':
+      return executeStatsCommand(context)
+    case 'verbose':
+      return executeVerboseCommand(parsed.arg, context)
+    case 'interrupt':
+      return executeInterruptCommand(context)
+    case 'status':
+    case 'context':
+    case 'cost':
+    case 'skills':
+    case 'mcp':
+      return { type: 'notice', message: '/' + parsed.name + ' opens a composer inspector panel in the web console.' }
     case 'new':
       return executeNewCommand(context)
     case 'clear':
@@ -90,8 +123,23 @@ export async function executeWebSlashCommand(
 }
 
 async function loadCommandCatalog(context: SlashExecutionContext): Promise<SlashCommandInfo[]> {
-  if (context.commands && context.commands.length > 0) return context.commands
-  return (await (context.loadCommands ?? api.commands)()).commands
+  const commands = context.commands && context.commands.length > 0
+    ? context.commands
+    : (await (context.loadCommands ?? api.commands)()).commands
+  return mergeSlashCommands(WEB_LOCAL_INSPECTOR_COMMANDS, commands)
+}
+
+function mergeSlashCommands(...groups: SlashCommandInfo[][]): SlashCommandInfo[] {
+  const seen = new Set<string>()
+  const merged: SlashCommandInfo[] = []
+  for (const group of groups) {
+    for (const command of group) {
+      if (!command.name || seen.has(command.name)) continue
+      seen.add(command.name)
+      merged.push(command)
+    }
+  }
+  return merged.sort((left, right) => left.name.localeCompare(right.name))
 }
 
 async function loadSessions(context: SlashExecutionContext): Promise<{ sessions: SessionInfo[] }> {
@@ -123,6 +171,48 @@ async function executeClearCommand(context: SlashExecutionContext): Promise<WebS
     context.onSessionMode?.(context.session.session_id, 'agent')
   })
   return { type: 'clear' }
+}
+
+function executeExitCommand(context: SlashExecutionContext): WebSlashResult {
+  context.closeConsole?.()
+  return {
+    type: 'notice',
+    message: 'Exit requested. In the web console, close the browser tab or switch sessions when you are done.',
+  }
+}
+
+async function executeRefreshCommand(context: SlashExecutionContext): Promise<WebSlashResult> {
+  if (!context.refreshSession) {
+    return { type: 'notice', message: 'Refresh is handled by the browser. Reload the page to force a full console refresh.' }
+  }
+  await context.refreshSession(context.session.session_id)
+  return { type: 'notice', message: 'Refreshed session `' + cell(context.session.session_id) + '`.' }
+}
+
+function executeStatsCommand(context: SlashExecutionContext): WebSlashResult {
+  return { type: 'notice', message: formatStats(context) }
+}
+
+function executeVerboseCommand(arg: string, context: SlashExecutionContext): WebSlashResult {
+  const normalized = arg.trim().toLowerCase()
+  const explicit = normalized ? parseVerboseValue(normalized) : null
+  if (normalized && explicit === null) {
+    return { type: 'error', message: 'Usage: /verbose [on|off]' }
+  }
+  const next = explicit ?? !Boolean(context.verbose)
+  context.setVerbose?.(next)
+  return { type: 'notice', message: 'Verbose mode ' + (next ? 'on' : 'off') + '.' }
+}
+
+async function executeInterruptCommand(context: SlashExecutionContext): Promise<WebSlashResult> {
+  if (!context.activeRunId) {
+    return { type: 'notice', message: 'No active run to interrupt.' }
+  }
+  if (!context.cancelRun) {
+    return { type: 'error', message: '/interrupt is not available in this web context.' }
+  }
+  await context.cancelRun(context.session.session_id, context.activeRunId)
+  return { type: 'notice', message: 'Interrupt requested for run `' + cell(context.activeRunId) + '`.' }
 }
 
 async function executeNewCommand(context: SlashExecutionContext): Promise<WebSlashResult> {
@@ -289,6 +379,49 @@ function formatModel(session: SessionInfo): string {
     '- Model: `' + session.model + '`',
     session.base_url ? '- Base URL: `' + session.base_url + '`' : '',
   ].filter(Boolean).join('\n')
+}
+
+function formatStats(context: SlashExecutionContext): string {
+  const tokens = context.tokens ?? context.runStatus?.tokens ?? null
+  const summary = tokenUsageSummary(tokens)
+  const breakdown = tokenUsageBreakdown(tokens).join(' / ')
+  const rows = [
+    ['Session', '`' + cell(context.session.session_id) + '`'],
+    ['Model', '`' + cell(context.session.provider + '/' + context.session.model) + '`'],
+    ['Mode', cell(context.session.mode ?? 'agent')],
+    ['Messages', String(context.session.message_count)],
+  ]
+  if (context.activeRunId) rows.unshift(['Run', '`' + cell(context.activeRunId) + '`'])
+  if (context.runStatus?.state) rows.push(['State', cell(context.runStatus.state)])
+  if (context.runStatus?.detail) rows.push(['Detail', cell(context.runStatus.detail)])
+  if (typeof context.runStatus?.elapsedMs === 'number') rows.push(['Elapsed', formatDuration(context.runStatus.elapsedMs)])
+  if (summary) rows.push(['Tokens', cell(summary)])
+  if (breakdown) rows.push(['Breakdown', cell(breakdown)])
+  rows.push(['Verbose', context.verbose ? 'on' : 'off'])
+
+  return [
+    '# Turn stats',
+    '',
+    summary || context.runStatus
+      ? 'Current or most recent run statistics for this session.'
+      : 'No token usage or active run status has been recorded for this session yet.',
+    '',
+    '| Field | Value |',
+    '| --- | --- |',
+    ...rows.map(([label, value]) => '| ' + label + ' | ' + value + ' |'),
+  ].join('\n')
+}
+
+function parseVerboseValue(value: string): boolean | null {
+  if (['on', 'true', '1', 'yes'].includes(value)) return true
+  if (['off', 'false', '0', 'no'].includes(value)) return false
+  return null
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0ms'
+  if (ms < 1000) return Math.round(ms) + 'ms'
+  return (ms / 1000).toFixed(2).replace(/\.00$/, '') + 's'
 }
 
 function formatPlanCurrent(plan: PlanCurrent): string {

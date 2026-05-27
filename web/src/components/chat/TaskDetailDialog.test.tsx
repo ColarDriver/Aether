@@ -245,6 +245,61 @@ describe('TaskDetailDialog', () => {
     await waitFor(() => expect(screen.getByText('Task not found')).toBeTruthy())
   })
 
+  it('sends a stop signal for active tasks and refreshes detail', async () => {
+    const runningTask = { ...task, status: 'running', finished_at: null }
+    vi.spyOn(api, 'taskDetail')
+      .mockResolvedValueOnce(runningTask)
+      .mockResolvedValueOnce({ ...runningTask, status: 'interrupted', finished_at: 1700000006 })
+    vi.spyOn(api, 'stopTask').mockResolvedValue({
+      task_id: 'task-1',
+      delivered: true,
+      status: 'running',
+      message: 'Stop signal sent to running task.',
+    })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop task' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Stop task' }))
+
+    await waitFor(() => expect(api.stopTask).toHaveBeenCalledWith('task-1'))
+    expect(await screen.findByText('Stop signal sent to running task.')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('interrupted')).toBeTruthy())
+  })
+
+  it('queues a follow-up message for running tasks and refreshes message history', async () => {
+    const runningTask = { ...task, status: 'running', finished_at: null }
+    vi.spyOn(api, 'taskDetail').mockResolvedValue(runningTask)
+    vi.spyOn(api, 'sendTaskMessage').mockResolvedValue({
+      task_id: 'task-1',
+      queued: true,
+      status: 'running',
+      message: "Queued message for the subagent's next iteration boundary.",
+      queued_chars: 18,
+    })
+    vi.mocked(api.taskMessages)
+      .mockResolvedValueOnce({ task_id: 'task-1', messages: [], pending_messages: [], delivered_messages: [], total_count: 0, truncated: false })
+      .mockResolvedValueOnce({
+        task_id: 'task-1',
+        messages: [],
+        pending_messages: [{ index: 0, message: 'please inspect auth', ts: 1700000001 }],
+        delivered_messages: [],
+        total_count: 0,
+        truncated: false,
+      })
+
+    render(<TaskDetailDialog taskId="task-1" onClose={() => undefined} />)
+
+    const input = await screen.findByLabelText('Task follow-up message')
+    fireEvent.change(input, { target: { value: 'please inspect auth' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send task message' }))
+
+    await waitFor(() => expect(api.sendTaskMessage).toHaveBeenCalledWith('task-1', { message: 'please inspect auth' }))
+    expect(await screen.findByText("Queued message for the subagent's next iteration boundary.")).toBeTruthy()
+    expect(await screen.findByText('please inspect auth')).toBeTruthy()
+    expect((input as HTMLTextAreaElement).value).toBe('')
+  })
+
   it('refreshes task detail on demand', async () => {
     vi.spyOn(api, 'taskDetail')
       .mockResolvedValueOnce(task)

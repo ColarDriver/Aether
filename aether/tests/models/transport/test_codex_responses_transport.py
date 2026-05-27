@@ -43,6 +43,26 @@ class CodexResponsesTransportTests(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["type"], "function")
         self.assertEqual(payload["tools"][0]["parameters"]["required"], ["cmd"])
 
+    def test_user_multimodal_content_converts_to_responses_parts(self) -> None:
+        _instructions, input_items = self.transport.convert_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(input_items[0]["role"], "user")
+        self.assertEqual(input_items[0]["content"][0], {"type": "input_text", "text": "describe"})
+        self.assertEqual(
+            input_items[0]["content"][1],
+            {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+        )
+
     def test_convert_messages_includes_assistant_function_call_and_tool_output(self) -> None:
         instructions, input_items = self.transport.convert_messages(
             [

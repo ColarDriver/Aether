@@ -2,7 +2,7 @@ import { CircleAlert } from 'lucide-react'
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api/client'
-import type { WorkspaceFile } from './api/types'
+import type { WorkspaceEntry, WorkspaceFile } from './api/types'
 import { useAppStore } from './stores/appStore'
 import { useAppearanceStore } from "./stores/appearanceStore"
 import { useChatStore } from './stores/chatStore'
@@ -68,6 +68,8 @@ export function App() {
   const { sessions, activeSessionId, isLoading: sessionsLoading, createSession, deleteSession, setActiveSession } = useSessionStore()
   const { current, providers, loadProviders } = useProviderStore()
   const connectChat = useChatStore((state) => state.connect)
+  const socketState = useChatStore((state) => state.socketState)
+  const socketDetail = useChatStore((state) => state.socketDetail)
   const clearChatSession = useChatStore((state) => state.clearSession)
   const clearSessionTasks = useTaskStore((state) => state.clearSessionTasks)
   const notify = useToastStore((state) => state.notify)
@@ -81,6 +83,7 @@ export function App() {
   const [workspacePreviewFile, setWorkspacePreviewFile] = useState<WorkspaceFile | null>(null)
   const [workspacePreviewLoading, setWorkspacePreviewLoading] = useState(false)
   const [workspacePreviewError, setWorkspacePreviewError] = useState<string | null>(null)
+  const [workspaceRootVersion, setWorkspaceRootVersion] = useState(0)
   const panelsSwappedInChat = activeView === 'chat' && panelsSwapped
   const workspaceFilePanelClampContext = useMemo<WorkspaceFilePanelClampContext>(() => ({
     sidebarWidth,
@@ -266,6 +269,35 @@ export function App() {
     setWorkspacePreviewLoading(false)
   }, [])
 
+  const handleWorkspacePathDeleted = useCallback((path: string) => {
+    const activePath = normalizeWorkspacePath(workspacePreviewPath ?? '')
+    const deletedPath = normalizeWorkspacePath(path)
+    if (!activePath || !deletedPath) return
+    if (activePath === deletedPath || activePath.startsWith(deletedPath + '/')) {
+      closeWorkspacePreview()
+    }
+  }, [closeWorkspacePreview, workspacePreviewPath])
+
+  const handleWorkspacePathRenamed = useCallback((path: string, newPath: string, kind: WorkspaceEntry['kind']) => {
+    const activePath = normalizeWorkspacePath(workspacePreviewPath ?? '')
+    const oldPath = normalizeWorkspacePath(path)
+    const renamedPath = normalizeWorkspacePath(newPath)
+    if (!activePath || !oldPath || !renamedPath) return
+    if (activePath === oldPath && kind === 'file') {
+      handleSelectWorkspaceFile(renamedPath)
+      return
+    }
+    if (kind === 'directory' && activePath.startsWith(oldPath + '/')) {
+      handleSelectWorkspaceFile(renamedPath + activePath.slice(oldPath.length))
+    }
+  }, [handleSelectWorkspaceFile, workspacePreviewPath])
+
+  const handleWorkspaceRootChanged = useCallback(() => {
+    closeWorkspacePreview()
+    setWorkspaceRootVersion((version) => version + 1)
+    notify('Workspace root changed', 'success')
+  }, [closeWorkspacePreview, notify])
+
   const handleSaveWorkspaceFile = useCallback(async (path: string, content: string) => {
     const saved = await api.workspaceSaveFile(path, content)
     const nextFile = { ...saved, path: saved.path || path }
@@ -299,10 +331,14 @@ export function App() {
         workspaceRailOpen ? (
           <WorkspaceRail
             side="left"
+            sessionId={activeSessionId}
             selectedFilePath={workspacePreviewPath}
             onSelectFile={handleSelectWorkspaceFile}
             onClose={() => setWorkspaceRailOpen(false)}
             onOpenWorkspace={() => setActiveView('workspace')}
+            onDeletedPath={handleWorkspacePathDeleted}
+            onRenamedPath={handleWorkspacePathRenamed}
+            onWorkspaceRootChanged={handleWorkspaceRootChanged}
           />
         ) : null
       ) : (
@@ -355,6 +391,8 @@ export function App() {
           <ChatWorkbenchHeader
             session={activeSession}
             online={Boolean(status?.ok)}
+            socketState={socketState}
+            socketDetail={socketDetail}
             workspaceRailOpen={workspaceRailOpen}
             panelsSwapped={panelsSwapped}
             onToggleWorkspaceRail={() => setWorkspaceRailOpen((value) => !value)}
@@ -409,7 +447,7 @@ export function App() {
                   />
                 </>
               ) : null}
-              <ChatView session={activeSession} />
+              <ChatView session={activeSession} workspaceRootVersion={workspaceRootVersion} />
               {panelsSwappedInChat ? (
                 <>
                   <div
@@ -456,10 +494,14 @@ export function App() {
                   />
                   <WorkspaceRail
                     side="right"
+                    sessionId={activeSessionId}
                     selectedFilePath={workspacePreviewPath}
                     onSelectFile={handleSelectWorkspaceFile}
                     onClose={() => setWorkspaceRailOpen(false)}
                     onOpenWorkspace={() => setActiveView('workspace')}
+                    onDeletedPath={handleWorkspacePathDeleted}
+                    onRenamedPath={handleWorkspacePathRenamed}
+                    onWorkspaceRootChanged={handleWorkspaceRootChanged}
                   />
                 </>
               ) : null}
@@ -568,6 +610,10 @@ function clampWorkspaceFilePanelWidth(width: number, context: WorkspaceFilePanel
   const maxByWorkbench = availableWorkbenchWidth - MIN_CHAT_COLUMN_WIDTH - LAYOUT_RESIZER_WIDTH - workbenchSideResizerWidth - workbenchSideWidth
   const maxWidth = Math.max(WORKSPACE_FILE_PANEL_WIDTH_MIN, maxByWorkbench)
   return clamp(width, WORKSPACE_FILE_PANEL_WIDTH_MIN, maxWidth)
+}
+
+function normalizeWorkspacePath(path: string): string {
+  return path.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }
 
 function clamp(value: number, min: number, max: number): number {

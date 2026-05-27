@@ -6,13 +6,17 @@ import { MessageActionBar } from '../MessageActionBar'
 type Props = {
   block: AssistantMessage
   actionsDisabled?: boolean
+  onFork?: (block: AssistantMessage) => void
   onQuote?: (block: AssistantMessage) => void
+  onRetry?: (block: AssistantMessage) => void
+  onRewind?: (block: AssistantMessage) => void
 }
 
-export function AssistantMessageBlock({ block, actionsDisabled = false, onQuote }: Props) {
+export function AssistantMessageBlock({ block, actionsDisabled = false, onFork, onQuote, onRetry, onRewind }: Props) {
   if (!block.content.trim()) return null
   const documentLayout = shouldUseDocumentLayout(block.content)
   const showActions = !block.isStreaming
+  const persisted = block.source === 'transcript' && typeof block.messageIndex === 'number'
   return (
     <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
       <div className="chat-block-label">
@@ -25,7 +29,12 @@ export function AssistantMessageBlock({ block, actionsDisabled = false, onQuote 
       <MessageActionBar
         copyText={showActions ? block.content : undefined}
         copyLabel="Copy reply"
-        actions={showActions && onQuote ? [{ kind: 'quote', label: 'Quote reply', onClick: () => onQuote(block), disabled: actionsDisabled }] : []}
+        actions={showActions ? [
+          ...(onQuote ? [{ kind: 'quote' as const, label: 'Quote reply', onClick: () => onQuote(block), disabled: actionsDisabled }] : []),
+          ...(onRetry && persisted ? [{ kind: 'retry' as const, label: 'Retry reply', onClick: () => onRetry(block), disabled: actionsDisabled }] : []),
+          ...(onRewind && persisted ? [{ kind: 'rewind' as const, label: 'Rewind to reply', onClick: () => onRewind(block), disabled: actionsDisabled }] : []),
+          ...(onFork && persisted ? [{ kind: 'fork' as const, label: 'Fork from reply', onClick: () => onFork(block), disabled: actionsDisabled }] : []),
+        ] : []}
       />
     </article>
   )

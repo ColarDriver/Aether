@@ -139,6 +139,11 @@ describe('edge timeline blocks', () => {
           kind: 'error',
           code: 'web_slash_command',
           message: 'Command failed',
+          details: [
+            { label: 'HTTP status', value: '404' },
+            { label: 'Endpoint', value: 'https://provider.test/v1/chat/completions' },
+          ],
+          suggestions: ['Check the provider base URL.'],
         }}
       />,
     )
@@ -146,5 +151,10 @@ describe('edge timeline blocks', () => {
     expect(screen.getByRole('alert')).toBeTruthy()
     expect(screen.getByText('web_slash_command')).toBeTruthy()
     expect(screen.getByText('Command failed')).toBeTruthy()
+    expect(screen.getByLabelText('Error diagnostics')).toBeTruthy()
+    expect(screen.getByText('HTTP status')).toBeTruthy()
+    expect(screen.getByText('https://provider.test/v1/chat/completions')).toBeTruthy()
+    expect(screen.getByLabelText('Suggested fixes')).toBeTruthy()
+    expect(screen.getByText('Check the provider base URL.')).toBeTruthy()
   })
 })

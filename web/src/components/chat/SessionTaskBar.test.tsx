@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TaskSummary } from '../../api/types'
 import { isTaskTerminal, SessionTaskBar, sortTasksForSessionBar } from './SessionTaskBar'
@@ -81,5 +81,16 @@ describe('SessionTaskBar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open task task-1' }))
 
     expect(onOpenTask).toHaveBeenCalledWith(baseTask)
+  })
+
+  it('stops an active task from the session bar without opening task details', async () => {
+    const onOpenTask = vi.fn()
+    const onStopTask = vi.fn().mockResolvedValue(undefined)
+    render(<SessionTaskBar onOpenTask={onOpenTask} onStopTask={onStopTask} tasks={[baseTask]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop task task-1' }))
+
+    await waitFor(() => expect(onStopTask).toHaveBeenCalledWith(baseTask))
+    expect(onOpenTask).not.toHaveBeenCalled()
   })
 })

@@ -397,6 +397,13 @@ class EngineConfig:
     web_search_provider: str | None = None
     web_fetch_max_download_bytes: int = 5 * 1024 * 1024
     web_fetch_timeout_seconds: int = 30
+    # external MCP server integration. ``mcp_servers`` accepts the same
+    # mapping shape as ``$AETHER_HOME/mcp_servers.json``:
+    # {server: {command, args, env, url, headers, timeout, connect_timeout}}.
+    # The runtime treats MCP as optional: failed servers surface in status
+    # metadata without disabling built-in tools.
+    mcp_enabled: bool = True
+    mcp_servers: Dict[str, Any] = field(default_factory=dict)
     # subagent dispatch master switch.  When
     # ``False`` the ``task`` / ``task_stop`` tools refuse to dispatch
     # and return a structured error.  Cheap rollback for environments

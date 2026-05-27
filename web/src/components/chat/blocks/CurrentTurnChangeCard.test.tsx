@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DiffBlock } from '../../../chat-rendering'
 import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 
@@ -100,5 +100,94 @@ describe('CurrentTurnChangeCard', () => {
     const { container } = render(<CurrentTurnChangeCard diffs={[{ ...base, id: 'empty', path: 'src/empty.ts', diff: '' }]} />)
 
     expect(container.firstChild).toBeNull()
+  })
+
+  it('allows checkpoint-backed revert when old text is unavailable', () => {
+    const onRevertFile = vi.fn()
+    const diffs: DiffBlock[] = [
+      { ...base, id: 'd-clean', path: 'src/clean.ts', diff: '@@ -1,1 +1,1 @@\n-before\n+after' },
+    ]
+
+    render(
+      <CurrentTurnChangeCard
+        diffs={diffs}
+        checkpoint={{ checkpointId: '20260527010101-abcdef12', label: 'Before web run', files: ['src/preexisting.ts'] }}
+        onRevertFile={onRevertFile}
+      />,
+    )
+
+    expect(screen.getByText('checkpoint 20260527')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+
+    expect(onRevertFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'src/clean.ts',
+      checkpointId: '20260527010101-abcdef12',
+      checkpointFiles: ['src/preexisting.ts'],
+    }))
+  })
+
+  it('calls backend-backed accept handlers before marking a change accepted', async () => {
+    const onAcceptFile = vi.fn().mockResolvedValue(undefined)
+    const diffs: DiffBlock[] = [
+      { ...base, id: 'd-accept', path: 'src/accept.ts', diff: '@@ -1,1 +1,1 @@\n-before\n+after' },
+    ]
+
+    render(<CurrentTurnChangeCard diffs={diffs} onAcceptFile={onAcceptFile} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+
+    expect(screen.getByRole('button', { name: 'Accepting' })).toBeTruthy()
+    await screen.findByText('accepted')
+    expect(onAcceptFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'src/accept.ts',
+      kind: 'modified',
+    }))
+  })
+
+  it('renders post-edit verification checks with command metadata', () => {
+    const diffs: DiffBlock[] = [
+      { ...base, id: 'd-verified', path: 'src/verified.ts', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+    ]
+
+    render(
+      <CurrentTurnChangeCard
+        diffs={diffs}
+        verifications={[
+          {
+            id: 'verification-typecheck',
+            toolName: 'bash',
+            label: 'Typecheck',
+            command: 'npm run typecheck',
+            status: 'passed',
+            exitCode: 0,
+            durationMs: 1240,
+            summary: 'tsc --noEmit passed',
+          },
+          {
+            id: 'verification-tests',
+            toolName: 'bash',
+            label: 'Tests',
+            command: 'npm test -- auth.test.ts',
+            status: 'failed',
+            exitCode: 1,
+            durationMs: 61000,
+            summary: '1 test failed',
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Post-edit verification' })).toBeTruthy()
+    expect(screen.getByText('Verification')).toBeTruthy()
+    expect(screen.getByText('2 checks')).toBeTruthy()
+    expect(screen.getByText('Typecheck')).toBeTruthy()
+    expect(screen.getByText('npm run typecheck')).toBeTruthy()
+    expect(screen.getByText('bash · exit 0 · 1.2s')).toBeTruthy()
+    expect(screen.getByText('tsc --noEmit passed')).toBeTruthy()
+    expect(screen.getByText('Tests')).toBeTruthy()
+    expect(screen.getByText('npm test -- auth.test.ts')).toBeTruthy()
+    expect(screen.getByText('bash · exit 1 · 1m 1s')).toBeTruthy()
+    expect(screen.getByText('1 test failed')).toBeTruthy()
+    expect(screen.getByText('1 failed')).toBeTruthy()
   })
 })

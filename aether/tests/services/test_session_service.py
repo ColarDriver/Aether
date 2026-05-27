@@ -7,13 +7,16 @@ import pytest
 from aether.cli.sessions import SessionRecord, load_session, save_session, session_file
 from aether.runtime.session.plan_artifact import read_plan, write_plan
 from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
-from aether.services.common import ServiceConflictError, ServiceNotFoundError
+from aether.services.common import ServiceConflictError, ServiceNotFoundError, ServiceValidationError
 from aether.services.sessions import (
     SessionCreateRequest,
     SessionDeleteRequest,
     SessionExportRequest,
+    SessionForkRequest,
+    SessionImportRequest,
     SessionRenameRequest,
     SessionResumeRequest,
+    SessionRewindRequest,
     SessionService,
     SessionUpdateRequest,
 )
@@ -135,12 +138,144 @@ def test_rename_rejects_existing_target(tmp_path, monkeypatch: pytest.MonkeyPatc
     service = _service(tmp_path, monkeypatch)
     service.create(SessionCreateRequest(session_id="old", provider="openai", model="gpt-5"))
     service.create(SessionCreateRequest(session_id="new", provider="openai", model="gpt-5"))
+    set_mode("old", SessionMode.PLAN)
+    write_plan("old", "# rename plan\n")
 
     with pytest.raises(ServiceConflictError):
         service.rename(SessionRenameRequest(session_id="old", new_session_id="new"))
 
     renamed = service.rename(SessionRenameRequest(session_id="old", new_session_id="renamed"))
     assert renamed.session_id == "renamed"
+    assert renamed.mode == "plan"
+    assert get_mode("old") == "agent"
+    assert get_mode("renamed") == "plan"
+    assert read_plan("old") is None
+    assert read_plan("renamed") == "# rename plan\n"
+
+
+def test_import_session_round_trips_export_and_rejects_conflicts(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    service.create(SessionCreateRequest(session_id="import-source", provider="openai", model="gpt-5"))
+    service.persist_run_result(
+        "import-source",
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+    exported = service.export(SessionExportRequest("import-source"))
+
+    imported = service.import_session(
+        SessionImportRequest(data=exported.data, new_session_id="import-copy")
+    )
+
+    assert imported.source_session_id == "import-source"
+    assert imported.overwritten is False
+    assert imported.info.session_id == "import-copy"
+    assert imported.info.summary == "hello"
+    assert imported.messages[0].text == "hello"
+    assert service.current() is not None
+    assert service.current().session_id == "import-copy"
+    saved = load_session("import-copy", base=tmp_path / "sessions")
+    assert saved is not None
+    assert saved.turn_count == 1
+
+    with pytest.raises(ServiceConflictError):
+        service.import_session(SessionImportRequest(data=exported.data, new_session_id="import-copy"))
+
+    overwritten = service.import_session(
+        SessionImportRequest(data={"session_id": "ignored", "data": exported.data}, new_session_id="import-copy", overwrite=True)
+    )
+    assert overwritten.overwritten is True
+    assert overwritten.info.session_id == "import-copy"
+
+
+def test_import_session_requires_valid_payload_and_provider_model(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+
+    with pytest.raises(ServiceValidationError):
+        service.import_session(SessionImportRequest(data={"session_id": "missing-model"}))
+
+    imported = service.import_session(
+        SessionImportRequest(data={"provider": "openai", "model": "gpt-5", "messages": []})
+    )
+    assert imported.info.session_id
+    assert imported.info.provider == "openai"
+
+
+def test_fork_copies_transcript_prefix_to_new_active_session(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="source", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "second"},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.fork(SessionForkRequest("source", message_index=1, new_session_id="forked"))
+
+    assert result.source_session_id == "source"
+    assert result.info.session_id == "forked"
+    assert result.messages_copied == 2
+    assert result.messages[0].text == "first"
+    assert result.messages[1].text == "answer"
+    assert service.current() is not None
+    assert service.current().session_id == "forked"
+    saved = load_session("forked", base=tmp_path / "sessions")
+    assert saved is not None
+    assert saved.provider == "openai"
+    assert saved.model == "gpt-5"
+    assert [message["content"] for message in saved.messages] == ["first", "answer"]
+
+
+def test_rewind_truncates_transcript_and_recomputes_summary(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="rewind-source", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+    record.first_user_message = "old summary"
+    record.turn_count = 2
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.rewind(SessionRewindRequest("rewind-source", message_index=1))
+
+    assert result.session_id == "rewind-source"
+    assert result.rewound_to_index == 1
+    assert result.messages_kept == 2
+    assert result.messages_removed == 2
+    assert result.info.message_count == 2
+    assert result.info.summary == "first"
+    assert [message.text for message in result.messages] == ["first", "answer"]
+    assert service.current() is not None
+    assert service.current().session_id == "rewind-source"
+    saved = load_session("rewind-source", base=tmp_path / "sessions")
+    assert saved is not None
+    assert saved.turn_count == 1
+    assert saved.first_user_message == "first"
+    assert [message["content"] for message in saved.messages] == ["first", "answer"]
+
+
+def test_rewind_to_before_first_message_clears_transcript(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="rewind-empty", provider="openai", model="gpt-5")
+    record.messages = [{"role": "user", "content": "first"}]
+    record.first_user_message = "first"
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.rewind(SessionRewindRequest("rewind-empty", message_index=-1))
+
+    assert result.messages_kept == 0
+    assert result.messages_removed == 1
+    assert result.info.summary is None
+    saved = load_session("rewind-empty", base=tmp_path / "sessions")
+    assert saved is not None
+    assert saved.messages == []
+    assert saved.first_user_message == ""
 
 
 def test_transcript_normalizes_messages_and_malformed_tool_json(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

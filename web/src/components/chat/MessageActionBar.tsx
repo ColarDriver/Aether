@@ -1,8 +1,8 @@
-import { Edit3, Quote, RotateCcw } from 'lucide-react'
+import { Edit3, GitBranch, Quote, RotateCcw, Undo2 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { CopyButton } from '../shared/CopyButton'
 
-export type MessageActionKind = 'quote' | 'edit' | 'retry'
+export type MessageActionKind = 'quote' | 'edit' | 'retry' | 'fork' | 'rewind'
 
 export type MessageAction = {
   kind: MessageActionKind
@@ -22,6 +22,8 @@ const ACTION_ICONS: Record<MessageActionKind, ComponentType<{ size?: number; 'ar
   quote: Quote,
   edit: Edit3,
   retry: RotateCcw,
+  fork: GitBranch,
+  rewind: Undo2,
 }
 
 export function MessageActionBar({ copyText, copyLabel, align = 'start', actions = [] }: Props) {
@@ -64,5 +66,7 @@ export function MessageActionBar({ copyText, copyLabel, align = 'start', actions
 function actionLabel(kind: MessageActionKind): string {
   if (kind === 'quote') return 'Quote'
   if (kind === 'edit') return 'Edit'
+  if (kind === 'fork') return 'Fork'
+  if (kind === 'rewind') return 'Rewind'
   return 'Retry'
 }

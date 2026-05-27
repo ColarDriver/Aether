@@ -72,7 +72,8 @@ class AnthropicMessagesTransport:
 
         for msg in messages:
             role = str(msg.get("role", "")).strip().lower()
-            content = self.normalize_content(msg.get("content"))
+            raw_content = msg.get("content")
+            content = self.normalize_content(raw_content)
 
             if role == "system":
                 if content:
@@ -80,7 +81,7 @@ class AnthropicMessagesTransport:
                 continue
 
             if role == "user":
-                converted.append({"role": "user", "content": content})
+                converted.append({"role": "user", "content": self.convert_user_content(raw_content)})
                 continue
 
             if role == "assistant":
@@ -122,6 +123,68 @@ class AnthropicMessagesTransport:
                 converted.append({"role": "user", "content": f"[{role}] {content}"})
 
         return system_blocks, converted
+
+    def convert_user_content(self, content: Any) -> str | list[dict[str, Any]]:
+        if not isinstance(content, list):
+            return self.normalize_content(content)
+        parts: list[dict[str, Any]] = []
+        has_image = False
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append({"type": "text", "text": item})
+                continue
+            if not isinstance(item, dict):
+                text = self.normalize_content(item)
+                if text:
+                    parts.append({"type": "text", "text": text})
+                continue
+            image_block = self._anthropic_image_part(item)
+            if image_block is not None:
+                has_image = True
+                parts.append(image_block)
+                continue
+            image_url = self._image_url_from_part(item)
+            if image_url:
+                text = f"Attached image URL: {image_url}"
+                parts.append({"type": "text", "text": text})
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append({"type": "text", "text": text})
+        if has_image:
+            return parts or ""
+        return "\n".join(str(part.get("text") or "") for part in parts if part.get("text"))
+
+    def _anthropic_image_part(self, part: dict[str, Any]) -> dict[str, Any] | None:
+        image_url = self._image_url_from_part(part)
+        parsed = _parse_data_image_url(image_url)
+        if parsed is None:
+            return None
+        media_type, data = parsed
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+
+    @staticmethod
+    def _image_url_from_part(part: dict[str, Any]) -> str:
+        part_type = str(part.get("type") or "")
+        if part_type not in {"image_url", "input_image"}:
+            return ""
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            return image_url.strip()
+        if isinstance(image_url, dict):
+            url = image_url.get("url")
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+        url = part.get("url")
+        return url.strip() if isinstance(url, str) and url.strip() else ""
 
     def normalize_content(self, content: Any) -> str:
         if content is None:
@@ -321,6 +384,16 @@ def as_dict(value: Any) -> dict[str, Any]:
             return dumped
 
     return {}
+
+
+def _parse_data_image_url(url: str) -> tuple[str, str] | None:
+    if not url.startswith("data:image/") or ";base64," not in url:
+        return None
+    header, data = url.split(",", 1)
+    media_type = header[5:].split(";", 1)[0].strip()
+    if not media_type.startswith("image/") or not data.strip():
+        return None
+    return media_type, data.strip()
 
 
 def web_search_sources_from_citations(raw: Any) -> list[dict[str, str]]:

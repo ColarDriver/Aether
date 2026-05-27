@@ -17,6 +17,7 @@ import {
   ToolResultBlock,
   UserMessageBlock,
 } from './blocks'
+import type { CurrentTurnCheckpoint, CurrentTurnFileChangeAction, CurrentTurnVerification } from './blocks/CurrentTurnChangeCard'
 
 type Props = {
   blocks: ChatBlock[]
@@ -24,13 +25,18 @@ type Props = {
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
   onOpenTask?: (taskId: string) => void
+  onAcceptFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onRevertFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onRetryAssistantMessage?: (block: AssistantMessage) => void
   onRetryUserMessage?: (block: UserMessage) => void
   onEditUserMessage?: (block: UserMessage) => void
+  onForkMessage?: (block: UserMessage | AssistantMessage) => void
+  onRewindMessage?: (block: UserMessage | AssistantMessage) => void
   onQuoteUserMessage?: (block: UserMessage) => void
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }
 
-export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onRetryUserMessage, onEditUserMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
+export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
   if (blocks.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
@@ -48,19 +54,166 @@ export function ChatTimeline({ blocks, messageActionsDisabled = false, onRespond
               onRespondPermission={onRespondPermission}
               onRespondApproval={onRespondApproval}
               onOpenTask={onOpenTask}
+              onRetryAssistantMessage={onRetryAssistantMessage}
               onRetryUserMessage={onRetryUserMessage}
               onEditUserMessage={onEditUserMessage}
+              onForkMessage={onForkMessage}
+              onRewindMessage={onRewindMessage}
               onQuoteUserMessage={onQuoteUserMessage}
               onQuoteAssistantMessage={onQuoteAssistantMessage}
               results={model.toolResultsByCallId}
               diffs={model.diffsByToolCallId}
             />
           ))}
-          <CurrentTurnChangeCard diffs={diffsForTurn(turn, model.diffsByToolCallId)} diagnostics={diagnosticsForTurn(turn)} />
+          <CurrentTurnChangeCard
+            diffs={diffsForTurn(turn, model.diffsByToolCallId)}
+            diagnostics={diagnosticsForTurn(turn)}
+            verifications={verificationsForTurn(turn, model.toolResultsByCallId)}
+            checkpoint={workspaceCheckpointForTurn(turn)}
+            onAcceptFile={onAcceptFileChange}
+            onRevertFile={onRevertFileChange}
+          />
         </section>
       ))}
     </div>
   )
+}
+
+function verificationsForTurn(turn: ChatTurn, results: Map<string, ToolResultChatBlock>): CurrentTurnVerification[] {
+  const verifications: CurrentTurnVerification[] = []
+  const seen = new Set<string>()
+  for (const item of turn.items) {
+    if (item.kind === 'tool_group') {
+      for (const toolCall of item.toolCalls) {
+        const result = results.get(toolCall.toolCallId)
+        const verification = verificationFromTool(toolCall.toolName, toolCall.toolCallId, toolCall.arguments, result)
+        if (!verification || seen.has(verification.id)) continue
+        seen.add(verification.id)
+        verifications.push(verification)
+      }
+      continue
+    }
+    if (item.block.kind === 'tool_result') {
+      const verification = verificationFromTool(item.block.toolName || 'tool', item.block.toolCallId, {}, item.block)
+      if (!verification || seen.has(verification.id)) continue
+      seen.add(verification.id)
+      verifications.push(verification)
+    }
+  }
+  return verifications
+}
+
+function verificationFromTool(
+  toolName: string,
+  toolCallId: string,
+  args: Record<string, unknown>,
+  result?: ToolResultChatBlock,
+): CurrentTurnVerification | null {
+  if (!result) return null
+  const normalized = toolName.toLowerCase()
+  const command = (
+    stringValue(args.command)
+    || stringValue(args.cmd)
+    || stringValue(args.script)
+    || stringValue(result.metadata.command)
+    || stringValue(result.metadata.cmd)
+    || stringValue(result.metadata.script)
+  )
+  if (isTerminalTool(normalized) && !isVerificationCommand(command)) return null
+  if (!isTerminalTool(normalized) && !isLspTool(normalized)) return null
+  const exitCode = numberValue(result.metadata.exit_code) ?? numberValue(result.metadata.exitCode)
+  const durationMs = numberValue(result.metadata.duration_ms) ?? numberValue(result.metadata.durationMs)
+  const status = result.isError || (exitCode != null && exitCode !== 0) ? 'failed' : 'passed'
+  return {
+    id: 'verification-' + toolCallId,
+    toolName,
+    label: verificationLabel(normalized, command),
+    command: command || null,
+    status,
+    exitCode,
+    durationMs,
+    summary: verificationSummary(result.content),
+  }
+}
+
+function isTerminalTool(toolName: string): boolean {
+  return ['bash', 'shell', 'exec', 'exec_command', 'terminal', 'run_shell'].includes(toolName)
+}
+
+function isLspTool(toolName: string): boolean {
+  return ['lsp', 'language_server', 'diagnostics'].includes(toolName)
+}
+
+function isVerificationCommand(command: string): boolean {
+  if (!command) return false
+  return /\b(test|pytest|vitest|jest|mocha|ctest|typecheck|lint|build|tsc|mypy|ruff|eslint|prettier|biome)\b/i.test(command)
+    || /\b(go test|go vet|cargo test|cargo check|uv run|npm run|pnpm|yarn)\b/i.test(command)
+}
+
+function verificationLabel(toolName: string, command: string): string {
+  if (isLspTool(toolName)) return 'Language diagnostics'
+  if (!command) return 'Command check'
+  if (/\b(typecheck|tsc)\b/i.test(command)) return 'Typecheck'
+  if (/\b(lint|eslint|ruff|biome)\b/i.test(command)) return 'Lint'
+  if (/\b(build)\b/i.test(command)) return 'Build'
+  if (/\b(test|pytest|vitest|jest|mocha|ctest|go test|cargo test)\b/i.test(command)) return 'Tests'
+  return 'Command check'
+}
+
+function verificationSummary(content: string): string | null {
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const line = lines.find((item) => !item.startsWith('[exit ') && !item.startsWith('[stderr]')) || lines[0]
+  if (!line) return null
+  return line.length > 180 ? line.slice(0, 177) + '...' : line
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function workspaceCheckpointForTurn(turn: ChatTurn): CurrentTurnCheckpoint | null {
+  for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+    const item = turn.items[index]
+    if (!item || item.kind !== 'block') continue
+    if (item.block.kind !== 'assistant_message' && item.block.kind !== 'tool_result') continue
+    const checkpoint = checkpointFromMetadata(item.block.metadata)
+    if (checkpoint) return checkpoint
+  }
+  return null
+}
+
+function checkpointFromMetadata(metadata: Record<string, unknown> | undefined): CurrentTurnCheckpoint | null {
+  const direct = recordFromUnknown(metadata?.workspace_checkpoint)
+  const turn = recordFromUnknown(metadata?.turn)
+  const nested = recordFromUnknown(turn.workspace_checkpoint)
+  const checkpoint = Object.keys(direct).length > 0 ? direct : nested
+  const checkpointId = stringValue(checkpoint.checkpoint_id) || stringValue(checkpoint.checkpointId)
+  if (!checkpointId) return null
+  return {
+    checkpointId,
+    label: stringValue(checkpoint.label) || null,
+    files: checkpointFiles(checkpoint.files),
+  }
+}
+
+function checkpointFiles(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => recordFromUnknown(item).path)
+    .filter((path): path is string => typeof path === 'string' && path.length > 0)
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
 function diagnosticsForTurn(turn: ChatTurn): DiagnosticsChatBlock[] {
@@ -94,8 +247,11 @@ function ChatRenderItemView({
   onRespondPermission,
   onRespondApproval,
   onOpenTask,
+  onRetryAssistantMessage,
   onRetryUserMessage,
   onEditUserMessage,
+  onForkMessage,
+  onRewindMessage,
   onQuoteUserMessage,
   onQuoteAssistantMessage,
   results,
@@ -106,8 +262,11 @@ function ChatRenderItemView({
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
   onOpenTask?: (taskId: string) => void
+  onRetryAssistantMessage?: (block: AssistantMessage) => void
   onRetryUserMessage?: (block: UserMessage) => void
   onEditUserMessage?: (block: UserMessage) => void
+  onForkMessage?: (block: UserMessage | AssistantMessage) => void
+  onRewindMessage?: (block: UserMessage | AssistantMessage) => void
   onQuoteUserMessage?: (block: UserMessage) => void
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
   results: Map<string, ToolResultChatBlock>
@@ -129,8 +288,11 @@ function ChatRenderItemView({
       onRespondPermission={onRespondPermission}
       onRespondApproval={onRespondApproval}
       onOpenTask={onOpenTask}
+      onRetryAssistantMessage={onRetryAssistantMessage}
       onRetryUserMessage={onRetryUserMessage}
       onEditUserMessage={onEditUserMessage}
+      onForkMessage={onForkMessage}
+      onRewindMessage={onRewindMessage}
       onQuoteUserMessage={onQuoteUserMessage}
       onQuoteAssistantMessage={onQuoteAssistantMessage}
     />
@@ -169,8 +331,11 @@ function ChatBlockView({
   onRespondPermission,
   onRespondApproval,
   onOpenTask,
+  onRetryAssistantMessage,
   onRetryUserMessage,
   onEditUserMessage,
+  onForkMessage,
+  onRewindMessage,
   onQuoteUserMessage,
   onQuoteAssistantMessage,
 }: {
@@ -179,8 +344,11 @@ function ChatBlockView({
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
   onOpenTask?: (taskId: string) => void
+  onRetryAssistantMessage?: (block: AssistantMessage) => void
   onRetryUserMessage?: (block: UserMessage) => void
   onEditUserMessage?: (block: UserMessage) => void
+  onForkMessage?: (block: UserMessage | AssistantMessage) => void
+  onRewindMessage?: (block: UserMessage | AssistantMessage) => void
   onQuoteUserMessage?: (block: UserMessage) => void
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }) {
@@ -191,12 +359,14 @@ function ChatBlockView({
           block={block}
           actionsDisabled={messageActionsDisabled}
           onEdit={onEditUserMessage}
+          onFork={onForkMessage}
           onQuote={onQuoteUserMessage}
+          onRewind={onRewindMessage}
           onRetry={onRetryUserMessage}
         />
       )
     case 'assistant_message':
-      return <AssistantMessageBlock block={block} actionsDisabled={messageActionsDisabled} onQuote={onQuoteAssistantMessage} />
+      return <AssistantMessageBlock block={block} actionsDisabled={messageActionsDisabled} onFork={onForkMessage} onQuote={onQuoteAssistantMessage} onRetry={onRetryAssistantMessage} onRewind={onRewindMessage} />
     case 'thinking':
       return <ThinkingBlock block={block} />
     case 'tool_result':

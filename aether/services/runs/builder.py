@@ -13,6 +13,7 @@ from aether.cli.sessions import SessionRecord
 from aether.config.schema import EngineConfig, ModelCallConfig
 from aether.models.provider.base import ModelProvider
 from aether.runtime.core.contracts import EngineRequest
+from aether.runtime.session.session_state import get_cwd
 from aether.runtime.tasks import TaskStore
 from aether.runtime.tools.skill_catalog import build_default_skill_catalog
 from aether.services.runs.contracts import AgentRunOptions, AgentRunRequest
@@ -110,13 +111,18 @@ class RunDependencyBuilder:
         user_message_metadata: dict[str, Any] = {}
         attachments = list(request.attachments)
         attachment_context = _render_attachment_context(attachments)
+        native_attachment_parts = _native_attachment_parts(attachments)
         if attachments:
             user_message_metadata["displayAttachments"] = [
                 _display_attachment(attachment) for attachment in attachments
             ]
-        metadata: dict[str, Any] = {"run_id": run_id, "_loop_state_callback": loop_state_callback}
+        metadata: dict[str, Any] = dict(request.metadata or {})
+        metadata.update({"run_id": run_id, "_loop_state_callback": loop_state_callback})
         if attachment_context:
             metadata["_llm_attachment_context"] = attachment_context
+        if native_attachment_parts:
+            metadata["_llm_native_attachment_parts"] = native_attachment_parts
+        cwd = _run_cwd(request, record)
         return EngineRequest(
             session_id=record.session_id,
             user_message=request.user_message,
@@ -137,6 +143,7 @@ class RunDependencyBuilder:
             approval_prompter=request.approval_prompter,
             tool_permission_prompter=request.tool_permission_prompter,
             interrupt_signal=handle.interrupt_signal,
+            cwd=cwd,
         )
 
     def build_engine(
@@ -163,6 +170,15 @@ class RunDependencyBuilder:
             subagent_manager=subagent_manager,
             task_store=task_store,
         )
+
+
+def _run_cwd(request: AgentRunRequest, record: SessionRecord) -> str | None:
+    if isinstance(request.cwd, str) and request.cwd.strip():
+        return request.cwd.strip()
+    tracked = get_cwd(record.session_id)
+    if isinstance(tracked, str) and tracked.strip():
+        return tracked
+    return None
 
 
 def _render_attachment_context(attachments: list[dict[str, Any]]) -> str:
@@ -279,6 +295,50 @@ def _truncate_item(value: str, remaining: int) -> str:
 
 def _display_attachment(attachment: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in attachment.items() if not str(key).startswith("_llm_")}
+
+
+def _native_attachment_parts(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for attachment in attachments:
+        if str(attachment.get("type") or "").lower() != "image":
+            continue
+        url = _attachment_image_url(attachment)
+        if not url:
+            continue
+        label = _attachment_label(attachment)
+        if label:
+            parts.append({"type": "text", "text": f"Attached image: {label}"})
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": url},
+                "mime_type": _attachment_mime_type(attachment),
+                "name": label,
+            }
+        )
+    return parts
+
+
+def _attachment_image_url(attachment: dict[str, Any]) -> str:
+    data = attachment.get("data")
+    if isinstance(data, str) and data.strip():
+        value = data.strip()
+        if value.startswith("data:"):
+            return value
+        mime_type = _attachment_mime_type(attachment)
+        if mime_type.startswith("image/"):
+            return f"data:{mime_type};base64,{value}"
+        return value
+    url = attachment.get("url")
+    return url.strip() if isinstance(url, str) and url.strip() else ""
+
+
+def _attachment_mime_type(attachment: dict[str, Any]) -> str:
+    for key in ("mimeType", "mime_type", "media_type"):
+        value = attachment.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "image/png"
 
 
 __all__ = [

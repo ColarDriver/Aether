@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import uuid
 from typing import Any, Callable, cast
 
@@ -19,16 +20,19 @@ from aether.services.runs import (
     RunEventSink,
 )
 from aether.web.security import websocket_has_valid_session_token
+from aether.web.serializers import to_jsonable
 from aether.web.ws.events import run_event_to_frame
 from aether.web.ws.prompts import (
     WebApprovalPrompter,
     WebPromptBroker,
     WebToolPermissionPrompter,
 )
+from aether.runtime.session.session_state import get_cwd
 
 router = APIRouter()
 
 FrameSender = Callable[[dict[str, Any]], None]
+_TASK_SNAPSHOT_INTERVAL_SECONDS = 2.0
 
 
 class _SocketEventSink:
@@ -184,18 +188,34 @@ async def _start_run(
         await outbound.send_async(_error_frame("invalid_run_start", "run.start requires session_id and user_message or attachments."))
         return
     run_id = str(payload.get("run_id") or client_id or uuid.uuid4())
+    raw_options = payload.get("options")
+    option_payload = cast(dict[str, Any], raw_options) if isinstance(raw_options, dict) else {}
     options = _run_options(payload.get("options"))
+    cwd = _run_cwd(websocket, session_id=session_id, payload=payload)
+    run_metadata = _pre_run_metadata(websocket, run_id) if option_payload.get("workspace_checkpoint") is True else {}
+    if cwd:
+        run_metadata.setdefault("workspace_root", cwd)
+    accepted_payload: dict[str, Any] = {"session_id": session_id, "run_id": run_id}
+    if cwd:
+        accepted_payload["cwd"] = cwd
+        accepted_payload["workspace_root"] = cwd
+    if "workspace_checkpoint" in run_metadata:
+        accepted_payload["workspace_checkpoint"] = run_metadata["workspace_checkpoint"]
+    if "workspace_checkpoint_error" in run_metadata:
+        accepted_payload["workspace_checkpoint_error"] = run_metadata["workspace_checkpoint_error"]
     await outbound.send_async(
         {
             "type": "run.accepted",
             "id": client_id,
-            "payload": {"session_id": session_id, "run_id": run_id},
+            "payload": accepted_payload,
         }
     )
     request = AgentRunRequest(
         session_id=session_id,
         user_message=user_message,
         attachments=attachments,
+        cwd=cwd,
+        metadata=run_metadata,
         run_id=run_id,
         options=options,
         approval_prompter=WebApprovalPrompter(
@@ -216,6 +236,7 @@ async def _start_run(
             sink,
             websocket.app.state.aether_run_socket_hub.broadcast,
             run_tasks,
+            websocket.app.state.aether_services.tasks,
         ),
         name=f"aether-web-run-{run_id}",
         daemon=True,
@@ -224,17 +245,100 @@ async def _start_run(
     thread.start()
 
 
+def _run_cwd(websocket: WebSocket, *, session_id: str, payload: dict[str, Any]) -> str | None:
+    explicit = _optional_str(payload, "cwd")
+    if explicit:
+        return explicit
+    tracked = get_cwd(session_id)
+    if tracked:
+        return tracked
+    workspace = getattr(websocket.app.state.aether_services, "workspace", None)
+    root = getattr(workspace, "root", None)
+    return str(root) if root is not None else None
+
+
+def _pre_run_metadata(websocket: WebSocket, run_id: str) -> dict[str, Any]:
+    workspace = getattr(websocket.app.state.aether_services, "workspace", None)
+    if workspace is None:
+        return {}
+    label = "Before web run " + run_id[:8]
+    try:
+        checkpoint = workspace.create_checkpoint(label=label)
+    except Exception as exc:  # noqa: BLE001 - checkpointing should not block chat
+        return {
+            "workspace_checkpoint_error": {
+                "message": str(exc) or type(exc).__name__,
+                "type": type(exc).__name__,
+            }
+        }
+    payload = to_jsonable(checkpoint)
+    return {"workspace_checkpoint": payload if isinstance(payload, dict) else {"checkpoint_id": checkpoint.checkpoint_id, "label": checkpoint.label}}
+
+
 def _run_start_thread(
     service: Any,
     request: AgentRunRequest,
     sink: RunEventSink,
     send_frame: FrameSender,
     run_tasks: set[Any],
+    task_service: Any,
 ) -> None:
+    stop_snapshots = threading.Event()
+    snapshot_thread = threading.Thread(
+        target=_task_snapshot_loop,
+        args=(request.session_id, task_service, send_frame, stop_snapshots),
+        name=f"aether-web-task-snapshot-{request.run_id}",
+        daemon=True,
+    )
+    snapshot_thread.start()
     try:
         _run_start_sync(service, request, sink, send_frame)
     finally:
+        stop_snapshots.set()
+        snapshot_thread.join(timeout=0.5)
+        _send_task_snapshot(request.session_id, task_service, send_frame)
         run_tasks.discard(threading.current_thread())
+
+
+def _task_snapshot_loop(
+    session_id: str,
+    task_service: Any,
+    send_frame: FrameSender,
+    stop_event: threading.Event,
+) -> None:
+    while not stop_event.is_set():
+        _send_task_snapshot(session_id, task_service, send_frame)
+        stop_event.wait(_TASK_SNAPSHOT_INTERVAL_SECONDS)
+
+
+def _send_task_snapshot(
+    session_id: str,
+    task_service: Any,
+    send_frame: FrameSender,
+) -> None:
+    try:
+        result = task_service.list_tasks(session_id=session_id, limit=100)
+    except Exception:  # noqa: BLE001 - task observability must not break runs
+        return
+
+    payload = to_jsonable(result)
+    if not isinstance(payload, dict):
+        return
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) == 0:
+        return
+    send_frame(
+        {
+            "type": "tasks.snapshot",
+            "payload": {
+                "session_id": session_id,
+                "tasks": tasks,
+                "active_count": payload.get("active_count", 0),
+                "total_count": payload.get("total_count", len(tasks)),
+                "timestamp": time.time(),
+            },
+        }
+    )
 
 
 def _run_start_sync(
@@ -246,13 +350,13 @@ def _run_start_sync(
     try:
         result = service.start(request, sink=sink)
     except ServiceConflictError as exc:
-        send_frame(_error_frame(exc.code, exc.message, details=exc.details))
+        send_frame(_error_frame(exc.code, exc.message, details=_run_error_details(request, exc.details)))
     except ServiceError as exc:
-        send_frame(_error_frame(exc.code, exc.message, details=exc.details))
+        send_frame(_error_frame(exc.code, exc.message, details=_run_error_details(request, exc.details)))
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
-        send_frame(_error_frame("run_failed", str(exc) or type(exc).__name__))
+        send_frame(_error_frame("run_failed", str(exc) or type(exc).__name__, details=_run_error_details(request)))
     else:
         send_frame(
             {
@@ -267,6 +371,13 @@ def _run_start_sync(
                 },
             }
         )
+
+
+def _run_error_details(request: AgentRunRequest, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(details or {})
+    payload.setdefault("session_id", request.session_id)
+    payload.setdefault("run_id", request.run_id)
+    return payload
 
 
 async def _cancel_run(
@@ -310,11 +421,11 @@ async def _resolve_prompt(
         await outbound.send_async(_error_frame("invalid_prompt_response", "prompt response requires prompt_id."))
         return
     resolution = _prompt_resolution_payload(payload)
-    resolved = broker.resolve(prompt_id, resolution)
+    result = broker.resolve_prompt(prompt_id, resolution)
     await outbound.send_async(
         {
-            "type": "prompt.resolved" if resolved else "prompt.missing",
-            "payload": {"prompt_id": prompt_id, "result": resolution},
+            "type": _prompt_response_type(result.status),
+            "payload": _prompt_response_payload(prompt_id, resolution, result.status, result.reason),
         }
     )
 
@@ -437,6 +548,30 @@ def _prompt_resolution_payload(payload: dict[str, Any]) -> dict[str, Any]:
         merged = dict(payload)
         merged.update(result)
         return merged
+    return payload
+
+
+def _prompt_response_type(status: str) -> str:
+    if status == "resolved":
+        return "prompt.resolved"
+    if status in {"stale", "expired", "disconnected"}:
+        return "prompt." + status
+    return "prompt.missing"
+
+
+def _prompt_response_payload(
+    prompt_id: str,
+    resolution: dict[str, Any],
+    status: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "prompt_id": prompt_id,
+        "result": resolution,
+        "status": status,
+    }
+    if reason:
+        payload["reason"] = reason
     return payload
 
 

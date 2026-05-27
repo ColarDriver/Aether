@@ -1,7 +1,8 @@
 import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../../api/client'
 import type { SessionInfo, TaskSummary } from '../../api/types'
-import type { ChatBlock, RunStatusSnapshot, TokenUsage } from '../../chat-rendering'
+import type { AssistantMessageBlock as AssistantMessage, ChatBlock, RunStatusSnapshot, TokenUsage, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { tokenUsageFromRecord, tokenUsageTotal } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -16,12 +17,15 @@ import { PermissionDialog } from './PermissionDialog'
 import { isTaskTerminal, SessionTaskBar } from './SessionTaskBar'
 import { executeWebSlashCommand } from './slashExecute'
 import { TaskDetailDialog } from './TaskDetailDialog'
+import type { CurrentTurnFileChangeAction } from './blocks/CurrentTurnChangeCard'
 
 type Props = {
   session: SessionInfo | null
+  workspaceRootVersion?: number
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
+const WEB_VERBOSE_STORAGE_KEY = 'aether-web-verbose-mode'
 const EMPTY_CHAT_BLOCKS: ChatBlock[] = []
 const EMPTY_TASKS: TaskSummary[] = []
 
@@ -30,7 +34,7 @@ export type ScrollSnapshot = {
   atBottom: boolean
 }
 
-export function ChatView({ session }: Props) {
+export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
   const sessionId = session?.session_id ?? null
   const loadTranscript = useChatStore((state) => state.loadTranscript)
   const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? EMPTY_CHAT_BLOCKS : EMPTY_CHAT_BLOCKS))
@@ -38,6 +42,7 @@ export function ChatView({ session }: Props) {
   const statusByRun = useChatStore((state) => state.statusByRun)
   const startRun = useChatStore((state) => state.startRun)
   const cancelRun = useChatStore((state) => state.cancelRun)
+  const replaceTranscript = useChatStore((state) => state.replaceTranscript)
   const appendLocalNotice = useChatStore((state) => state.appendLocalNotice)
   const appendLocalError = useChatStore((state) => state.appendLocalError)
   const clearSession = useChatStore((state) => state.clearSession)
@@ -51,8 +56,11 @@ export function ChatView({ session }: Props) {
   const setActiveView = useAppStore((state) => state.setActiveView)
   const createSession = useSessionStore((state) => state.createSession)
   const resumeSession = useSessionStore((state) => state.resumeSession)
+  const forkSession = useSessionStore((state) => state.forkSession)
+  const rewindSession = useSessionStore((state) => state.rewindSession)
   const updateSession = useSessionStore((state) => state.updateSession)
   const setSessionMode = useSessionStore((state) => state.setSessionMode)
+  const loadSessions = useSessionStore((state) => state.loadSessions)
   const currentProvider = useProviderStore((state) => state.current)
   const providers = useProviderStore((state) => state.providers)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -62,6 +70,7 @@ export function ChatView({ session }: Props) {
   const lastSessionIdRef = useRef<string | null>(null)
   const scrollSnapshotsRef = useRef<Record<string, ScrollSnapshot>>({})
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [verboseMode, setVerboseModeState] = useState(() => readBooleanSetting(WEB_VERBOSE_STORAGE_KEY, false))
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [composerDraftPatch, setComposerDraftPatch] = useState<ComposerDraftPatch | null>(null)
   const composerDraftPatchIdRef = useRef(0)
@@ -146,6 +155,7 @@ export function ChatView({ session }: Props) {
   const activeUsage = activeRunId ? tokenUsageByRun[activeRunId] ?? activeStatus?.tokens : undefined
   const latestSessionUsage = session ? latestTokenUsageForSession(session.session_id, blocks, statusByRun) : undefined
   const usage = activeRunId ? activeUsage : latestSessionUsage
+  const latestRunMetadata = session ? latestRunMetadataForSession(session.session_id, blocks) : undefined
   const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
   const fallbackModel = currentProvider?.model || 'gpt-5.4'
 
@@ -154,9 +164,110 @@ export function ChatView({ session }: Props) {
     setComposerDraftPatch({ id: composerDraftPatchIdRef.current, mode, text, ...(attachments ? { attachments } : {}) })
   }
 
+  const setVerboseMode = (enabled: boolean) => {
+    setVerboseModeState(enabled)
+    writeBooleanSetting(WEB_VERBOSE_STORAGE_KEY, enabled)
+  }
+
   const quoteMessage = (role: 'user' | 'assistant', content: string) => {
     const quoted = formatQuotedDraft(role, content)
     if (quoted) patchComposerDraft('append', quoted)
+  }
+
+  const forkMessage = (block: UserMessage | AssistantMessage) => {
+    if (!session || typeof block.messageIndex !== 'number') {
+      if (session) appendLocalError(session.session_id, 'This message cannot be forked until it is persisted in the transcript.')
+      return
+    }
+    void forkSession(session.session_id, block.messageIndex)
+      .then((forked) => {
+        setActiveView('chat')
+        void loadTranscript(forked.session_id)
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      })
+  }
+
+  const rewindMessage = (block: UserMessage | AssistantMessage) => {
+    if (!session || typeof block.messageIndex !== 'number') {
+      if (session) appendLocalError(session.session_id, 'This message cannot be rewound until it is persisted in the transcript.')
+      return
+    }
+    void rewindSession(session.session_id, block.messageIndex)
+      .then((result) => {
+        replaceTranscript(result.session_id, result.messages)
+        appendLocalNotice(result.session_id, 'Rewound session to message ' + (result.rewound_to_index + 1).toLocaleString() + '.')
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      })
+  }
+
+  const retryUserMessage = (block: UserMessage) => {
+    if (!session) return
+    if (block.source !== 'transcript' || typeof block.messageIndex !== 'number') {
+      startRun(session.session_id, block.content, block.attachments)
+      return
+    }
+    void rewindSession(session.session_id, block.messageIndex - 1)
+      .then((result) => {
+        replaceTranscript(result.session_id, result.messages)
+        startRun(session.session_id, block.content, block.attachments)
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      })
+  }
+
+  const retryAssistantMessage = (block: AssistantMessage) => {
+    if (!session || typeof block.messageIndex !== 'number') {
+      if (session) appendLocalError(session.session_id, 'This reply cannot be retried until it is persisted in the transcript.')
+      return
+    }
+    const prompt = previousUserBlockForAssistant(blocks, block)
+    if (!prompt || typeof prompt.messageIndex !== 'number') {
+      appendLocalError(session.session_id, 'Could not find the prompt that produced this reply.')
+      return
+    }
+    void rewindSession(session.session_id, prompt.messageIndex - 1)
+      .then((result) => {
+        replaceTranscript(result.session_id, result.messages)
+        startRun(session.session_id, prompt.content, prompt.attachments)
+      })
+      .catch((error) => {
+        appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      })
+  }
+
+  const revertFileChange = async (change: CurrentTurnFileChangeAction) => {
+    if (!session) return
+    if (change.checkpointId) {
+      const result = await api.rejectWorkspaceChanges({ paths: [change.path], checkpoint_id: change.checkpointId })
+      appendLocalNotice(session.session_id, result.message || 'Rejected `' + change.path + '` from checkpoint `' + change.checkpointId + '`.')
+      return
+    }
+    if (change.oldText == null) return
+    const result = await api.rejectWorkspaceChanges({ paths: [change.path] })
+    appendLocalNotice(session.session_id, result.message || 'Rejected `' + change.path + '`.')
+  }
+
+  const acceptFileChange = async (change: CurrentTurnFileChangeAction) => {
+    if (!session) return
+    const result = await api.acceptWorkspaceChanges([change.path])
+    appendLocalNotice(session.session_id, result.message || 'Accepted `' + change.path + '`.')
+  }
+
+  const stopTaskFromBar = async (task: TaskSummary) => {
+    if (!session) return
+    try {
+      const result = await api.stopTask(task.task_id)
+      appendLocalNotice(session.session_id, result.message)
+      await loadSessionTasks(session.session_id)
+    } catch (error) {
+      appendLocalError(session.session_id, error instanceof Error ? error.message : String(error))
+      throw error
+    }
   }
 
   const createSessionAndRun = (message: string, attachments?: Parameters<typeof startRun>[2]) => {
@@ -202,12 +313,13 @@ export function ChatView({ session }: Props) {
         <Composer
           disabled={false}
           running={false}
-          provider={fallbackProvider}
-          model={fallbackModel}
-          onSend={createSessionAndRun}
-          onCancel={() => undefined}
-          draftPatch={composerDraftPatch}
-        />
+        provider={fallbackProvider}
+        model={fallbackModel}
+        onSend={createSessionAndRun}
+        onCancel={() => undefined}
+        draftPatch={composerDraftPatch}
+        workspaceRootVersion={workspaceRootVersion}
+      />
       </div>
     )
   }
@@ -220,6 +332,19 @@ export function ChatView({ session }: Props) {
       updateSession,
       openView: setActiveView,
       onSessionMode: setSessionMode,
+      activeRunId,
+      runStatus: activeStatus,
+      tokens: usage,
+      verbose: verboseMode,
+      setVerbose: setVerboseMode,
+      cancelRun: (targetSessionId) => cancelRun(targetSessionId),
+      refreshSession: async (targetSessionId) => {
+        await Promise.all([
+          loadTranscript(targetSessionId),
+          loadSessionTasks(targetSessionId),
+          loadSessions(),
+        ])
+      },
     })
       .then((result) => {
         if (result.type === 'notice') {
@@ -244,7 +369,7 @@ export function ChatView({ session }: Props) {
   return (
     <div className="chat-surface" aria-label={'Chat session ' + (session.summary || session.session_id)}>
       <span className="sr-only">{session.summary || session.session_id}</span>
-      <SessionTaskBar tasks={tasks} onOpenTask={(task) => setSelectedTaskId(task.task_id)} />
+      <SessionTaskBar tasks={tasks} onOpenTask={(task) => setSelectedTaskId(task.task_id)} onStopTask={stopTaskFromBar} />
       <div className="chat-scroll" onScroll={handleScroll} ref={scrollRef}>
         <ChatTimeline
           blocks={blocks}
@@ -252,8 +377,13 @@ export function ChatView({ session }: Props) {
           onOpenTask={setSelectedTaskId}
           onRespondPermission={respondPermission}
           onRespondApproval={respondApproval}
-          onRetryUserMessage={(block) => startRun(session.session_id, block.content, block.attachments)}
+          onAcceptFileChange={acceptFileChange}
+          onRevertFileChange={revertFileChange}
+          onRetryAssistantMessage={retryAssistantMessage}
+          onRetryUserMessage={retryUserMessage}
           onEditUserMessage={(block) => patchComposerDraft('replace', block.content, block.attachments)}
+          onForkMessage={forkMessage}
+          onRewindMessage={rewindMessage}
           onQuoteUserMessage={(block) => quoteMessage('user', block.content)}
           onQuoteAssistantMessage={(block) => quoteMessage('assistant', block.content)}
         />
@@ -271,6 +401,7 @@ export function ChatView({ session }: Props) {
         tokens={usage}
         sessionId={session.session_id}
         model={session.model}
+        verbose={verboseMode}
       />
       <Composer
         disabled={!session}
@@ -284,10 +415,12 @@ export function ChatView({ session }: Props) {
         inputTokens={usage?.input_tokens}
         outputTokens={usage?.output_tokens}
         tokens={usage}
+        runMetadata={latestRunMetadata}
         onSend={(message, attachments) => startRun(session.session_id, message, attachments)}
         onSlashCommand={handleSlashCommand}
         onCancel={() => cancelRun(session.session_id)}
         draftPatch={composerDraftPatch}
+        workspaceRootVersion={workspaceRootVersion}
       />
       {pendingPermission ? (
         <PermissionDialog
@@ -317,6 +450,17 @@ export function ChatView({ session }: Props) {
   )
 }
 
+function latestRunMetadataForSession(sessionId: string, blocks: ChatBlock[]): Record<string, unknown> | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]
+    if (!block || block.sessionId !== sessionId) continue
+    if ((block.kind === 'assistant_message' || block.kind === 'tool_result') && block.metadata && Object.keys(block.metadata).length > 0) {
+      return block.metadata
+    }
+  }
+  return undefined
+}
+
 function latestTokenUsageForSession(
   sessionId: string,
   blocks: ChatBlock[],
@@ -344,6 +488,17 @@ function latestTokenUsageForSession(
     if (tokenUsageTotal(tokens) > 0) return tokens
   }
   return undefined
+}
+
+function previousUserBlockForAssistant(blocks: ChatBlock[], assistant: AssistantMessage): UserMessage | null {
+  if (typeof assistant.messageIndex !== 'number') return null
+  let candidate: UserMessage | null = null
+  for (const block of blocks) {
+    if (block.kind !== 'user_message' || typeof block.messageIndex !== 'number') continue
+    if (block.messageIndex >= assistant.messageIndex) continue
+    if (!candidate || block.messageIndex > (candidate.messageIndex ?? -1)) candidate = block
+  }
+  return candidate
 }
 
 export function isNearChatBottom(element: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
@@ -377,6 +532,18 @@ const starterPrompts = [
     icon: Route,
   },
 ]
+
+function readBooleanSetting(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback
+  const value = window.localStorage.getItem(key)
+  if (value === null) return fallback
+  return value === 'true'
+}
+
+function writeBooleanSetting(key: string, value: boolean): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(key, value ? 'true' : 'false')
+}
 
 function formatQuotedDraft(role: 'user' | 'assistant', content: string): string {
   const trimmed = content.trim()

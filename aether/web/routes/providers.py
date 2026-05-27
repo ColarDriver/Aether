@@ -41,6 +41,23 @@ async def provider_current(
     )
 
 
+@router.get("/api/providers/preflight")
+async def provider_preflight(
+    request: Request,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> dict[str, object]:
+    services = request.app.state.aether_services
+    return to_jsonable(
+        services.providers.preflight(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+        )
+    )
+
+
 @router.get("/api/providers/{provider}/models")
 async def provider_models(
     request: Request,

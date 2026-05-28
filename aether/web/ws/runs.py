@@ -193,6 +193,9 @@ async def _start_run(
     options = _run_options(payload.get("options"))
     cwd = _run_cwd(websocket, session_id=session_id, payload=payload)
     run_metadata = _pre_run_metadata(websocket, run_id) if option_payload.get("workspace_checkpoint") is True else {}
+    permission_mode = _session_permission_mode(websocket, session_id)
+    if permission_mode:
+        run_metadata["permission_mode"] = permission_mode
     if cwd:
         run_metadata.setdefault("workspace_root", cwd)
     accepted_payload: dict[str, Any] = {"session_id": session_id, "run_id": run_id}
@@ -203,6 +206,8 @@ async def _start_run(
         accepted_payload["workspace_checkpoint"] = run_metadata["workspace_checkpoint"]
     if "workspace_checkpoint_error" in run_metadata:
         accepted_payload["workspace_checkpoint_error"] = run_metadata["workspace_checkpoint_error"]
+    if permission_mode:
+        accepted_payload["permission_mode"] = permission_mode
     await outbound.send_async(
         {
             "type": "run.accepted",
@@ -440,6 +445,18 @@ def _run_options(raw: Any) -> AgentRunOptions:
         disable_builtin_tools=_optional_bool(raw, "disable_builtin_tools"),
         system_override=_optional_str(raw, "system_override"),
     )
+
+
+def _session_permission_mode(websocket: WebSocket, session_id: str) -> str | None:
+    services = getattr(websocket.app.state, "aether_services", None)
+    sessions = getattr(services, "sessions", None)
+    if sessions is None:
+        return None
+    try:
+        mode = sessions.permission_mode(session_id)
+    except Exception:
+        return None
+    return mode if isinstance(mode, str) and mode.strip() else None
 
 
 def _enrich_workspace_reference_attachments(

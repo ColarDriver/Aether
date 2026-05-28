@@ -52,6 +52,7 @@ class SessionInfo:
     message_count: int = 0
     summary: str | None = None
     mode: str | None = None
+    permission_mode: str | None = None
     cwd: str | None = None
 
 

@@ -11,6 +11,15 @@ export type SessionInfo = {
   message_count: number
   summary?: string | null
   mode?: string | null
+  permission_mode?: PermissionMode | string | null
+}
+
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
+
+export type SessionPermissionModeResult = {
+  session_id: string
+  mode: PermissionMode | string
+  info?: SessionInfo
 }
 
 export type SessionDetail = {

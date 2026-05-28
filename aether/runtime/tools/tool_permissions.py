@@ -103,6 +103,16 @@ READONLY_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+USER_PERMISSION_MODES: frozenset[str] = frozenset(
+    {
+        "default",
+        "acceptEdits",
+        "plan",
+        "bypassPermissions",
+        "dontAsk",
+    }
+)
+
 
 def default_permission_stats(*, enabled: bool = True) -> dict[str, Any]:
     return {
@@ -122,6 +132,35 @@ def normalize_permission_mode(value: Any, *, default: ToolPermissionMode) -> Too
         return ToolPermissionMode(str(value).strip().lower())
     except Exception:
         return default
+
+
+def normalize_user_permission_mode(value: Any, *, default: str = "default") -> str:
+    text = str(value or "").strip()
+    return text if text in USER_PERMISSION_MODES else default
+
+
+def decision_for_user_permission_mode(
+    mode: str,
+    request: ToolPermissionRequest,
+) -> ToolPermissionDecision | None:
+    """Return a preset decision for Aether's user-facing permission mode."""
+    normalized = normalize_user_permission_mode(mode)
+    if normalized == "bypassPermissions":
+        return ToolPermissionDecision(
+            type=ToolPermissionDecisionType.ALLOW_ONCE,
+            source="permission_mode:bypassPermissions",
+        )
+    if normalized == "acceptEdits" and category_for_tool(request.tool_name) == "write":
+        return ToolPermissionDecision(
+            type=ToolPermissionDecisionType.ALLOW_ONCE,
+            source="permission_mode:acceptEdits",
+        )
+    if normalized == "dontAsk":
+        return ToolPermissionDecision(
+            type=ToolPermissionDecisionType.DENY,
+            source="permission_mode:dontAsk",
+        )
+    return None
 
 
 def is_dangerous_tool(tool_name: str) -> bool:
@@ -329,14 +368,17 @@ __all__ = [
     "ToolPermissionPrompter",
     "ToolPermissionRequest",
     "ToolPermissionRule",
+    "USER_PERMISSION_MODES",
     "build_fallback_preview",
     "build_permission_denied_result",
     "build_session_rule_for_request",
     "category_for_tool",
+    "decision_for_user_permission_mode",
     "default_permission_stats",
     "find_matching_rule",
     "is_dangerous_tool",
     "make_permission_request",
     "normalize_permission_mode",
+    "normalize_user_permission_mode",
     "risk_for_tool",
 ]

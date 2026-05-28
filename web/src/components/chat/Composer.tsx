@@ -2,7 +2,7 @@ import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, ChevronLeft, Ch
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, RefObject } from 'react'
 import { api } from '../../api/client'
-import type { SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
+import type { PermissionMode, SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
 import type { ChatAttachment, TokenUsage } from '../../chat-rendering'
 import { tokenUsageBreakdown, tokenUsageTotal } from '../../chat-rendering'
 import { useProviderStore } from '../../stores/providerStore'
@@ -12,6 +12,7 @@ import { CopyButton } from '../shared/CopyButton'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ComposerInspectorPanel, type ComposerInspectorKind } from './ComposerInspectorPanel'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { PermissionModeSelector } from './PermissionModeSelector'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
 import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
@@ -50,6 +51,8 @@ type Props = {
   provider?: string | null
   model?: string | null
   mode?: string | null
+  permissionMode?: PermissionMode | string | null
+  onPermissionModeChange?: (mode: PermissionMode) => Promise<void> | void
   inputTokens?: number | null
   outputTokens?: number | null
   tokens?: TokenUsage | null
@@ -71,6 +74,8 @@ export function Composer({
   provider,
   model,
   mode,
+  permissionMode,
+  onPermissionModeChange,
   inputTokens,
   outputTokens,
   tokens,
@@ -533,6 +538,13 @@ export function Composer({
                 <small>mode</small>
               </span>
             </span>
+          ) : null}
+          {onPermissionModeChange ? (
+            <PermissionModeSelector
+              value={permissionMode ?? (mode === 'plan' ? 'plan' : 'default')}
+              disabled={disabled || running}
+              onChange={onPermissionModeChange}
+            />
           ) : null}
         </div>
         <div className="composer-runbar">

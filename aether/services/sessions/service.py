@@ -23,7 +23,19 @@ from aether.cli.sessions import (
     update_session_from_state,
 )
 from aether.runtime.session.plan_artifact import clear_plan, read_plan, write_plan
-from aether.runtime.session.session_state import SessionMode, clear_cwd, clear_mode, get_cwd, get_mode, set_cwd, set_mode
+from aether.runtime.session.session_state import (
+    SessionMode,
+    SessionPermissionMode,
+    clear_cwd,
+    clear_mode,
+    clear_permission_mode,
+    get_cwd,
+    get_mode,
+    get_permission_mode as get_runtime_permission_mode,
+    set_cwd,
+    set_mode,
+    set_permission_mode as set_runtime_permission_mode,
+)
 from aether.runtime.tools.tool_result_storage import cleanup_session_spills
 from aether.services.common import (
     ServiceConflictError,
@@ -111,8 +123,10 @@ class SessionService:
         )
         clear_mode(record.session_id)
         clear_cwd(record.session_id)
+        clear_permission_mode(record.session_id)
         clear_plan(record.session_id)
         record.mode = "agent"
+        record.metadata["permission_mode"] = SessionPermissionMode.DEFAULT.value
         save_session(record, base=self._session_dir)
         self._current_setter(record.session_id)
         return self.info(record)
@@ -193,6 +207,7 @@ class SessionService:
         if deleted:
             clear_mode(session_id)
             clear_cwd(session_id)
+            clear_permission_mode(session_id)
             clear_plan(session_id)
             cleanup_session_spills(session_id=session_id, max_age_seconds=0)
         return deleted
@@ -202,6 +217,34 @@ class SessionService:
         record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
         set_mode(record.session_id, session_mode)
         record.mode = session_mode
+        current_permission_mode = _record_permission_mode(record, session_mode=session_mode)
+        if session_mode == SessionMode.PLAN.value:
+            record.metadata["permission_mode"] = SessionPermissionMode.PLAN.value
+            set_runtime_permission_mode(record.session_id, SessionPermissionMode.PLAN.value)
+        elif current_permission_mode == SessionPermissionMode.PLAN.value:
+            record.metadata["permission_mode"] = SessionPermissionMode.DEFAULT.value
+            clear_permission_mode(record.session_id)
+        save_session(record, base=self._session_dir)
+        return self.info(record)
+
+    def permission_mode(self, session_id_or_prefix: str) -> str:
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        mode = get_mode(record.session_id)
+        if mode == SessionMode.AGENT.value and getattr(record, "mode", SessionMode.AGENT.value) == SessionMode.PLAN.value:
+            mode = SessionMode.PLAN.value
+        return _record_permission_mode(record, session_mode=mode)
+
+    def set_permission_mode(self, session_id_or_prefix: str, permission_mode: str) -> SessionInfo:
+        value = _require_permission_mode(permission_mode)
+        record = self.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
+        record.metadata["permission_mode"] = value
+        set_runtime_permission_mode(record.session_id, value)
+        if value == SessionPermissionMode.PLAN.value:
+            set_mode(record.session_id, SessionMode.PLAN.value)
+            record.mode = SessionMode.PLAN.value
+        else:
+            set_mode(record.session_id, SessionMode.AGENT.value)
+            record.mode = SessionMode.AGENT.value
         save_session(record, base=self._session_dir)
         return self.info(record)
 
@@ -221,13 +264,16 @@ class SessionService:
             )
         mode = get_mode(session_id)
         cwd = get_cwd(session_id)
+        permission_mode = _record_permission_mode(record)
         plan = read_plan(session_id)
         delete_session(session_id, base=self._session_dir)
         record.session_id = new_session_id
         save_session(record, base=self._session_dir)
         clear_mode(session_id)
         clear_cwd(session_id)
+        clear_permission_mode(session_id)
         set_mode(new_session_id, mode)
+        set_runtime_permission_mode(new_session_id, permission_mode)
         if cwd is not None:
             set_cwd(new_session_id, cwd)
         clear_plan(session_id)
@@ -281,9 +327,11 @@ class SessionService:
         )
         fork.messages = copied_messages
         fork.mode = "agent"
+        fork.metadata["permission_mode"] = SessionPermissionMode.DEFAULT.value
         fork.turn_count = assistant_turn_count(copied_messages)
         fork.first_user_message = first_user_message(copied_messages)[:200]
         clear_mode(fork.session_id)
+        clear_permission_mode(fork.session_id)
         clear_plan(fork.session_id)
         save_session(fork, base=self._session_dir)
         self._current_setter(fork.session_id)
@@ -532,10 +580,12 @@ class SessionService:
             delete_session(target_session_id, base=self._session_dir)
             clear_mode(target_session_id)
             clear_cwd(target_session_id)
+            clear_permission_mode(target_session_id)
             clear_plan(target_session_id)
             cleanup_session_spills(session_id=target_session_id, max_age_seconds=0)
         save_session(record, base=self._session_dir)
         set_mode(record.session_id, record.mode)
+        set_runtime_permission_mode(record.session_id, _record_permission_mode(record))
         if request.make_current:
             self._current_setter(record.session_id)
         info = self.info(record)
@@ -608,6 +658,7 @@ class SessionService:
             message_count=len(record.messages),
             summary=record.first_user_message or None,
             mode=mode,
+            permission_mode=_record_permission_mode(record, session_mode=mode),
             cwd=get_cwd(record.session_id),
         )
 
@@ -1275,6 +1326,32 @@ def _require_session_mode(value: str | None) -> str:
             details={"mode": text, "allowed": sorted(allowed)},
         )
     return text
+
+
+def _require_permission_mode(value: str | None) -> str:
+    text = _require_non_empty(value, "permission_mode")
+    allowed = {mode.value for mode in SessionPermissionMode}
+    if text not in allowed:
+        raise ServiceValidationError(
+            f"unsupported permission mode: {text!r}",
+            details={"permission_mode": text, "allowed": sorted(allowed)},
+        )
+    return text
+
+
+def _record_permission_mode(record: SessionRecord, *, session_mode: str | None = None) -> str:
+    if session_mode == SessionMode.PLAN.value:
+        return SessionPermissionMode.PLAN.value
+    live = get_runtime_permission_mode(record.session_id)
+    if live != SessionPermissionMode.DEFAULT.value:
+        return live
+    metadata = getattr(record, "metadata", {})
+    stored = metadata.get("permission_mode") if isinstance(metadata, dict) else None
+    if isinstance(stored, str) and stored in {mode.value for mode in SessionPermissionMode}:
+        if stored != SessionPermissionMode.DEFAULT.value:
+            set_runtime_permission_mode(record.session_id, stored)
+        return stored
+    return SessionPermissionMode.DEFAULT.value
 
 
 __all__ = [

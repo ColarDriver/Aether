@@ -719,6 +719,39 @@ def test_task_routes_list_session_tasks_and_output_tail(client: TestClient) -> N
     assert invalid.status_code == 400
 
 
+
+def test_session_permission_mode_routes_update_runtime_mode(client: TestClient) -> None:
+    created = client.post(
+        "/api/sessions",
+        json={"provider": "openai", "model": "gpt-5.4", "session_id": "perm_web"},
+    )
+    assert created.status_code == 200
+    assert created.json()["permission_mode"] == "default"
+
+    current = client.get("/api/sessions/perm_web/permission-mode")
+    assert current.status_code == 200
+    assert current.json() == {"session_id": "perm_web", "mode": "default"}
+
+    edits = client.put("/api/sessions/perm_web/permission-mode", json={"mode": "acceptEdits"})
+    assert edits.status_code == 200
+    assert edits.json()["mode"] == "acceptEdits"
+    assert edits.json()["info"]["mode"] == "agent"
+    assert edits.json()["info"]["permission_mode"] == "acceptEdits"
+
+    plan = client.put("/api/sessions/perm_web/permission-mode", json={"mode": "plan"})
+    assert plan.status_code == 200
+    assert plan.json()["mode"] == "plan"
+    assert plan.json()["info"]["mode"] == "plan"
+    assert client.get("/api/plan/perm_web").json()["mode"] == "plan"
+
+    cleared = client.put("/api/plan/perm_web/mode", json={"mode": "agent"})
+    assert cleared.status_code == 200
+    assert cleared.json()["info"]["mode"] == "agent"
+    assert cleared.json()["info"]["permission_mode"] == "default"
+
+    invalid = client.put("/api/sessions/perm_web/permission-mode", json={"mode": "invalid"})
+    assert invalid.status_code == 400
+
 def test_plan_routes_read_and_update_session_mode(client: TestClient) -> None:
     created = client.post(
         "/api/sessions",

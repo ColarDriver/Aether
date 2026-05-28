@@ -20,6 +20,7 @@ import type {
   McpStatus,
   PlanCurrent,
   PrefMutationResult,
+  PermissionMode,
   ProviderModelList,
   ProviderPreflightStatus,
   ProviderRuntimeStatus,
@@ -33,6 +34,7 @@ import type {
   SessionImportResult,
   SessionInfo,
   SessionMessageActionsResult,
+  SessionPermissionModeResult,
   SessionRewindResult,
   SessionTurnCheckpointDiffResult,
   SessionTurnCheckpointsResult,
@@ -313,6 +315,10 @@ export const api = {
     request<SessionInfo>('POST', '/api/sessions', body),
   updateSession: (sessionId: string, body: { provider?: string | null; model?: string | null; base_url?: string | null; system_prompt?: string | null; update_base_url?: boolean; update_system_prompt?: boolean }) =>
     request<SessionInfo>('PATCH', '/api/sessions/' + encodeURIComponent(sessionId), body),
+  sessionPermissionMode: (sessionId: string) =>
+    request<SessionPermissionModeResult>('GET', '/api/sessions/' + encodeURIComponent(sessionId) + '/permission-mode'),
+  setSessionPermissionMode: (sessionId: string, mode: PermissionMode | string) =>
+    request<SessionPermissionModeResult>('PUT', '/api/sessions/' + encodeURIComponent(sessionId) + '/permission-mode', { mode }),
   searchSessions: (query: string, limit = 50) =>
     request<{ sessions: SessionInfo[] }>('GET', '/api/sessions/search?q=' + encodeURIComponent(query) + '&limit=' + encodeURIComponent(String(limit))),
   sessionDetail: (sessionId: string) =>

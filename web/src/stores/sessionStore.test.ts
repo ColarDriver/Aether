@@ -102,6 +102,44 @@ describe('sessionStore', () => {
     expect(useSessionStore.getState().activeSessionId).toBe('session-fork')
   })
 
+
+
+  it('mirrors plan session mode into permission mode for slash-driven changes', () => {
+    useSessionStore.setState({
+      sessions: [{ ...baseSession, permission_mode: 'acceptEdits' }],
+      activeSessionId: 'session-1',
+      isLoading: false,
+      error: null,
+    })
+
+    useSessionStore.getState().setSessionMode('session-1', 'plan')
+    expect(useSessionStore.getState().sessions[0]?.permission_mode).toBe('plan')
+
+    useSessionStore.getState().setSessionMode('session-1', 'agent')
+    expect(useSessionStore.getState().sessions[0]?.permission_mode).toBe('default')
+  })
+
+  it('updates session permission mode and mirrors plan mode locally', async () => {
+    vi.spyOn(api, 'setSessionPermissionMode').mockResolvedValue({
+      session_id: 'session-1',
+      mode: 'plan',
+      info: { ...baseSession, mode: 'plan', permission_mode: 'plan' },
+    })
+    useSessionStore.setState({
+      sessions: [{ ...baseSession, permission_mode: 'default' }],
+      activeSessionId: 'session-1',
+      isLoading: false,
+      error: null,
+    })
+
+    const updated = await useSessionStore.getState().setSessionPermissionMode('session-1', 'plan')
+
+    expect(api.setSessionPermissionMode).toHaveBeenCalledWith('session-1', 'plan')
+    expect(updated.permission_mode).toBe('plan')
+    expect(useSessionStore.getState().sessions[0]?.mode).toBe('plan')
+    expect(useSessionStore.getState().sessions[0]?.permission_mode).toBe('plan')
+  })
+
   it('renames and imports sessions while preserving active selection semantics', async () => {
     vi.spyOn(api, 'sessions').mockResolvedValue({ sessions: [] })
     vi.spyOn(api, 'renameSession').mockResolvedValue({ ...baseSession, session_id: 'session-renamed' })

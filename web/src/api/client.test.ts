@@ -48,6 +48,18 @@ describe('api client', () => {
     )
   })
 
+  it('updates session permission mode', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ session_id: 's1', mode: 'acceptEdits' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.setSessionPermissionMode('s1', 'acceptEdits')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://aether.test/api/sessions/s1/permission-mode',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ mode: 'acceptEdits' }) }),
+    )
+  })
+
   it('posts session fork requests', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ source_session_id: 's1', forked_from_index: 2, messages_copied: 3, info: { session_id: 's2', created_at: 1, updated_at: 1, provider: 'openai', model: 'gpt-5.4', message_count: 3 }, messages: [] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)

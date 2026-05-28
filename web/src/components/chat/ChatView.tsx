@@ -1,7 +1,7 @@
 import { ArrowDown, Bot, FileSearch, Route, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
-import type { SessionCheckpointActionBody, SessionCheckpointActionResult, SessionInfo, SessionRewindResult, SessionTurnCheckpoint, TaskSummary } from '../../api/types'
+import type { PermissionMode, SessionCheckpointActionBody, SessionCheckpointActionResult, SessionInfo, SessionRewindResult, SessionTurnCheckpoint, TaskSummary } from '../../api/types'
 import type { AssistantMessageBlock as AssistantMessage, ChatBlock, RunStatusSnapshot, TokenUsage, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { tokenUsageFromRecord, tokenUsageTotal } from '../../chat-rendering'
 import { useAppStore } from '../../stores/appStore'
@@ -59,6 +59,7 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
   const resumeSession = useSessionStore((state) => state.resumeSession)
   const updateSession = useSessionStore((state) => state.updateSession)
   const setSessionMode = useSessionStore((state) => state.setSessionMode)
+  const setSessionPermissionMode = useSessionStore((state) => state.setSessionPermissionMode)
   const loadSessions = useSessionStore((state) => state.loadSessions)
   const currentProvider = useProviderStore((state) => state.current)
   const providers = useProviderStore((state) => state.providers)
@@ -359,6 +360,13 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
     }
   }
 
+  const changePermissionMode = async (mode: PermissionMode) => {
+    if (!session) return
+    const updated = await setSessionPermissionMode(session.session_id, mode)
+    if (updated.mode) setSessionMode(updated.session_id, updated.mode === 'plan' ? 'plan' : 'agent')
+    appendLocalNotice(session.session_id, 'Permission mode set to `' + mode + '`.')
+  }
+
   const createSessionAndRun = (message: string, attachments?: Parameters<typeof startRun>[2]) => {
     void createSession({ provider: fallbackProvider, model: fallbackModel })
       .then((created) => startRun(created.session_id, message, attachments))
@@ -502,6 +510,8 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
         provider={session.provider}
         model={session.model}
         mode={session.mode}
+        permissionMode={session.mode === 'plan' ? 'plan' : session.permission_mode ?? 'default'}
+        onPermissionModeChange={changePermissionMode}
         sessionSummary={session.summary}
         messageCount={session.message_count}
         inputTokens={usage?.input_tokens}

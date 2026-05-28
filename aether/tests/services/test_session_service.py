@@ -6,7 +6,7 @@ import pytest
 
 from aether.cli.sessions import SessionRecord, load_session, save_session, session_file
 from aether.runtime.session.plan_artifact import read_plan, write_plan
-from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, set_mode
+from aether.runtime.session.session_state import SessionMode, clear_mode, get_mode, get_permission_mode, set_mode
 from aether.services.common import ServiceConflictError, ServiceNotFoundError, ServiceValidationError
 from aether.services.sessions import (
     SessionCreateRequest,
@@ -122,6 +122,32 @@ def test_delete_removes_legacy_filename_with_matching_embedded_session_id(tmp_pa
     with pytest.raises(ServiceNotFoundError):
         service.resume(SessionResumeRequest("sess-legacy"))
 
+
+
+def test_permission_mode_persists_and_tracks_plan_session_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    service.create(SessionCreateRequest(session_id="perm-ses", provider="openai", model="gpt-5"))
+
+    edits = service.set_permission_mode("perm-ses", "acceptEdits")
+    assert edits.mode == "agent"
+    assert edits.permission_mode == "acceptEdits"
+    assert get_permission_mode("perm-ses") == "acceptEdits"
+    assert load_session("perm-ses", base=tmp_path / "sessions").metadata["permission_mode"] == "acceptEdits"
+
+    plan = service.set_permission_mode("perm-ses", "plan")
+    assert plan.mode == "plan"
+    assert plan.permission_mode == "plan"
+    assert get_mode("perm-ses") == "plan"
+    assert get_permission_mode("perm-ses") == "plan"
+
+    agent = service.set_session_mode("perm-ses", "agent")
+    assert agent.mode == "agent"
+    assert agent.permission_mode == "default"
+    assert get_mode("perm-ses") == "agent"
+    assert get_permission_mode("perm-ses") == "default"
+
+    with pytest.raises(ServiceValidationError):
+        service.set_permission_mode("perm-ses", "invalid")
 
 def test_resume_unique_prefix_and_ambiguous_prefix(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)

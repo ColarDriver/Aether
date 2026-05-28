@@ -67,6 +67,10 @@ class SessionRenameBody(BaseModel):
     new_session_id: str
 
 
+class SessionPermissionModeBody(BaseModel):
+    mode: str
+
+
 class SessionImportBody(BaseModel):
     data: dict[str, Any]
     new_session_id: str | None = None
@@ -146,6 +150,20 @@ async def update_session(request: Request, session_id: str, body: SessionUpdateB
             )
         )
     )
+
+
+@router.get("/api/sessions/{session_id}/permission-mode")
+async def session_permission_mode(request: Request, session_id: str) -> dict[str, object]:
+    services = request.app.state.aether_services
+    mode = services.sessions.permission_mode(session_id)
+    return {"session_id": session_id, "mode": mode}
+
+
+@router.put("/api/sessions/{session_id}/permission-mode")
+async def session_permission_mode_set(request: Request, session_id: str, body: SessionPermissionModeBody) -> dict[str, object]:
+    services = request.app.state.aether_services
+    info = services.sessions.set_permission_mode(session_id, body.mode)
+    return to_jsonable({"session_id": info.session_id, "mode": info.permission_mode, "info": info})
 
 
 @router.post("/api/sessions/{session_id}/rename")

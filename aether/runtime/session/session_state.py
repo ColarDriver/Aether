@@ -36,22 +36,37 @@ class SessionMode(str, Enum):
     PLAN = "plan"
 
 
+class SessionPermissionMode(str, Enum):
+    DEFAULT = "default"
+    ACCEPT_EDITS = "acceptEdits"
+    PLAN = "plan"
+    BYPASS_PERMISSIONS = "bypassPermissions"
+    DONT_ASK = "dontAsk"
+
+
 _DEFAULT_MODE: str = SessionMode.AGENT.value
+_DEFAULT_PERMISSION_MODE: str = SessionPermissionMode.DEFAULT.value
 _SESSION_MODE: dict[str, str] = {}
+_SESSION_PERMISSION_MODE: dict[str, str] = {}
 _SESSION_CWD: dict[str, str] = {}
 _LOCK = threading.Lock()
 
 
 __all__ = [
     "SessionMode",
+    "SessionPermissionMode",
     "get_mode",
     "set_mode",
     "clear_mode",
+    "get_permission_mode",
+    "set_permission_mode",
+    "clear_permission_mode",
     "get_cwd",
     "set_cwd",
     "clear_cwd",
     "all_sessions",
     "_DEFAULT_MODE",
+    "_DEFAULT_PERMISSION_MODE",
 ]
 
 
@@ -82,6 +97,31 @@ def clear_mode(session_id: str) -> None:
         return
     with _LOCK:
         _SESSION_MODE.pop(session_id, None)
+
+
+def get_permission_mode(session_id: str) -> str:
+    """Return the tool permission preset for ``session_id``."""
+    if not session_id:
+        return _DEFAULT_PERMISSION_MODE
+    with _LOCK:
+        return _SESSION_PERMISSION_MODE.get(session_id, _DEFAULT_PERMISSION_MODE)
+
+
+def set_permission_mode(session_id: str, mode: str | SessionPermissionMode) -> None:
+    """Persist the tool permission preset for ``session_id``."""
+    if not session_id:
+        raise ValueError("session_id is required")
+    value = mode.value if isinstance(mode, SessionPermissionMode) else str(mode)
+    with _LOCK:
+        _SESSION_PERMISSION_MODE[session_id] = value
+
+
+def clear_permission_mode(session_id: str) -> None:
+    """Drop any stored permission preset for ``session_id``.  Idempotent."""
+    if not session_id:
+        return
+    with _LOCK:
+        _SESSION_PERMISSION_MODE.pop(session_id, None)
 
 
 def all_sessions() -> dict[str, str]:

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
-import type { SessionImportResult, SessionInfo, SessionRewindResult } from '../api/types'
+import type { PermissionMode, SessionImportResult, SessionInfo, SessionRewindResult } from '../api/types'
 
 type CreateSessionInput = {
   provider: string
@@ -23,9 +23,10 @@ type SessionState = {
   deleteSession: (sessionId: string) => Promise<void>
   setActiveSession: (sessionId: string | null) => void
   setSessionMode: (sessionId: string, mode: 'agent' | 'plan') => void
+  setSessionPermissionMode: (sessionId: string, mode: PermissionMode | string) => Promise<SessionInfo>
 }
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   isLoading: false,
@@ -140,10 +141,39 @@ export const useSessionStore = create<SessionState>((set) => ({
   },
   setActiveSession: (activeSessionId) => set({ activeSessionId }),
   setSessionMode: (sessionId, mode) => set((state) => ({
-    sessions: state.sessions.map((session) => (
-      session.session_id === sessionId ? { ...session, mode } : session
-    )),
+    sessions: state.sessions.map((session) => {
+      if (session.session_id !== sessionId) return session
+      const permissionMode = mode === 'plan'
+        ? 'plan'
+        : session.permission_mode === 'plan'
+          ? 'default'
+          : session.permission_mode
+      return { ...session, mode, permission_mode: permissionMode }
+    }),
   })),
+  setSessionPermissionMode: async (sessionId, mode) => {
+    const result = await api.setSessionPermissionMode(sessionId, mode)
+    const existing = get().sessions.find((session) => session.session_id === sessionId)
+    const info = result.info ?? (existing
+      ? { ...existing, permission_mode: result.mode, mode: result.mode === 'plan' ? 'plan' : 'agent' }
+      : {
+          session_id: sessionId,
+          created_at: 0,
+          updated_at: 0,
+          provider: '',
+          model: '',
+          message_count: 0,
+          mode: result.mode === 'plan' ? 'plan' : 'agent',
+          permission_mode: result.mode,
+        })
+    set((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.session_id === sessionId ? info : session
+      )),
+      activeSessionId: state.activeSessionId === sessionId ? info.session_id : state.activeSessionId,
+    }))
+    return info
+  },
 }))
 
 async function refreshSessionsAfterMutation(

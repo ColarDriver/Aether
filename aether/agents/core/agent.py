@@ -176,6 +176,7 @@ from aether.runtime.tools.tool_permissions import (
     build_fallback_preview,
     build_permission_denied_result,
     build_session_rule_for_request,
+    decision_for_user_permission_mode,
     default_permission_stats,
     find_matching_rule,
     is_dangerous_tool,
@@ -4540,6 +4541,18 @@ class AgentEngine:
                 rule=matched_rule,
                 source="session_rule",
             )
+
+        request_metadata = getattr(request, "metadata", {}) or {}
+        user_permission_decision = decision_for_user_permission_mode(
+            request_metadata.get("permission_mode") if isinstance(request_metadata, dict) else None,
+            permission_request,
+        )
+        if user_permission_decision is not None:
+            if user_permission_decision.type == ToolPermissionDecisionType.DENY:
+                self._bump_tool_permission_stat(context, "denied")
+            else:
+                self._bump_tool_permission_stat(context, "allowed_once")
+            return user_permission_decision
 
         default_mode = normalize_permission_mode(
             getattr(self.config, "tool_permission_default", "ask"),

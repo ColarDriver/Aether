@@ -4,11 +4,13 @@ import unittest
 
 from aether.runtime.core.contracts import ToolCall
 from aether.runtime.tools.tool_permissions import (
+    ToolPermissionDecisionType,
     ToolPermissionMode,
     ToolPermissionPreview,
     ToolPermissionRequest,
     ToolPermissionRule,
     build_session_rule_for_request,
+    decision_for_user_permission_mode,
     find_matching_rule,
     is_dangerous_tool,
     make_permission_request,
@@ -59,6 +61,40 @@ class ToolPermissionPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(find_matching_rule(request, [allow, deny]), deny)
+
+    def test_user_permission_modes_make_preset_decisions(self) -> None:
+        write_request = ToolPermissionRequest(
+            session_id="s1",
+            tool_call_id="c1",
+            tool_name="file_edit",
+            arguments={"path": "app.py"},
+            category="write",
+            risk="write",
+        )
+        shell_request = ToolPermissionRequest(
+            session_id="s1",
+            tool_call_id="c2",
+            tool_name="shell",
+            arguments={"command": "pytest"},
+            category="shell",
+            risk="medium",
+        )
+
+        self.assertIsNone(decision_for_user_permission_mode("default", write_request))
+        self.assertIsNone(decision_for_user_permission_mode("plan", write_request))
+        self.assertIsNone(decision_for_user_permission_mode("acceptEdits", shell_request))
+        self.assertEqual(
+            decision_for_user_permission_mode("acceptEdits", write_request).type,
+            ToolPermissionDecisionType.ALLOW_ONCE,
+        )
+        self.assertEqual(
+            decision_for_user_permission_mode("bypassPermissions", shell_request).type,
+            ToolPermissionDecisionType.ALLOW_ONCE,
+        )
+        self.assertEqual(
+            decision_for_user_permission_mode("dontAsk", write_request).type,
+            ToolPermissionDecisionType.DENY,
+        )
 
     def test_build_session_rule_uses_shell_prefix(self) -> None:
         request = make_permission_request(

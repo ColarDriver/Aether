@@ -1,5 +1,5 @@
 import { Bot, ChevronDown, ChevronRight, FileText, Globe, Pencil, Search, Terminal, Wrench } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { DiffBlock as DiffChatBlock, ToolCallBlock as ToolCall, ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { DiffBlock } from './DiffBlock'
 import { ToolResultBlock } from './ToolResultBlock'
@@ -13,18 +13,31 @@ type Props = {
 }
 
 export function ToolCallBlock({ block, result, diffs = [] }: Props) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(() => Boolean(result) || diffs.length > 0)
+  const [userControlledExpanded, setUserControlledExpanded] = useState(false)
   const todos = block.toolName === 'todo_write' ? todosFromToolArguments(block.arguments) : []
   const showRawInput = Object.keys(block.arguments).length > 0 && todos.length === 0 && !isTerminalTool(block.toolName)
   const hasDetails = showRawInput || Boolean(result) || diffs.length > 0
-  const detailsVisible = expanded || Boolean(result) || diffs.length > 0
+  const detailsVisible = hasDetails && expanded
   const summary = toolSummary(block)
   const status = effectiveToolStatus(block, result)
+
+  useEffect(() => {
+    if (!userControlledExpanded && (Boolean(result) || diffs.length > 0)) {
+      setExpanded(true)
+    }
+  }, [diffs.length, result, userControlledExpanded])
+
+  const toggleExpanded = () => {
+    if (!hasDetails) return
+    setUserControlledExpanded(true)
+    setExpanded((value) => !value)
+  }
   const meta = toolCallMeta(result)
   const ToolIcon = toolIconForName(block.toolName)
   return (
     <article className={'tool-call-block tool-call-' + status}>
-      <button type="button" className="tool-call-header" onClick={() => setExpanded((value) => !value)}>
+      <button type="button" className="tool-call-header" aria-expanded={hasDetails ? detailsVisible : undefined} onClick={toggleExpanded}>
         {hasDetails ? detailsVisible ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <Wrench size={14} />}
         <span className="tool-call-kind-icon" aria-hidden="true"><ToolIcon size={14} /></span>
         <strong className={isRunningToolCall(status) ? 'aether-shimmer-text' : undefined}>{block.toolName}</strong>

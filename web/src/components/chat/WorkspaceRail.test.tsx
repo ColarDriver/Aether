@@ -66,9 +66,10 @@ describe('WorkspaceRail', () => {
 
     expect(await screen.findByTitle('README.md')).toBeTruthy()
     expect(screen.getByLabelText('Workspace root').textContent).toContain('Aether')
-    expect(screen.getByRole('button', { name: 'root' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Files' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: 'Source Control' }).getAttribute('aria-selected')).toBe('false')
+    expect(screen.getByLabelText('Workspace file tree')).toBeTruthy()
     expect(screen.queryByText('Select a file')).toBeNull()
-    expect(screen.getByText('2 items')).toBeTruthy()
     expect(screen.queryByText('18 B')).toBeNull()
     expect(screen.queryByText(/\bdir\b/i)).toBeNull()
     expect(document.querySelector('.workspace-rail-entry-kind-directory')).toBeTruthy()
@@ -80,7 +81,7 @@ describe('WorkspaceRail', () => {
     fireEvent.click(screen.getByTitle('aether'))
     expect(await screen.findByTitle('aether/app.py')).toBeTruthy()
 
-    fireEvent.change(screen.getByPlaceholderText('Search files'), { target: { value: 'app' } })
+    fireEvent.change(screen.getByPlaceholderText('Search files...'), { target: { value: 'app' } })
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
     await waitFor(() => expect(search).toHaveBeenCalledWith('app', 80))
@@ -250,6 +251,7 @@ describe('WorkspaceRail', () => {
 
     render(<WorkspaceRail />)
 
+    fireEvent.click(await screen.findByRole('tab', { name: /Source Control/ }))
     const repo = await screen.findByLabelText('Repository status')
     expect(within(repo).getByText('feature/web')).toBeTruthy()
     expect(within(repo).getByText('1 changed')).toBeTruthy()

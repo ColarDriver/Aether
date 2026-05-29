@@ -1,7 +1,10 @@
 import { Ban, Bolt, ChevronDown, ClipboardCheck, ShieldQuestion, Unlock } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { CSSProperties } from 'react'
 import type { PermissionMode } from '../../api/types'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { floatingMenuPosition } from './floatingMenuPosition'
 
 type Props = {
   value?: PermissionMode | string | null
@@ -58,7 +61,9 @@ const permissionModes: Array<{
 
 export function PermissionModeSelector({ value, disabled = false, onChange }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null)
   const [confirmBypass, setConfirmBypass] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -69,7 +74,10 @@ export function PermissionModeSelector({ value, disabled = false, onChange }: Pr
   useEffect(() => {
     if (!open) return
     const onPointerDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      const inTrigger = Boolean(ref.current?.contains(target))
+      const inMenu = Boolean(menuRef.current?.contains(target))
+      if (!inTrigger && !inMenu) setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false)
@@ -79,6 +87,24 @@ export function PermissionModeSelector({ value, disabled = false, onChange }: Pr
     return () => {
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) {
+      setMenuStyle(null)
+      return
+    }
+    const updatePosition = () => {
+      if (!ref.current) return
+      setMenuStyle(floatingMenuPosition(ref.current, 330))
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
     }
   }, [open])
 
@@ -113,8 +139,14 @@ export function PermissionModeSelector({ value, disabled = false, onChange }: Pr
         <span>{currentItem.shortLabel}</span>
         <ChevronDown size={13} />
       </button>
-      {open ? (
-        <div className="permission-mode-menu" role="menu" aria-label="Permission mode">
+      {open && typeof document !== 'undefined' ? createPortal(
+        <div
+          className="permission-mode-menu"
+          ref={menuRef}
+          role="menu"
+          aria-label="Permission mode"
+          style={menuStyle ?? { visibility: 'hidden' }}
+        >
           <header>Permission mode</header>
           {permissionModes.map((item) => {
             const Icon = item.icon
@@ -144,7 +176,8 @@ export function PermissionModeSelector({ value, disabled = false, onChange }: Pr
             )
           })}
           {error ? <p className="permission-mode-error">{error}</p> : null}
-        </div>
+        </div>,
+        document.body,
       ) : null}
       {confirmBypass ? (
         <ConfirmDialog

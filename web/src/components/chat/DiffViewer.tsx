@@ -19,8 +19,7 @@ export function DiffViewer({ diff }: Props) {
       {lines.map((line, index) => {
         return (
           <div className={'diff-line diff-line-' + line.kind} role="row" key={index + '-' + line.content}>
-            <span className="diff-line-number diff-line-number-old">{line.oldLine ?? ''}</span>
-            <span className="diff-line-number diff-line-number-new">{line.newLine ?? ''}</span>
+            <span className="diff-line-number">{displayLineNumber(line) ?? ''}</span>
             <span className="diff-marker">{line.marker}</span>
             <code>{line.content}</code>
           </div>
@@ -28,6 +27,13 @@ export function DiffViewer({ diff }: Props) {
       })}
     </div>
   )
+}
+
+
+function displayLineNumber(line: ParsedDiffLine): number | null {
+  if (line.kind === 'remove') return line.oldLine
+  if (line.kind === 'add' || line.kind === 'context') return line.newLine
+  return null
 }
 
 export function parseUnifiedDiff(diff: string): ParsedDiffLine[] {

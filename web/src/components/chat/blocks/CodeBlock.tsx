@@ -29,36 +29,58 @@ export function highlightCode(code: string, language: string): ReactNode {
   if (!keywords && !['json', 'jsonc'].includes(normalized)) {
     return code
   }
-  const keywordPattern = keywords ? '|\\b(?:' + keywords.join('|') + ')\\b' : ''
-  const pattern = new RegExp(
-    '(#.*$|\\/\\/.*$|"(?:\\\\.|[^"\\\\])*"|\\\'(?:\\\\.|[^\\\'\\\\])*\\\'' +
-    '|`(?:\\\\.|[^`\\\\])*`' +
-    keywordPattern +
-    '|\\btrue\\b|\\bfalse\\b|\\bnull\\b|\\bNone\\b|\\bTrue\\b|\\bFalse\\b|-?\\b\\d+(?:\\.\\d+)?\\b)',
-    'gm',
-  )
+  const keywordPattern = keywords ? '\\b(?:' + keywords.join('|') + ')\\b' : ''
+  const tokenPattern = [
+    '#.*$',
+    '\\/\\/.*$',
+    '"(?:\\\\.|[^"\\\\])*"',
+    "'(?:\\.|[^'\\])*'",
+    '`(?:\\\\.|[^`\\\\])*`',
+    keywordPattern,
+    '\\btrue\\b|\\bfalse\\b|\\bnull\\b|\\bNone\\b|\\bTrue\\b|\\bFalse\\b',
+    '-?\\b\\d+(?:\\.\\d+)?\\b',
+    '\\b[A-Za-z_$][\\w$]*\\b',
+    '[{}()[\\]<>.=:+\\-*/%,;!?|&]+',
+  ].filter(Boolean).join('|')
+  const pattern = new RegExp(tokenPattern, 'gm')
   const parts: ReactNode[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = pattern.exec(code)) !== null) {
     if (match.index > lastIndex) parts.push(code.slice(lastIndex, match.index))
     const value = match[0]
-    const tokenClass = value.startsWith('#') || value.startsWith('//')
-      ? 'syntax-comment'
-      : value.startsWith('"') || value.startsWith("'") || value.startsWith('`')
-      ? 'syntax-string'
-      : isKeyword(value, keywords)
-        ? 'syntax-keyword'
-      : value === 'true' || value === 'false' || value === 'True' || value === 'False'
-        ? 'syntax-boolean'
-        : value === 'null' || value === 'None'
-          ? 'syntax-null'
-          : 'syntax-number'
+    const tokenClass = classifyToken(value, code, match.index, keywords)
     parts.push(<span className={tokenClass} key={parts.length}>{value}</span>)
     lastIndex = match.index + value.length
   }
   if (lastIndex < code.length) parts.push(code.slice(lastIndex))
   return parts
+}
+
+function classifyToken(value: string, source: string, index: number, keywords: string[] | null): string {
+  if (value.startsWith('#') || value.startsWith('//')) return 'syntax-comment'
+  if (value.startsWith('"') || value.startsWith("'") || value.startsWith('`')) return 'syntax-string'
+  if (isKeyword(value, keywords)) return 'syntax-keyword'
+  if (value === 'true' || value === 'false' || value === 'True' || value === 'False') return 'syntax-boolean'
+  if (value === 'null' || value === 'None') return 'syntax-null'
+  if (/^-?\d/.test(value)) return 'syntax-number'
+  if (/^[{}()[\]<>.=:+\-*/%,;!?|&]+$/.test(value)) return 'syntax-operator'
+  if (isFunctionIdentifier(value, source, index)) return 'syntax-function'
+  if (isTypeIdentifier(value, source, index)) return 'syntax-type'
+  return 'syntax-variable'
+}
+
+function isFunctionIdentifier(value: string, source: string, index: number): boolean {
+  if (!/^[$A-Z_a-z][$\w]*$/.test(value)) return false
+  const after = source.slice(index + value.length)
+  return /^\s*(?:<[^>]+>)?\s*\(/.test(after)
+}
+
+function isTypeIdentifier(value: string, source: string, index: number): boolean {
+  if (!/^[$A-Z_a-z][$\w]*$/.test(value)) return false
+  if (/^[A-Z]/.test(value)) return true
+  const before = source.slice(0, index).trimEnd()
+  return /[:<]\s*$/.test(before)
 }
 
 function keywordsForLanguage(language: string): string[] | null {

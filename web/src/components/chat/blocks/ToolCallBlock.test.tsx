@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ToolCallBlock as ToolCall, ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -123,6 +123,37 @@ describe('ToolCallBlock todo rendering', () => {
     expect(within(terminal).getByText('15 tests passed')).toBeTruthy()
     expect(within(terminal).getByText('exit 0')).toBeTruthy()
     expect(screen.queryByText('Tool output')).toBeNull()
+  })
+  it('lets completed shell results collapse from the header', () => {
+    const block: ToolCall = {
+      ...base,
+      kind: 'tool_call',
+      toolCallId: 'tc-shell-collapse',
+      toolName: 'shell',
+      status: 'finished',
+      arguments: { command: 'python app.py --test' },
+    }
+    const result: ToolResult = {
+      ...base,
+      id: 'tool-result-shell-collapse',
+      kind: 'tool_result',
+      toolCallId: 'tc-shell-collapse',
+      toolName: 'shell',
+      content: 'all tests passed',
+      isError: false,
+      metadata: { exit_code: 0, duration_ms: 40 },
+    }
+
+    render(<ToolCallBlock block={block} result={result} />)
+
+    const header = screen.getByRole('button', { name: /shell/ })
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('region', { name: 'Terminal output' })).toBeTruthy()
+
+    fireEvent.click(header)
+
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByRole('region', { name: 'Terminal output' })).toBeNull()
   })
   it('normalizes valid todo_write items only', () => {
     expect(todosFromToolArguments({

@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ExternalLink, File, FilePlus, Folder, FolderOpen, FolderPlus, FolderTree, GitBranch, GitCompare, History, Pencil, RefreshCw, RotateCcw, Search, Trash2, X } from 'lucide-react'
+import { ChevronRight, ExternalLink, File, FilePlus, Folder, FolderOpen, FolderPlus, FolderTree, GitBranch, GitCompare, History, Pencil, RefreshCw, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { WorkspaceCheckpoint, WorkspaceEntry, WorkspaceGitDiff, WorkspaceGitFile, WorkspaceGitStatus, WorkspaceRootInfo, WorkspaceTree } from '../../api/types'
@@ -25,6 +25,8 @@ type WorkspaceActionDialog =
   | { kind: 'new-folder'; title: string; description: string; label: string; initialValue: string }
   | { kind: 'rename'; title: string; description: string; label: string; initialValue: string; entry: WorkspaceEntry }
 
+type WorkspaceRailTab = 'files' | 'git'
+
 export function WorkspaceRail({
   side = 'right',
   sessionId = null,
@@ -42,6 +44,9 @@ export function WorkspaceRail({
   const [rootError, setRootError] = useState<string | null>(null)
   const [rootDialogOpen, setRootDialogOpen] = useState(false)
   const [tree, setTree] = useState<WorkspaceTree | null>(null)
+  const [treeCache, setTreeCache] = useState<Record<string, WorkspaceTree>>({})
+  const [expandedPaths, setExpandedPaths] = useState<string[]>([])
+  const [treeLoadingPaths, setTreeLoadingPaths] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<WorkspaceEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -59,16 +64,17 @@ export function WorkspaceRail({
   const [checkpoints, setCheckpoints] = useState<WorkspaceCheckpoint[]>([])
   const [checkpointsLoading, setCheckpointsLoading] = useState(false)
   const [checkpointMessage, setCheckpointMessage] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<WorkspaceRailTab>('files')
   const onTreeLoadedRef = useRef(onTreeLoaded)
   const onWorkspaceRootChangedRef = useRef(onWorkspaceRootChanged)
 
-  const visibleEntries = searchResults ?? tree?.entries ?? []
-  const title = tree?.path ? tree.path : 'Project root'
-  const browserTitle = searchResults ? 'Search results' : title
+  const rootTree = treeCache[''] ?? (tree?.path ? null : tree)
+  const rootEntries = rootTree?.entries ?? []
+  const visibleEntries = searchResults ?? rootEntries
   const currentRoot = rootInfo?.root ?? tree?.root ?? ''
   const rootLabel = useMemo(() => shortenPath(currentRoot), [currentRoot])
-  const breadcrumbs = useMemo(() => buildBreadcrumbs(tree?.path ?? ''), [tree?.path])
   const currentPath = tree?.path ?? ''
+  const gitChangeCount = gitStatus?.available ? gitStatus.files.length : 0
 
   useEffect(() => {
     onTreeLoadedRef.current = onTreeLoaded
@@ -87,17 +93,27 @@ export function WorkspaceRail({
       .finally(() => setRootLoading(false))
   }, [])
 
-  const loadTree = useCallback((path = '') => {
-    setLoading(true)
+  const loadTree = useCallback((path = '', options: { setCurrent?: boolean; preserveSearch?: boolean; expand?: boolean } = {}) => {
+    const normalizedPath = normalizeTreePath(path)
+    if (normalizedPath === '') setLoading(true)
+    setTreeLoadingPaths((current) => current.includes(normalizedPath) ? current : [...current, normalizedPath])
     setError(null)
-    setSearchResults(null)
-    api.workspaceTree(path)
+    if (!options.preserveSearch) setSearchResults(null)
+    api.workspaceTree(normalizedPath)
       .then((nextTree) => {
-        setTree(nextTree)
+        const cacheKey = normalizeTreePath(nextTree.path ?? normalizedPath)
+        setTreeCache((current) => ({ ...current, [cacheKey]: nextTree }))
+        if (options.setCurrent !== false) setTree(nextTree)
+        if (options.expand && cacheKey) {
+          setExpandedPaths((current) => current.includes(cacheKey) ? current : [...current, cacheKey])
+        }
         onTreeLoadedRef.current?.(nextTree)
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (normalizedPath === '') setLoading(false)
+        setTreeLoadingPaths((current) => current.filter((item) => item !== normalizedPath))
+      })
   }, [])
 
   const loadGitStatus = useCallback(() => {
@@ -129,10 +145,22 @@ export function WorkspaceRail({
 
   const reloadCurrentTree = useCallback(() => {
     loadRoot()
-    loadTree(currentPath)
+    loadTree('', { setCurrent: currentPath === '' })
+    if (currentPath) loadTree(currentPath, { preserveSearch: true, expand: true })
     loadGitStatus()
     loadCheckpoints()
   }, [currentPath, loadCheckpoints, loadGitStatus, loadRoot, loadTree])
+
+  const refreshActiveTab = useCallback(() => {
+    if (activeTab === 'git') {
+      loadGitStatus()
+      loadCheckpoints()
+      return
+    }
+    loadRoot()
+    loadTree('', { setCurrent: currentPath === '' })
+    if (currentPath) loadTree(currentPath, { preserveSearch: true, expand: true })
+  }, [activeTab, currentPath, loadCheckpoints, loadGitStatus, loadRoot, loadTree])
 
   const switchWorkspaceRoot = useCallback(async (path: string) => {
     const normalized = path.trim()
@@ -152,6 +180,9 @@ export function WorkspaceRail({
       setQuery('')
       setActiveDiff(null)
       setCheckpointMessage(null)
+      setTreeCache({})
+      setExpandedPaths([])
+      setTreeLoadingPaths([])
       onWorkspaceRootChangedRef.current?.(info)
       loadTree('')
       loadGitStatus()
@@ -180,11 +211,27 @@ export function WorkspaceRail({
   }
 
   const openEntry = (entry: WorkspaceEntry) => {
-    if (entry.kind === 'directory') {
-      loadTree(entry.path)
+    if (entry.kind !== 'directory') {
+      onSelectFile?.(entry.path)
       return
     }
-    onSelectFile?.(entry.path)
+    const path = normalizeTreePath(entry.path)
+    const expanded = expandedPaths.includes(path)
+    if (searchResults) {
+      setSearchResults(null)
+      setQuery('')
+    }
+    if (expanded) {
+      setExpandedPaths((current) => current.filter((item) => item !== path))
+      if (treeCache[path]) setTree(treeCache[path])
+      return
+    }
+    setExpandedPaths((current) => current.includes(path) ? current : [...current, path])
+    if (treeCache[path]) {
+      setTree(treeCache[path])
+      return
+    }
+    loadTree(path, { preserveSearch: true, expand: true })
   }
 
   const openNewFileDialog = () => {
@@ -231,16 +278,16 @@ export function WorkspaceRail({
       if (actionDialog.kind === 'new-file') {
         const created = await api.workspaceCreateFile(joinWorkspacePath(currentPath, normalized), '')
         setActionDialog(null)
-        loadTree(parentPath(created.path))
+        loadTree(parentPath(created.path), { expand: Boolean(parentPath(created.path)) })
         onSelectFile?.(created.path)
       } else if (actionDialog.kind === 'new-folder') {
         const created = await api.workspaceCreateDirectory(joinWorkspacePath(currentPath, normalized))
         setActionDialog(null)
-        loadTree(parentPath(created.path))
+        loadTree(parentPath(created.path), { expand: Boolean(parentPath(created.path)) })
       } else {
         const renamed = await api.workspaceRenamePath(actionDialog.entry.path, normalized)
         setActionDialog(null)
-        loadTree(parentPath(renamed.path))
+        loadTree(parentPath(renamed.path), { expand: Boolean(parentPath(renamed.path)) })
         onRenamedPath?.(actionDialog.entry.path, renamed.path, actionDialog.entry.kind)
       }
     } catch (err) {
@@ -349,7 +396,7 @@ export function WorkspaceRail({
             <Button title="New folder" aria-label="New workspace folder" onClick={openNewFolderDialog} disabled={loading || mutating}>
               <FolderPlus size={15} />
             </Button>
-            <Button title="Refresh workspace" aria-label="Refresh workspace" onClick={() => loadTree(tree?.path ?? '')} disabled={loading || mutating}>
+            <Button title="Refresh workspace" aria-label="Refresh workspace" onClick={refreshActiveTab} disabled={loading || gitLoading || mutating}>
               <RefreshCw size={15} />
             </Button>
             {onOpenWorkspace ? (
@@ -365,108 +412,131 @@ export function WorkspaceRail({
           </div>
         </header>
 
-        <WorkspaceRootStrip
-          info={rootInfo}
-          error={rootError}
-          loading={rootLoading}
-          mutating={mutating}
-          onSwitch={switchWorkspaceRoot}
-        />
-
-        <nav className="workspace-rail-breadcrumb" aria-label="Workspace path">
-          {searchResults ? (
-            <span className="workspace-rail-search-crumb">
-              <Search size={13} />
-              Search &quot;{query.trim()}&quot;
-            </span>
-          ) : (
-            <>
-              <button type="button" onClick={() => loadTree('')} title={tree?.root ?? 'Workspace root'}>
-                root
-              </button>
-              {breadcrumbs.map((crumb) => (
-                <span key={crumb.path} className="workspace-rail-crumb-segment">
-                  <ChevronRight size={12} />
-                  <button type="button" onClick={() => loadTree(crumb.path)} title={crumb.path}>
-                    {crumb.name}
-                  </button>
-                </span>
-              ))}
-            </>
-          )}
+        <nav className="workspace-rail-tabs" role="tablist" aria-label="Workspace panels">
+          <button
+            type="button"
+            role="tab"
+            id="workspace-rail-tab-files"
+            aria-controls="workspace-rail-panel-files"
+            aria-selected={activeTab === 'files'}
+            className={activeTab === 'files' ? 'active' : ''}
+            onClick={() => setActiveTab('files')}
+          >
+            <FolderTree size={15} />
+            <span>Files</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="workspace-rail-tab-git"
+            aria-controls="workspace-rail-panel-git"
+            aria-selected={activeTab === 'git'}
+            className={activeTab === 'git' ? 'active' : ''}
+            onClick={() => setActiveTab('git')}
+          >
+            <GitBranch size={15} />
+            <span>Source Control</span>
+            {gitChangeCount > 0 ? <em>{gitChangeCount > 99 ? '99+' : gitChangeCount}</em> : null}
+          </button>
         </nav>
 
-        <WorkspaceGitPanel
-          status={gitStatus}
-          loading={gitLoading}
-          error={gitError}
-          activeDiff={activeDiff}
-          diffLoadingPath={diffLoadingPath}
-          checkpoints={checkpoints}
-          checkpointsLoading={checkpointsLoading}
-          checkpointMessage={checkpointMessage}
-          mutating={mutating}
-          onCheckpoint={createCheckpoint}
-          onOpenDiff={openGitDiff}
-          onRefresh={loadGitStatus}
-          onRestore={setRestoreTarget}
-          onRestoreCheckpoint={setCheckpointRestoreTarget}
-        />
+        {activeTab === 'files' ? (
+          <section
+            id="workspace-rail-panel-files"
+            className="workspace-rail-tab-panel workspace-rail-tab-panel-files"
+            role="tabpanel"
+            aria-labelledby="workspace-rail-tab-files"
+          >
+            <WorkspaceRootStrip
+              info={rootInfo}
+              error={rootError}
+              loading={rootLoading}
+              mutating={mutating}
+              onSwitch={switchWorkspaceRoot}
+            />
 
-        <div className="workspace-rail-browser" aria-label="Workspace browser">
-          <div className="workspace-rail-path">
-            <div>
-              <strong>{browserTitle}</strong>
-              <span>{visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}</span>
-            </div>
-            {tree?.parent_path !== null && tree?.parent_path !== undefined ? (
-              <button type="button" onClick={() => loadTree(tree.parent_path ?? '')}>
-                <ChevronLeft size={14} /> Parent
-              </button>
-            ) : null}
-          </div>
-          <form className="workspace-rail-search" onSubmit={(event) => { event.preventDefault(); runSearch() }}>
-            <Search size={14} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files" />
-            {searchResults ? (
-              <button type="button" aria-label="Clear workspace search" onClick={() => { setSearchResults(null); setQuery('') }}>
-                <X size={14} />
-              </button>
-            ) : (
-              <button type="submit">Search</button>
-            )}
-          </form>
-          {error ? <div className="workspace-rail-error">{error}</div> : null}
-          <div className="workspace-rail-list">
-            {loading && visibleEntries.length === 0 ? <Spinner label="Loading workspace" /> : null}
-            {visibleEntries.length === 0 && !loading ? <div className="empty-chat">No files found.</div> : null}
-            {visibleEntries.map((entry) => (
-              <div
-                key={entry.path || '__root__'}
-                className={'workspace-rail-entry workspace-rail-entry-kind-' + entry.kind + (selectedFilePath === entry.path ? ' active' : '')}
-              >
-                <button
-                  type="button"
-                  className="workspace-rail-entry-main"
-                  onClick={() => openEntry(entry)}
-                  title={entry.path || '.'}
-                >
-                  {entry.kind === 'directory' ? <Folder size={15} /> : <File size={15} />}
-                  <span>{entry.name}</span>
-                  {searchResults ? <small>{entry.path || '.'}</small> : null}
-                </button>
-                <div className="workspace-rail-entry-actions" aria-label={'Actions for ' + entry.name}>
-                  <button type="button" aria-label={'Rename ' + entry.name} title="Rename" onClick={() => openRenameDialog(entry)} disabled={mutating}>
-                    <Pencil size={13} />
+            <div className="workspace-rail-browser workspace-rail-browser-tree" aria-label="Workspace browser">
+              <form className="workspace-rail-search" onSubmit={(event) => { event.preventDefault(); runSearch() }}>
+                <Search size={14} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files..." />
+                {searchResults ? (
+                  <button type="button" aria-label="Clear workspace search" onClick={() => { setSearchResults(null); setQuery('') }}>
+                    <X size={14} />
                   </button>
-                  <button type="button" aria-label={'Delete ' + entry.name} title="Delete" onClick={() => setDeleteTarget(entry)} disabled={mutating}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
+                ) : (
+                  <button type="submit">Search</button>
+                )}
+              </form>
+              {error ? <div className="workspace-rail-error">{error}</div> : null}
+              <div className="workspace-rail-tree" aria-label={searchResults ? 'Workspace search results' : 'Workspace file tree'}>
+                {loading && rootEntries.length === 0 && !searchResults ? <Spinner label="Loading workspace" /> : null}
+                {searchResults ? (
+                  <>
+                    <div className="workspace-rail-tree-search-heading">Search &quot;{query.trim()}&quot;</div>
+                    {visibleEntries.length === 0 && !loading ? <div className="empty-chat">No files found.</div> : null}
+                    <WorkspaceTreeRows
+                      entries={visibleEntries}
+                      level={0}
+                      selectedFilePath={selectedFilePath}
+                      expandedPaths={expandedPaths}
+                      treeCache={treeCache}
+                      treeLoadingPaths={treeLoadingPaths}
+                      mutating={mutating}
+                      searchMode
+                      onOpen={openEntry}
+                      onRename={openRenameDialog}
+                      onDelete={setDeleteTarget}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <div className="workspace-rail-tree-root" title={currentRoot || 'Workspace root'}>
+                      <FolderOpen size={15} aria-hidden="true" />
+                      <span>{rootInfo?.name || rootLabel || 'Project root'}</span>
+                    </div>
+                    {rootEntries.length === 0 && !loading ? <div className="empty-chat">No files found.</div> : null}
+                    <WorkspaceTreeRows
+                      entries={rootEntries}
+                      level={1}
+                      selectedFilePath={selectedFilePath}
+                      expandedPaths={expandedPaths}
+                      treeCache={treeCache}
+                      treeLoadingPaths={treeLoadingPaths}
+                      mutating={mutating}
+                      onOpen={openEntry}
+                      onRename={openRenameDialog}
+                      onDelete={setDeleteTarget}
+                    />
+                  </>
+                )}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          </section>
+        ) : (
+          <section
+            id="workspace-rail-panel-git"
+            className="workspace-rail-tab-panel workspace-rail-tab-panel-git"
+            role="tabpanel"
+            aria-labelledby="workspace-rail-tab-git"
+          >
+            <WorkspaceGitPanel
+              status={gitStatus}
+              loading={gitLoading}
+              error={gitError}
+              activeDiff={activeDiff}
+              diffLoadingPath={diffLoadingPath}
+              checkpoints={checkpoints}
+              checkpointsLoading={checkpointsLoading}
+              checkpointMessage={checkpointMessage}
+              mutating={mutating}
+              onCheckpoint={createCheckpoint}
+              onOpenDiff={openGitDiff}
+              onRefresh={loadGitStatus}
+              onRestore={setRestoreTarget}
+              onRestoreCheckpoint={setCheckpointRestoreTarget}
+            />
+          </section>
+        )}
       </aside>
       {actionDialog ? (
         <WorkspaceNameDialog
@@ -519,6 +589,99 @@ export function WorkspaceRail({
           onConfirm={confirmCheckpointRestore}
         />
       ) : null}
+    </>
+  )
+}
+
+
+function WorkspaceTreeRows({
+  entries,
+  level,
+  selectedFilePath,
+  expandedPaths,
+  treeCache,
+  treeLoadingPaths,
+  mutating,
+  searchMode = false,
+  onOpen,
+  onRename,
+  onDelete,
+}: {
+  entries: WorkspaceEntry[]
+  level: number
+  selectedFilePath?: string | null
+  expandedPaths: string[]
+  treeCache: Record<string, WorkspaceTree>
+  treeLoadingPaths: string[]
+  mutating: boolean
+  searchMode?: boolean
+  onOpen: (entry: WorkspaceEntry) => void
+  onRename: (entry: WorkspaceEntry) => void
+  onDelete: (entry: WorkspaceEntry) => void
+}) {
+  return (
+    <>
+      {entries.map((entry) => {
+        const isDirectory = entry.kind === 'directory'
+        const path = normalizeTreePath(entry.path)
+        const expanded = isDirectory && expandedPaths.includes(path)
+        const children = treeCache[path]?.entries ?? []
+        const loading = isDirectory && treeLoadingPaths.includes(path)
+        const hasLoaded = Boolean(treeCache[path])
+        return (
+          <div className="workspace-rail-tree-node" key={entry.path || '__root__'}>
+            <div
+              className={'workspace-rail-tree-row workspace-rail-entry-kind-' + entry.kind + (selectedFilePath === entry.path ? ' active' : '') + (expanded ? ' expanded' : '')}
+              style={{ paddingLeft: 8 + level * 16 }}
+            >
+              <button
+                type="button"
+                className="workspace-rail-tree-main"
+                onClick={() => onOpen(entry)}
+                title={entry.path || '.'}
+                aria-expanded={isDirectory ? expanded : undefined}
+              >
+                {isDirectory ? (
+                  <ChevronRight className="workspace-rail-tree-chevron" size={13} aria-hidden="true" />
+                ) : (
+                  <span className="workspace-rail-tree-chevron workspace-rail-tree-chevron-empty" aria-hidden="true" />
+                )}
+                {isDirectory ? (expanded ? <FolderOpen size={15} /> : <Folder size={15} />) : <File size={15} />}
+                <span>{entry.name}</span>
+                {searchMode ? <small>{entry.path || '.'}</small> : null}
+              </button>
+              <div className="workspace-rail-entry-actions" aria-label={'Actions for ' + entry.name}>
+                <button type="button" aria-label={'Rename ' + entry.name} title="Rename" onClick={() => onRename(entry)} disabled={mutating}>
+                  <Pencil size={13} />
+                </button>
+                <button type="button" aria-label={'Delete ' + entry.name} title="Delete" onClick={() => onDelete(entry)} disabled={mutating}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+            {isDirectory && expanded ? (
+              <div className="workspace-rail-tree-children">
+                {loading ? <div className="workspace-rail-tree-loading" style={{ paddingLeft: 24 + (level + 1) * 16 }}><Spinner label={'Loading ' + entry.name} /></div> : null}
+                {!loading && hasLoaded && children.length === 0 ? <div className="workspace-rail-tree-empty" style={{ paddingLeft: 24 + (level + 1) * 16 }}>Empty folder</div> : null}
+                {children.length > 0 ? (
+                  <WorkspaceTreeRows
+                    entries={children}
+                    level={level + 1}
+                    selectedFilePath={selectedFilePath}
+                    expandedPaths={expandedPaths}
+                    treeCache={treeCache}
+                    treeLoadingPaths={treeLoadingPaths}
+                    mutating={mutating}
+                    onOpen={onOpen}
+                    onRename={onRename}
+                    onDelete={onDelete}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
     </>
   )
 }
@@ -825,14 +988,9 @@ function shortenPath(path: string): string {
   return parts.slice(-2).join('/')
 }
 
-function buildBreadcrumbs(path: string): Array<{ name: string; path: string }> {
-  return path
-    .split(/[\/]+/)
-    .filter(Boolean)
-    .map((name, index, parts) => ({
-      name,
-      path: parts.slice(0, index + 1).join('/'),
-    }))
+
+function normalizeTreePath(path: string): string {
+  return normalizeInputPath(path)
 }
 
 function normalizeInputPath(path: string): string {

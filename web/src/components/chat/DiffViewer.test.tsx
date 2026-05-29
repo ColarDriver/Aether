@@ -10,8 +10,10 @@ describe('DiffViewer', () => {
 
     expect(document.querySelector('.diff-line-remove')?.textContent).toContain('old')
     expect(document.querySelector('.diff-line-add')?.textContent).toContain('new')
-    expect(document.querySelector('.diff-line-remove .diff-line-number-old')?.textContent).toContain('1')
-    expect(document.querySelector('.diff-line-add .diff-line-number-new')?.textContent).toContain('1')
+    expect(document.querySelector('.diff-line-remove .diff-line-number')?.textContent).toContain('1')
+    expect(document.querySelector('.diff-line-add .diff-line-number')?.textContent).toContain('1')
+    expect(document.querySelectorAll('.diff-line-remove .diff-marker')).toHaveLength(1)
+    expect(document.querySelectorAll('.diff-line-add .diff-marker')).toHaveLength(1)
   })
 
   it('parses unified diff hunks with old and new line numbers', () => {

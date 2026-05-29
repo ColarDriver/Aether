@@ -1,6 +1,7 @@
 import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, ChevronLeft, ChevronRight, CircleGauge, Command, Eye, FileText, Folder, Paperclip, Plus, Route, Send, Server, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, RefObject } from 'react'
+import { createPortal } from 'react-dom'
+import type { CSSProperties, KeyboardEvent, RefObject } from 'react'
 import { api } from '../../api/client'
 import type { ContextStatus, PermissionMode, SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
 import type { ChatAttachment, TokenUsage } from '../../chat-rendering'
@@ -16,6 +17,7 @@ import { PermissionModeSelector } from './PermissionModeSelector'
 import { SlashPopover, type SlashPopoverHandle } from './SlashPopover'
 import { WorkspaceReferencePopover, type WorkspaceReferencePopoverHandle } from './WorkspaceReferencePopover'
 import { attachmentsFromFiles, filesFromDataTransfer } from './composerAttachments'
+import { floatingMenuPosition } from './floatingMenuPosition'
 import { isSlashCommandInput, WEB_LOCAL_INSPECTOR_COMMANDS } from './slashExecute'
 import { mergeWorkspaceAttachment, syncWorkspaceReferenceAttachmentsForValue, workspaceReferenceTokenExists } from './workspaceReferences'
 
@@ -100,6 +102,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const controlMenuRef = useRef<HTMLDivElement>(null)
+  const controlMenuPopoverRef = useRef<HTMLDivElement>(null)
   const slashPopoverRef = useRef<SlashPopoverHandle>(null)
   const workspaceReferencePopoverRef = useRef<WorkspaceReferencePopoverHandle>(null)
   const appliedDraftPatchIdRef = useRef<number | null>(null)
@@ -160,7 +163,10 @@ export function Composer({
   useEffect(() => {
     if (!controlMenuOpen) return
     const handler = (event: MouseEvent) => {
-      if (controlMenuRef.current && !controlMenuRef.current.contains(event.target as Node)) setControlMenuOpen(false)
+      const target = event.target as Node
+      const inTrigger = Boolean(controlMenuRef.current?.contains(target))
+      const inPopover = Boolean(controlMenuPopoverRef.current?.contains(target))
+      if (!inTrigger && !inPopover) setControlMenuOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -547,6 +553,7 @@ export function Composer({
             onWorkspace={() => insertAtCursor('@')}
             onInspector={openInspector}
             refEl={controlMenuRef}
+            popoverRef={controlMenuPopoverRef}
           />
           <Button
             aria-label="Attach files"
@@ -659,6 +666,7 @@ function ComposerControlMenu({
   onWorkspace,
   onInspector,
   refEl,
+  popoverRef,
 }: {
   disabled: boolean
   open: boolean
@@ -668,52 +676,84 @@ function ComposerControlMenu({
   onWorkspace: () => void
   onInspector: (kind: ComposerInspectorKind) => void
   refEl: RefObject<HTMLDivElement | null>
+  popoverRef: RefObject<HTMLDivElement | null>
 }) {
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setPopoverStyle(null)
+      return
+    }
+    const updatePosition = () => {
+      if (!refEl.current) return
+      setPopoverStyle(floatingMenuPosition(refEl.current, 220))
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open, refEl])
+
+  const menu = open && typeof document !== 'undefined'
+    ? createPortal(
+      <div
+        className="composer-control-popover"
+        ref={popoverRef}
+        role="menu"
+        aria-label="Composer menu"
+        style={popoverStyle ?? { visibility: 'hidden' }}
+      >
+        <div className="composer-control-section">
+          <button type="button" role="menuitem" onClick={onAttach}>
+            <Paperclip size={14} />
+            <span>Attach files</span>
+          </button>
+          <button type="button" role="menuitem" onClick={onSlash}>
+            <Command size={14} />
+            <span>Slash command</span>
+          </button>
+          <button type="button" role="menuitem" onClick={onWorkspace}>
+            <AtSign size={14} />
+            <span>Workspace reference</span>
+          </button>
+        </div>
+        <div className="composer-control-section">
+          <button type="button" role="menuitem" onClick={() => onInspector('status')}>
+            <Activity size={14} />
+            <span>Status</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => onInspector('context')}>
+            <Brain size={14} />
+            <span>Context</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => onInspector('cost')}>
+            <BarChart3 size={14} />
+            <span>Cost</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => onInspector('skills')}>
+            <Sparkles size={14} />
+            <span>Skills</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => onInspector('mcp')}>
+            <Server size={14} />
+            <span>MCP</span>
+          </button>
+        </div>
+      </div>,
+      document.body,
+    )
+    : null
+
   return (
     <div className="composer-control-menu" ref={refEl}>
       <Button aria-label="Open composer menu" title="Open composer menu" onClick={onToggle} disabled={disabled}>
         <Plus size={16} />
       </Button>
-      {open ? (
-        <div className="composer-control-popover" role="menu" aria-label="Composer menu">
-          <div className="composer-control-section">
-            <button type="button" role="menuitem" onClick={onAttach}>
-              <Paperclip size={14} />
-              <span>Attach files</span>
-            </button>
-            <button type="button" role="menuitem" onClick={onSlash}>
-              <Command size={14} />
-              <span>Slash command</span>
-            </button>
-            <button type="button" role="menuitem" onClick={onWorkspace}>
-              <AtSign size={14} />
-              <span>Workspace reference</span>
-            </button>
-          </div>
-          <div className="composer-control-section">
-            <button type="button" role="menuitem" onClick={() => onInspector('status')}>
-              <Activity size={14} />
-              <span>Status</span>
-            </button>
-            <button type="button" role="menuitem" onClick={() => onInspector('context')}>
-              <Brain size={14} />
-              <span>Context</span>
-            </button>
-            <button type="button" role="menuitem" onClick={() => onInspector('cost')}>
-              <BarChart3 size={14} />
-              <span>Cost</span>
-            </button>
-            <button type="button" role="menuitem" onClick={() => onInspector('skills')}>
-              <Sparkles size={14} />
-              <span>Skills</span>
-            </button>
-            <button type="button" role="menuitem" onClick={() => onInspector('mcp')}>
-              <Server size={14} />
-              <span>MCP</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {menu}
     </div>
   )
 }

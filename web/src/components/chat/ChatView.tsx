@@ -23,6 +23,7 @@ import type { CurrentTurnFileChangeAction, CurrentTurnUndoAction } from './block
 type Props = {
   session: SessionInfo | null
   workspaceRootVersion?: number
+  onOpenWorkspaceFile?: (path: string) => void
 }
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
@@ -35,7 +36,7 @@ export type ScrollSnapshot = {
   atBottom: boolean
 }
 
-export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
+export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFile }: Props) {
   const sessionId = session?.session_id ?? null
   const loadTranscript = useChatStore((state) => state.loadTranscript)
   const blocks = useChatStore((state) => (sessionId ? state.blocksBySession[sessionId] ?? EMPTY_CHAT_BLOCKS : EMPTY_CHAT_BLOCKS))
@@ -478,6 +479,7 @@ export function ChatView({ session, workspaceRootVersion = 0 }: Props) {
           onRespondApproval={respondApproval}
           onAcceptFileChange={acceptFileChange}
           onRevertFileChange={revertFileChange}
+          onOpenFileChange={onOpenWorkspaceFile}
           onUndoTurn={requestUndoTurn}
           onRetryAssistantMessage={retryAssistantMessage}
           onRetryUserMessage={retryUserMessage}

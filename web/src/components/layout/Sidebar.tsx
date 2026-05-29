@@ -2,7 +2,6 @@ import { MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { navItems } from '../../navItems'
 import type { ConsoleView, SessionInfo } from '../../api/types'
-import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 
 type Props = {
@@ -75,13 +74,6 @@ export function SessionSidebar({
   return (
     <>
       <aside className={'sidebar sidebar-placement-' + placement}>
-        <div className="brand">
-          <div className="brand-mark">A</div>
-          <div>
-            <strong>Aether</strong>
-            <span>{sessions.length + ' sessions'}</span>
-          </div>
-        </div>
         <div className="sidebar-primary-actions">
           <button type="button" className="new-chat-button" onClick={onNewSession}>
             <Plus size={15} />
@@ -90,9 +82,6 @@ export function SessionSidebar({
         </div>
         <div className="sidebar-section-header">
           <span>Sessions</span>
-          <Button title="New session" aria-label="New session quick action" onClick={onNewSession}>
-            <Plus size={15} />
-          </Button>
         </div>
         <label className="session-search">
           <Search size={14} />

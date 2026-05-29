@@ -29,6 +29,16 @@ describe("appearanceStore", () => {
     expect(localStorage.getItem("aether-web-theme")).toBe("dark")
   })
 
+  it("accepts the studio theme from service preferences", async () => {
+    vi.spyOn(api, "prefs").mockResolvedValue({ "web.theme": "studio", "web.locale": "en" })
+
+    await useAppearanceStore.getState().bootstrap()
+
+    expect(useAppearanceStore.getState().theme).toBe("studio")
+    expect(document.documentElement.dataset.theme).toBe("studio")
+    expect(localStorage.getItem("aether-web-theme")).toBe("studio")
+  })
+
   it("saves theme and locale changes through prefs", async () => {
     const setPref = vi.spyOn(api, "setPref").mockResolvedValue({ ok: true, key: "web.theme" })
 

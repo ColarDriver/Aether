@@ -122,6 +122,22 @@ class WebPromptStore:
         with self._lock:
             return self._load().get(prompt_id)
 
+    def terminal_replay_records(self, *, max_age_seconds: float = 24 * 60 * 60, limit: int = 50) -> list[WebPromptRecord]:
+        now = self._clock()
+        cutoff = now - max(0.0, max_age_seconds)
+        with self._lock:
+            records = [
+                record
+                for record in self._load().values()
+                if record.status in {"stale", "expired", "disconnected"}
+                and bool(record.frame)
+                and record.created_at >= cutoff
+            ]
+        records.sort(key=lambda record: record.created_at)
+        if limit > 0 and len(records) > limit:
+            records = records[-limit:]
+        return records
+
     def mark_orphaned_stale(self) -> int:
         now = self._clock()
         changed = 0

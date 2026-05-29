@@ -68,7 +68,11 @@ describe('WorkspaceRail', () => {
     expect(screen.getByLabelText('Workspace root').textContent).toContain('Aether')
     expect(screen.getByRole('button', { name: 'root' })).toBeTruthy()
     expect(screen.queryByText('Select a file')).toBeNull()
-    expect(screen.getByText(/2 items.*1 dir.*1 file/)).toBeTruthy()
+    expect(screen.getByText('2 items')).toBeTruthy()
+    expect(screen.queryByText('18 B')).toBeNull()
+    expect(screen.queryByText(/\bdir\b/i)).toBeNull()
+    expect(document.querySelector('.workspace-rail-entry-kind-directory')).toBeTruthy()
+    expect(document.querySelector('.workspace-rail-entry-kind-file')).toBeTruthy()
 
     fireEvent.click(screen.getByTitle('README.md'))
     expect(onSelectFile).toHaveBeenCalledWith('README.md')

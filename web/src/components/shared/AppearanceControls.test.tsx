@@ -20,6 +20,8 @@ describe("AppearanceControls", () => {
 
     render(<AppearanceControls />)
 
+    expect(screen.getByRole("option", { name: "Aether Studio" })).toBeTruthy()
+
     fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "dark" } })
     fireEvent.change(screen.getByLabelText("Language"), { target: { value: "zh" } })
 

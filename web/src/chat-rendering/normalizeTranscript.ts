@@ -17,11 +17,11 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
   const blocks: ChatBlock[] = []
 
   transcript.forEach((message, index) => {
-    const timestamp = index
+    const metadata = recordFromUnknown(message.metadata)
+    const timestamp = timestampFromMetadata(metadata, index)
     const runId = 'persisted-' + index
 
     if (message.role === 'user') {
-      const metadata = recordFromUnknown(message.metadata)
       const text = message.text ?? ''
       const notification = parseTaskNotification(text)
       if (notification && (metadata.source === 'task_notification' || isTaskNotificationText(text))) {
@@ -75,7 +75,6 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
 
     if (message.role === 'assistant') {
       const text = message.text ?? ''
-      const metadata = recordFromUnknown(message.metadata)
       if (text.trim() || !message.tool_calls?.length) {
         blocks.push({
           id: 'persisted-' + index + '-assistant',
@@ -108,7 +107,6 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
     }
 
     if (message.role === 'tool') {
-      const metadata = recordFromUnknown(message.metadata)
       const toolCallId = message.tool_call_id || 'tool-' + index
       const askIndex = blocks.findIndex((block) => block.kind === 'ask_user_question' && block.toolCallId === toolCallId)
       if (askIndex >= 0) {
@@ -156,6 +154,21 @@ export function normalizeTranscript(sessionId: string, transcript: TranscriptMes
   })
 
   return applyPersistedToolResultStatuses(blocks)
+}
+
+
+function timestampFromMetadata(metadata: Record<string, unknown>, fallback: number): number {
+  for (const key of ['created_at', 'createdAt', 'timestamp', 'time']) {
+    const value = metadata[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const numeric = Number(value)
+      if (Number.isFinite(numeric)) return numeric
+      const parsed = Date.parse(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return fallback
 }
 
 function toolCallBlock(input: {

@@ -46,7 +46,7 @@ const WORKSPACE_RAIL_WIDTH_MIN = 320
 const WORKSPACE_RAIL_WIDTH_MAX = 640
 const WORKSPACE_FILE_PANEL_WIDTH_DEFAULT = 560
 const WORKSPACE_FILE_PANEL_WIDTH_MIN = 320
-const MIN_CHAT_COLUMN_WIDTH = 320
+const MIN_CHAT_COLUMN_WIDTH = 420
 const MIN_CHAT_WORKSPACE_WIDTH = MIN_CHAT_COLUMN_WIDTH
 const RESIZE_KEY_STEP = 16
 
@@ -246,6 +246,9 @@ export function App() {
   }, [workspaceFilePanelClampContext, workspaceFilePanelMaxWidth])
 
   const handleSelectWorkspaceFile = useCallback((path: string) => {
+    if (!workspacePreviewPath) {
+      setWorkspaceFilePanelWidth(clampWorkspaceFilePanelWidth(Number.POSITIVE_INFINITY, workspaceFilePanelClampContext))
+    }
     setWorkspacePreviewPath(path)
     setWorkspacePreviewFile(null)
     setWorkspacePreviewError(null)
@@ -260,7 +263,7 @@ export function App() {
         setWorkspacePreviewError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => setWorkspacePreviewLoading(false))
-  }, [])
+  }, [workspaceFilePanelClampContext, workspacePreviewPath])
 
   const closeWorkspacePreview = useCallback(() => {
     setWorkspacePreviewPath(null)
@@ -447,7 +450,7 @@ export function App() {
                   />
                 </>
               ) : null}
-              <ChatView session={activeSession} workspaceRootVersion={workspaceRootVersion} />
+              <ChatView session={activeSession} workspaceRootVersion={workspaceRootVersion} onOpenWorkspaceFile={handleSelectWorkspaceFile} />
               {panelsSwappedInChat ? (
                 <>
                   <div

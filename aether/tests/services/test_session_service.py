@@ -109,6 +109,43 @@ def test_delete_removes_storage_file_and_late_run_persist_cannot_recreate_it(tmp
     assert not session_file("sess-a", base=tmp_path / "sessions").exists()
 
 
+def test_persist_run_result_stamps_and_preserves_message_created_at(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    service.create(SessionCreateRequest(session_id="time-sess", provider="openai", model="gpt-5"))
+
+    service.persist_run_result(
+        "time-sess",
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+    )
+    saved = load_session("time-sess", base=tmp_path / "sessions")
+    assert saved is not None
+    first_user_time = saved.messages[0]["metadata"]["created_at"]
+    first_assistant_time = saved.messages[1]["metadata"]["created_at"]
+    assert first_user_time.endswith("Z")
+    assert first_assistant_time.endswith("Z")
+
+    service.persist_run_result(
+        "time-sess",
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    saved_again = load_session("time-sess", base=tmp_path / "sessions")
+    assert saved_again is not None
+    assert saved_again.messages[0]["metadata"]["created_at"] == first_user_time
+    assert saved_again.messages[1]["metadata"]["created_at"] == first_assistant_time
+    assert saved_again.messages[2]["metadata"]["created_at"].endswith("Z")
+
+    transcript = service.transcript("time-sess")
+    assert transcript[0].metadata is not None
+    assert transcript[0].metadata["created_at"] == first_user_time
+
+
 def test_delete_removes_legacy_filename_with_matching_embedded_session_id(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)
     record = SessionRecord.new(session_id="sess-legacy", provider="openai", model="gpt-5")
@@ -328,6 +365,162 @@ def test_rewind_to_before_first_message_clears_transcript(tmp_path, monkeypatch:
     assert saved.messages == []
     assert saved.first_user_message == ""
 
+
+
+def test_turn_checkpoints_ignore_workspace_checkpoint_manifest_without_edit_evidence(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="checkpoint-baseline", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "what changed?"},
+        {
+            "role": "assistant",
+            "content": "I inspected the workspace.",
+            "metadata": {
+                "workspace_checkpoint": {
+                    "checkpoint_id": "cp-baseline",
+                    "root": "/repo",
+                    "files": [{"path": "src/preexisting.ts"}],
+                },
+            },
+        },
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoints("checkpoint-baseline")
+
+    assert result.checkpoints == []
+
+
+def test_turn_checkpoints_ignore_read_only_tool_paths(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="read-only-path", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "read README"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-read",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": {"path": "README.md"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-read",
+            "name": "read_file",
+            "content": "# Aether",
+            "metadata": {"path": "README.md"},
+        },
+        {"role": "assistant", "content": "Read it."},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoints("read-only-path")
+
+    assert result.checkpoints == []
+
+
+
+def test_turn_checkpoints_ignore_unexecuted_mutating_tool_arguments(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="unexecuted-edit", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "edit app.py"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-edit",
+                    "type": "function",
+                    "function": {"name": "file_edit", "arguments": {"path": "app.py"}},
+                }
+            ],
+        },
+        {"role": "assistant", "content": "I could not edit it."},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoints("unexecuted-edit")
+
+    assert result.checkpoints == []
+
+
+def test_turn_checkpoints_ignore_mutating_tool_path_without_edit_evidence(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    record = SessionRecord.new(session_id="path-only-edit", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "edit app.py"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-edit",
+                    "type": "function",
+                    "function": {"name": "file_edit", "arguments": {"path": "app.py"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-edit",
+            "name": "file_edit",
+            "content": "permission denied",
+            "metadata": {"path": "app.py", "workspace_checkpoint": {"checkpoint_id": "cp-path", "root": "/repo"}},
+        },
+        {"role": "assistant", "content": "No edit was applied."},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoints("path-only-edit")
+
+    assert result.checkpoints == []
+
+
+def test_turn_checkpoints_use_diff_metadata_for_files_and_stats(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+    record = SessionRecord.new(session_id="diff-checkpoint", provider="openai", model="gpt-5")
+    record.messages = [
+        {"role": "user", "id": "turn-1", "content": "edit app.py"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-edit",
+                    "type": "function",
+                    "function": {"name": "file_edit", "arguments": {"path": "app.py"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-edit",
+            "name": "file_edit",
+            "content": "edited app.py",
+            "metadata": {
+                "diff": diff,
+                "workspace_checkpoint": {"checkpoint_id": "cp-edit", "root": "/repo", "files": [{"path": "preexisting.py"}]},
+            },
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    save_session(record, base=tmp_path / "sessions")
+
+    result = service.turn_checkpoints("diff-checkpoint")
+
+    assert len(result.checkpoints) == 1
+    checkpoint = result.checkpoints[0]
+    assert checkpoint.code.files_changed == ["app.py"]
+    assert checkpoint.code.insertions == 1
+    assert checkpoint.code.deletions == 1
+    assert checkpoint.code.checkpoint_id == "cp-edit"
+    assert checkpoint.work_dir == "/repo"
 
 def test_turn_checkpoint_diff_reads_tool_result_metadata(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path, monkeypatch)

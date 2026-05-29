@@ -36,7 +36,6 @@ describe('Sidebar', () => {
       />,
     )
 
-    expect(screen.getByText('Aether')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Models/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     expect(screen.getByText('Plan auth flow')).toBeTruthy()

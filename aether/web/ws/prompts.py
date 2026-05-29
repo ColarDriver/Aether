@@ -54,6 +54,10 @@ class WebPromptBroker:
     def replay_pending(self, send_frame: FrameSender) -> None:
         with self._lock:
             frames = [dict(prompt.frame) for prompt in self._pending.values()]
+        if self._prompt_store is not None:
+            for record in self._prompt_store.terminal_replay_records():
+                frames.append(dict(record.frame))
+                frames.append(_terminal_frame_from_record(record))
         for frame in frames:
             send_frame(frame)
 
@@ -379,6 +383,20 @@ def _rule_from_payload(payload: Any) -> ToolPermissionRule | None:
         command_prefix=payload.get("command_prefix") if isinstance(payload.get("command_prefix"), str) else None,
         reason=payload.get("reason") if isinstance(payload.get("reason"), str) else None,
     )
+
+
+def _terminal_frame_from_record(record: WebPromptRecord) -> dict[str, Any]:
+    status = record.status if record.status in {"stale", "expired", "disconnected"} else "missing"
+    payload: dict[str, Any] = {
+        "prompt_id": record.prompt_id,
+        "run_id": record.run_id,
+        "session_id": record.session_id,
+        "status": status,
+        "result": record.resolution or {},
+    }
+    if record.reason:
+        payload["reason"] = record.reason
+    return {"type": "prompt." + status, "payload": payload}
 
 
 def _payload_run_id(frame: dict[str, Any]) -> str | None:

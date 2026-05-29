@@ -2,6 +2,7 @@ import { Bot } from 'lucide-react'
 import type { AssistantMessageBlock as AssistantMessage } from '../../../chat-rendering'
 import { MarkdownRenderer } from '../MarkdownRenderer'
 import { MessageActionBar } from '../MessageActionBar'
+import { MessageMeta } from './MessageMeta'
 
 type Props = {
   block: AssistantMessage
@@ -21,7 +22,8 @@ export function AssistantMessageBlock({ block, actionsDisabled = false, onFork, 
     <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
       <div className="chat-block-label">
         <span className="chat-role-icon" aria-hidden="true"><Bot size={13} /></span>
-        <span>assistant</span>
+        <span className="chat-role-text">assistant</span>
+        <MessageMeta role="assistant" timestamp={block.timestamp} />
       </div>
       <div className={documentLayout ? 'chat-message-document' : 'chat-message-shell'}>
         <MarkdownRenderer text={block.content} streaming={Boolean(block.isStreaming)} />

@@ -86,7 +86,39 @@ def test_context_status_and_estimate_include_breakdown(tmp_path) -> None:
     assert status.provider == "openai"
     assert status.model == "gpt-5.4"
     assert status.prompt_tokens > 0
+    assert status.context_window == 128_000
+    assert status.pressure_level == "low"
     assert {item.label for item in status.breakdown} >= {"System prompt", "Transcript", "Tool results"}
     assert estimate.message_count == 3
+    assert estimate.context_window == 128_000
     assert estimate.attachment_tokens > 0
     assert estimate.prompt_tokens > status.prompt_tokens
+
+
+def test_context_estimate_uses_model_window_for_pressure(tmp_path) -> None:
+    sessions = SessionService(session_dir=tmp_path)
+    record = SessionRecord.new(session_id="pressure", provider="custom", model="tiny")
+    save_session(record, base=tmp_path)
+    service = ContextService(
+        session_service=sessions,
+        model_window_resolver=lambda _provider, _model: 100,
+    )
+
+    estimate = service.estimate(ContextEstimateRequest(session_id="pressure", draft="x" * 500))
+
+    assert estimate.context_window == 100
+    assert estimate.prompt_tokens > estimate.context_window
+    assert estimate.pressure_level == "critical"
+    assert estimate.next_action == "blocked"
+
+
+def test_unknown_model_window_remains_unknown(tmp_path) -> None:
+    sessions = SessionService(session_dir=tmp_path)
+    record = SessionRecord.new(session_id="unknown-window", provider="openai", model="not-in-catalog")
+    save_session(record, base=tmp_path)
+
+    status = ContextService(session_service=sessions).status("unknown-window")
+
+    assert status.context_window is None
+    assert status.pressure_level == "unknown"
+    assert status.next_action == "none"

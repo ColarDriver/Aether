@@ -395,7 +395,7 @@ class SessionService:
             files_changed = _files_changed_for_turn(messages, checkpoint)
             insertions, deletions = _diff_stats_for_turn(messages)
             checkpoint_id = _checkpoint_id(checkpoint)
-            if not checkpoint_id and not files_changed and insertions == 0 and deletions == 0:
+            if not files_changed:
                 continue
             checkpoints.append(
                 SessionTurnCheckpoint(
@@ -610,7 +610,7 @@ class SessionService:
         record = self.resolve_record(_require_non_empty(session_id, "session_id"))
         update_session_from_state(
             record,
-            messages=messages,
+            messages=_messages_with_created_at(messages, previous_messages=record.messages),
             provider=record.provider,
             model=record.model,
             base_url=record.base_url,
@@ -661,6 +661,68 @@ class SessionService:
             permission_mode=_record_permission_mode(record, session_mode=mode),
             cwd=get_cwd(record.session_id),
         )
+
+
+def _messages_with_created_at(
+    messages: list[dict[str, Any]],
+    *,
+    previous_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    now = _now_iso()
+    stamped: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            stamped.append(message)
+            continue
+        copied = copy.deepcopy(message)
+        metadata = copied.get("metadata")
+        existing = _message_created_at(copied)
+        previous = previous_messages[index] if index < len(previous_messages) else None
+        previous_time = (
+            _message_created_at(previous)
+            if isinstance(previous, dict) and _same_message_identity(copied, previous)
+            else None
+        )
+        created_at = existing or previous_time or now
+        if created_at:
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.setdefault("created_at", created_at)
+            copied["metadata"] = metadata
+        stamped.append(copied)
+    return stamped
+
+
+def _same_message_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left.get("role") != right.get("role"):
+        return False
+    for key in ("content", "tool_call_id", "name"):
+        if left.get(key) != right.get(key):
+            return False
+    left_calls = left.get("tool_calls")
+    right_calls = right.get("tool_calls")
+    if left_calls is not None or right_calls is not None:
+        return left_calls == right_calls
+    return True
+
+
+def _message_created_at(message: dict[str, Any] | None) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("created_at", "createdAt", "timestamp", "time"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+    return None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def iso_to_epoch(iso: str) -> float:
@@ -1004,12 +1066,8 @@ def _checkpoint_id(checkpoint: dict[str, Any]) -> str | None:
 
 
 def _files_changed_for_turn(messages: list[dict[str, Any]], checkpoint: dict[str, Any]) -> list[str]:
+    _ = checkpoint  # The checkpoint manifest is a pre-run baseline, not a list of files edited by this turn.
     paths: list[str] = []
-    for item in checkpoint.get("files") if isinstance(checkpoint.get("files"), list) else []:
-        if isinstance(item, dict):
-            path = item.get("path")
-            if isinstance(path, str) and path.strip():
-                paths.append(path.strip())
     for message in messages:
         paths.extend(_paths_from_message(message))
     return _unique_strings(paths)
@@ -1019,19 +1077,25 @@ def _paths_from_message(message: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     metadata = message.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("path", "file_path", "filePath"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                paths.append(value.strip())
-        for key in ("edited_paths", "editedPaths", "paths", "files_changed", "filesChanged"):
+        metadata_diff = _diff_from_mapping(metadata)
+        for key in ("edited_paths", "editedPaths", "files_changed", "filesChanged"):
             value = metadata.get(key)
             if isinstance(value, list):
                 paths.extend(item.strip() for item in value if isinstance(item, str) and item.strip())
-    for call in extract_tool_calls(message):
-        for key in ("path", "file_path", "filePath"):
-            value = call.arguments.get(key)
-            if isinstance(value, str) and value.strip():
-                paths.append(value.strip())
+        if metadata_diff:
+            paths.extend(_paths_from_mapping(metadata))
+            paths.extend(_paths_from_diff(metadata_diff))
+
+    text, _attachments = extract_message_content(
+        message.get("content"),
+        metadata=metadata if isinstance(metadata, dict) else None,
+    )
+    if text and _looks_like_unified_diff(text):
+        paths.extend(_paths_from_diff(text))
+
+    # Tool call arguments are intent, not evidence that the workspace changed.
+    # Actual edit evidence is persisted on tool results as edited_paths,
+    # files_changed, or unified diff metadata/content.
     return paths
 
 
@@ -1100,6 +1164,23 @@ def _looks_like_unified_diff(value: str) -> bool:
     return any(line.startswith(("--- ", "+++ ", "diff --git ")) for line in value.splitlines())
 
 
+def _paths_from_diff(diff: str) -> list[str]:
+    paths: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            value = line[4:].strip().split("	", 1)[0].strip()
+            if value and value != "/dev/null":
+                paths.append(value.removeprefix("a/").removeprefix("b/"))
+            continue
+        if line.startswith("diff --git "):
+            parts = line.split()
+            for value in parts[2:4]:
+                cleaned = value.strip().removeprefix("a/").removeprefix("b/")
+                if cleaned and cleaned != "/dev/null":
+                    paths.append(cleaned)
+    return _unique_strings(paths)
+
+
 def _diff_mentions_path(diff: str, requested_path: str) -> bool:
     wanted = _normalize_path_for_compare(requested_path)
     if not wanted:
@@ -1150,19 +1231,38 @@ def _unique_preserve_strings(values: list[str]) -> list[str]:
 def _diff_stats_for_turn(messages: list[dict[str, Any]]) -> tuple[int, int]:
     insertions = 0
     deletions = 0
+    seen: set[str] = set()
     for message in messages:
-        content = message.get("content")
-        text = content if isinstance(content, str) else ""
-        if "@@" not in text:
-            continue
-        for line in text.splitlines():
-            if line.startswith("+++") or line.startswith("---"):
+        for diff in _diffs_from_message(message):
+            marker = diff.strip()
+            if not marker or marker in seen:
                 continue
-            if line.startswith("+"):
-                insertions += 1
-            elif line.startswith("-"):
-                deletions += 1
+            seen.add(marker)
+            for line in diff.splitlines():
+                if line.startswith("+++") or line.startswith("---"):
+                    continue
+                if line.startswith("+"):
+                    insertions += 1
+                elif line.startswith("-"):
+                    deletions += 1
     return insertions, deletions
+
+
+def _diffs_from_message(message: dict[str, Any]) -> list[str]:
+    diffs: list[str] = []
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict):
+        diff = _diff_from_mapping(metadata)
+        if diff:
+            diffs.append(diff)
+    text, _attachments = extract_message_content(
+        message.get("content"),
+        metadata=metadata if isinstance(metadata, dict) else None,
+    )
+    text = text or ""
+    if _looks_like_unified_diff(text):
+        diffs.append(text)
+    return diffs
 
 
 def _first_string_from_mapping(mapping: dict[str, Any], *keys: str) -> str | None:

@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import { api } from "../api/client"
 
-export type AppearanceThemeId = "light" | "dark" | "terminal"
+export type AppearanceThemeId = "light" | "studio" | "dark" | "terminal"
 export type AppearanceLocale = "en" | "zh" | "ja" | "de" | "es" | "fr"
 
 export type AppearanceTheme = {
@@ -23,6 +23,12 @@ export const APPEARANCE_THEMES: AppearanceTheme[] = [
     label: "Aether Light",
     description: "Quiet work surface with high contrast panels.",
     swatch: ["#f6f7f9", "#ffffff", "#2563eb"],
+  },
+  {
+    id: "studio",
+    label: "Aether Studio",
+    description: "Light console with a deep rail and purple focus states.",
+    swatch: ["#f5f5f8", "#1e1b2e", "#7c5cfc"],
   },
   {
     id: "dark",

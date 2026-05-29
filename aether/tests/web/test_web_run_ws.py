@@ -389,6 +389,44 @@ def test_web_prompt_store_marks_orphaned_pending_records_stale(tmp_path) -> None
     assert record.reason == "Backend restarted before this prompt was resolved."
 
 
+def test_run_websocket_replays_stale_prompt_state_after_backend_restart(tmp_path) -> None:
+    store = WebPromptStore(root=tmp_path, process_instance_id="test-process")
+    store.put_pending(
+        "permission-stale",
+        {
+            "type": "permission.requested",
+            "payload": {
+                "prompt_id": "permission-stale",
+                "session_id": "ses",
+                "run_id": "run-stale",
+                "request": {"tool_name": "shell"},
+                "deadline_ms": 60_000,
+            },
+        },
+    )
+    store.update_status(
+        "permission-stale",
+        "stale",
+        reason="Backend restarted before this prompt was resolved.",
+    )
+    app = create_app(auth_enabled=False, web_prompt_store=store)
+    client = TestClient(app)
+
+    with client.websocket_connect("/api/runs/ws") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        requested = ws.receive_json()
+        stale = ws.receive_json()
+
+    assert requested["type"] == "permission.requested"
+    assert requested["payload"]["prompt_id"] == "permission-stale"
+    assert requested["payload"]["session_id"] == "ses"
+    assert stale["type"] == "prompt.stale"
+    assert stale["payload"]["prompt_id"] == "permission-stale"
+    assert stale["payload"]["session_id"] == "ses"
+    assert stale["payload"]["run_id"] == "run-stale"
+    assert stale["payload"]["reason"] == "Backend restarted before this prompt was resolved."
+
+
 def test_run_websocket_returns_stale_for_unowned_prompt(tmp_path) -> None:
     store = WebPromptStore(root=tmp_path, process_instance_id="test-process")
     app = create_app(
@@ -417,6 +455,9 @@ def test_run_websocket_returns_stale_for_unowned_prompt(tmp_path) -> None:
 
     with client.websocket_connect("/api/runs/ws") as ws:
         assert ws.receive_json()["type"] == "ready"
+        assert ws.receive_json()["type"] == "permission.requested"
+        replayed_stale = ws.receive_json()
+        assert replayed_stale["type"] == "prompt.stale"
         ws.send_json(
             {
                 "type": "permission.respond",

@@ -68,8 +68,6 @@ export function WorkspaceRail({
   const currentRoot = rootInfo?.root ?? tree?.root ?? ''
   const rootLabel = useMemo(() => shortenPath(currentRoot), [currentRoot])
   const breadcrumbs = useMemo(() => buildBreadcrumbs(tree?.path ?? ''), [tree?.path])
-  const directoryCount = visibleEntries.filter((entry) => entry.kind === 'directory').length
-  const fileCount = visibleEntries.length - directoryCount
   const currentPath = tree?.path ?? ''
 
   useEffect(() => {
@@ -336,9 +334,6 @@ export function WorkspaceRail({
       <aside className={'workspace-rail workspace-rail-side-' + side} aria-label="Workspace files">
         <header className="workspace-rail-header">
           <div className="workspace-rail-title">
-            <span className="workspace-rail-icon" aria-hidden="true">
-              <FolderTree size={15} />
-            </span>
             <div>
               <strong>Workspace</strong>
               <span title={currentRoot}>{rootLoading ? 'Loading root' : rootLabel || 'No root'}</span>
@@ -422,13 +417,7 @@ export function WorkspaceRail({
           <div className="workspace-rail-path">
             <div>
               <strong>{browserTitle}</strong>
-              <span>
-                {visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}
-                {' · '}
-                {directoryCount} dir{directoryCount === 1 ? '' : 's'}
-                {' · '}
-                {fileCount} file{fileCount === 1 ? '' : 's'}
-              </span>
+              <span>{visibleEntries.length} item{visibleEntries.length === 1 ? '' : 's'}</span>
             </div>
             {tree?.parent_path !== null && tree?.parent_path !== undefined ? (
               <button type="button" onClick={() => loadTree(tree.parent_path ?? '')}>
@@ -454,7 +443,7 @@ export function WorkspaceRail({
             {visibleEntries.map((entry) => (
               <div
                 key={entry.path || '__root__'}
-                className={selectedFilePath === entry.path ? 'workspace-rail-entry active' : 'workspace-rail-entry'}
+                className={'workspace-rail-entry workspace-rail-entry-kind-' + entry.kind + (selectedFilePath === entry.path ? ' active' : '')}
               >
                 <button
                   type="button"
@@ -464,8 +453,7 @@ export function WorkspaceRail({
                 >
                   {entry.kind === 'directory' ? <Folder size={15} /> : <File size={15} />}
                   <span>{entry.name}</span>
-                  <em>{entry.kind === 'directory' ? 'dir' : fileLabel(entry.name)}</em>
-                  <small>{entry.kind === 'file' && entry.size_bytes != null ? formatBytes(entry.size_bytes) + ' · ' : ''}{entry.path || '.'}</small>
+                  {searchResults ? <small>{entry.path || '.'}</small> : null}
                 </button>
                 <div className="workspace-rail-entry-actions" aria-label={'Actions for ' + entry.name}>
                   <button type="button" aria-label={'Rename ' + entry.name} title="Rename" onClick={() => openRenameDialog(entry)} disabled={mutating}>
@@ -830,16 +818,6 @@ function WorkspaceNameDialog({ title, description, label, initialValue, submitti
   )
 }
 
-function fileLabel(name: string): string {
-  const extension = name.includes('.') ? name.split('.').pop() : ''
-  return extension ? extension.toLowerCase() : 'file'
-}
-
-function formatBytes(value: number): string {
-  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1) + ' MB'
-  if (value >= 1_000) return (value / 1_000).toFixed(1) + ' KB'
-  return value + ' B'
-}
 
 function shortenPath(path: string): string {
   const parts = path.split(/[\/]+/).filter(Boolean)

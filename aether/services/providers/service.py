@@ -63,6 +63,7 @@ MODEL_CATALOG: dict[str, list[ModelSummary]] = {
         ModelSummary(id="gpt-4-turbo", display_name="GPT-4 Turbo", context_window=128_000),
         ModelSummary(id="gpt-4.1", display_name="GPT-4.1", context_window=128_000),
         ModelSummary(id="gpt-5", display_name="GPT-5", context_window=128_000),
+        ModelSummary(id="gpt-5.4", display_name="GPT-5.4", context_window=128_000),
     ],
     "codex": [
         ModelSummary(id="gpt-5.4", display_name="Codex GPT-5.4", context_window=128_000),

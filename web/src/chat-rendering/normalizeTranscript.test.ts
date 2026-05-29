@@ -45,6 +45,16 @@ describe('normalizeTranscript', () => {
     })
   })
 
+  it('uses persisted message metadata timestamps when present', () => {
+    const blocks = normalizeTranscript('session-time', [
+      { role: 'user', text: 'hello', metadata: { created_at: '2026-01-01T14:36:00Z' } },
+      { role: 'assistant', text: 'hi', metadata: { created_at: 1767278160 } },
+    ])
+
+    expect(blocks[0].timestamp).toBe(Date.parse('2026-01-01T14:36:00Z'))
+    expect(blocks[1].timestamp).toBe(1767278160)
+  })
+
   it('keeps assistant metadata for provider-native side channels', () => {
     const blocks = normalizeTranscript('session-meta', [
       {

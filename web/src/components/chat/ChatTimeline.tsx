@@ -30,6 +30,7 @@ type Props = {
   onOpenTask?: (taskId: string) => void
   onAcceptFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
   onRevertFileChange?: (change: CurrentTurnFileChangeAction) => Promise<void> | void
+  onOpenFileChange?: (path: string) => void
   onUndoTurn?: (action: CurrentTurnUndoAction) => void
   onRetryAssistantMessage?: (block: AssistantMessage) => void
   onRetryUserMessage?: (block: UserMessage) => void
@@ -40,7 +41,7 @@ type Props = {
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }
 
-export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onUndoTurn, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
+export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onOpenFileChange, onUndoTurn, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
   if (blocks.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
@@ -82,6 +83,7 @@ export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], m
               undoDisabled={messageActionsDisabled}
               onAcceptFile={onAcceptFileChange}
               onRevertFile={onRevertFileChange}
+              onOpenFile={onOpenFileChange}
               onUndoTurn={onUndoTurn}
             />
           </section>

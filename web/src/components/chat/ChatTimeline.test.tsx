@@ -37,6 +37,20 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('contents')).toBeTruthy()
   })
 
+  it('renders Studio-ready message metadata with author and time', () => {
+    const timestamp = Date.UTC(2026, 0, 1, 14, 36)
+    const blocks: ChatBlock[] = [
+      { ...base, timestamp, id: 'u-meta', kind: 'user_message', content: 'hello' },
+      { ...base, timestamp, id: 'a-meta', kind: 'assistant_message', content: 'reply' },
+    ]
+
+    render(<ChatTimeline blocks={blocks} />)
+
+    expect(screen.getByText('You')).toBeTruthy()
+    expect(screen.getByText('Aether')).toBeTruthy()
+    expect(screen.getAllByText('2:36PM').length).toBe(2)
+  })
+
   it('exposes local message lifecycle actions for user and assistant messages', () => {
     const onRetry = vi.fn()
     const onEdit = vi.fn()
@@ -244,6 +258,8 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('accepted')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    expect(screen.getByRole('dialog', { name: 'Revert file change' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert file' }))
 
     await waitFor(() => expect(onRevert).toHaveBeenCalledWith(expect.objectContaining({
       path: 'src/auth.ts',
@@ -285,6 +301,8 @@ describe('ChatTimeline', () => {
 
     expect(screen.getByText('checkpoint 20260527')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    expect(screen.getByRole('dialog', { name: 'Revert file change' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert file' }))
 
     await waitFor(() => expect(onRevert).toHaveBeenCalledWith(expect.objectContaining({
       path: 'src/auth.ts',

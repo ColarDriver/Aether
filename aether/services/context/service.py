@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 from dataclasses import asdict, replace
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from aether.agents.core.agent import AgentEngine
 from aether.agents.runtime.context_assembly import LegacyContextAssemblyAdapter
@@ -19,6 +19,7 @@ from aether.runtime.context import (
 from aether.runtime.core.contracts import TurnContext
 from aether.services.common import ServiceValidationError
 from aether.services.compact import estimate_messages_tokens
+from aether.cli.providers import resolve_provider_name
 from aether.services.context.contracts import (
     ContextBreakdownItem,
     ContextCompressRequest,
@@ -26,6 +27,7 @@ from aether.services.context.contracts import (
     ContextEstimateRequest,
     ContextStatusResult,
 )
+from aether.services.providers import MODEL_CATALOG
 from aether.services.runs import AgentRunOptions
 from aether.services.runs.builder import RunDependencyBuilder
 from aether.services.sessions import SessionService
@@ -36,6 +38,8 @@ class _CompressionService(Protocol):
 
 
 CompressionServiceFactory = Callable[[SessionRecord], _CompressionService]
+ModelWindowResolver = Callable[[str | None, str | None], int | None]
+StatusT = TypeVar("StatusT", bound=ContextStatusResult)
 
 
 class ContextService:
@@ -52,16 +56,18 @@ class ContextService:
         session_service: SessionService | None = None,
         builder: RunDependencyBuilder | None = None,
         compression_service_factory: CompressionServiceFactory | None = None,
+        model_window_resolver: ModelWindowResolver | None = None,
     ) -> None:
         self._sessions = session_service or SessionService()
         self._builder = builder or RunDependencyBuilder()
         self._compression_service_factory = compression_service_factory
+        self._model_window_resolver = model_window_resolver or resolve_model_context_window
         self._status_by_session: dict[str, ContextStatusResult] = {}
 
     def status(self, session_id_or_prefix: str) -> ContextStatusResult:
         record = self._sessions.resolve_record(_require_non_empty(session_id_or_prefix, "session_id"))
         status = self._status_by_session.get(record.session_id) or _status_from_record(record) or _default_status(record)
-        return _enrich_status(record, status)
+        return _enrich_status(record, status, model_window_resolver=self._model_window_resolver)
 
     def estimate(self, request: ContextEstimateRequest) -> ContextStatusResult:
         record = self._sessions.resolve_record(_require_non_empty(request.session_id, "session_id"))
@@ -76,7 +82,7 @@ class ContextService:
         base = _default_status_for_messages(record, messages)
         previous = self._status_by_session.get(record.session_id) or _status_from_record(record)
         return replace(
-            _enrich_status(record, base),
+            _enrich_status(record, base, model_window_resolver=self._model_window_resolver),
             compression_count=previous.compression_count if previous else 0,
             last_compression=previous.last_compression if previous else None,
             status=previous.status if previous else None,
@@ -178,13 +184,16 @@ class ContextService:
             last_compression=dict(metadata),
             message_count=len(record.messages),
             token_estimate=estimate_messages_tokens(record.messages),
+            provider=record.provider or None,
+            model=record.model or None,
             status=status,
             error=error,
         )
-        self._status_by_session[record.session_id] = envelope
-        record.metadata["context_status"] = asdict(envelope)
-        self._sessions.persist_context_status(record.session_id, asdict(envelope))
-        return envelope
+        enriched = _enrich_status(record, envelope, model_window_resolver=self._model_window_resolver)
+        self._status_by_session[record.session_id] = enriched
+        record.metadata["context_status"] = asdict(enriched)
+        self._sessions.persist_context_status(record.session_id, asdict(enriched))
+        return enriched
 
 
 def _default_status(record: SessionRecord) -> ContextStatusResult:
@@ -252,24 +261,60 @@ def _require_non_empty(value: str, field: str) -> str:
     return value.strip()
 
 
-def _enrich_status(record: SessionRecord, status: ContextStatusResult) -> ContextStatusResult:
+def _enrich_status(
+    record: SessionRecord,
+    status: StatusT,
+    *,
+    model_window_resolver: ModelWindowResolver,
+) -> StatusT:
     breakdown = status.breakdown or _context_breakdown(record, record.messages)
     token_estimate = status.token_estimate or sum(item.tokens for item in breakdown)
-    context_window = status.context_window
-    pressure_level, next_action = _pressure(token_estimate, context_window)
+    prompt_tokens = status.prompt_tokens or token_estimate
+    provider = status.provider or record.provider or None
+    model = status.model or record.model or None
+    context_window = _valid_context_window(status.context_window) or model_window_resolver(provider, model)
+    pressure_level, next_action = _pressure(prompt_tokens, context_window)
     return replace(
         status,
-        provider=status.provider or record.provider or None,
-        model=status.model or record.model or None,
-        prompt_tokens=status.prompt_tokens or token_estimate,
+        provider=provider,
+        model=model,
+        context_window=context_window,
+        token_estimate=token_estimate,
+        prompt_tokens=prompt_tokens,
         transcript_tokens=status.transcript_tokens or _breakdown_tokens(breakdown, "Transcript"),
         system_tokens=status.system_tokens or _breakdown_tokens(breakdown, "System prompt"),
         attachment_tokens=status.attachment_tokens or _breakdown_tokens(breakdown, "Attachments"),
         tool_result_tokens=status.tool_result_tokens or _breakdown_tokens(breakdown, "Tool results"),
-        pressure_level=status.pressure_level if status.pressure_level != "unknown" else pressure_level,
-        next_action=status.next_action if status.next_action != "none" else next_action,
+        pressure_level=pressure_level,
+        next_action=next_action,
         breakdown=breakdown,
     )
+
+
+def resolve_model_context_window(provider: str | None, model: str | None) -> int | None:
+    if not provider or not model:
+        return None
+    raw_provider = provider.strip()
+    raw_model = model.strip()
+    if not raw_provider or not raw_model:
+        return None
+    try:
+        provider_key = resolve_provider_name(raw_provider)
+    except Exception:
+        provider_key = raw_provider
+    candidates = MODEL_CATALOG.get(provider_key) or MODEL_CATALOG.get(raw_provider) or []
+    for candidate in candidates:
+        if candidate.id == raw_model:
+            return _valid_context_window(candidate.context_window)
+    normalized_model = raw_model.lower()
+    for candidate in candidates:
+        if candidate.id.lower() == normalized_model:
+            return _valid_context_window(candidate.context_window)
+    return None
+
+
+def _valid_context_window(value: int | None) -> int | None:
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _context_breakdown(record: SessionRecord, messages: list[dict[str, Any]]) -> list[ContextBreakdownItem]:
@@ -334,4 +379,4 @@ def _pressure(tokens: int, context_window: int | None) -> tuple[str, str]:
     return "low", "none"
 
 
-__all__ = ["ContextService"]
+__all__ = ["ContextService", "resolve_model_context_window"]

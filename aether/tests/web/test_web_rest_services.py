@@ -414,6 +414,22 @@ def test_context_routes_report_status_and_compress_session(client: TestClient) -
     assert status_body["context_engine"] == "default"
     assert status_body["compression_count"] == 0
     assert status_body["message_count"] == 0
+    assert status_body["context_window"] == 128000
+    assert status_body["pressure_level"] == "low"
+
+    estimate = client.post(
+        "/api/context/ctx_web/estimate",
+        json={
+            "draft": "Summarize this file",
+            "attachments": [{"type": "text", "path": "app.py", "note": "workspace reference"}],
+        },
+    )
+    assert estimate.status_code == 200
+    estimate_body = estimate.json()
+    assert estimate_body["message_count"] == 1
+    assert estimate_body["context_window"] == 128000
+    assert estimate_body["prompt_tokens"] > status_body["prompt_tokens"]
+    assert any(row["label"] == "Attachments" and row["tokens"] > 0 for row in estimate_body["breakdown"])
 
     skipped = client.post("/api/context/ctx_web/compress", json={"focus": "auth"})
     assert skipped.status_code == 200

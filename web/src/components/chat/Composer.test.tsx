@@ -148,6 +148,17 @@ describe('Composer', () => {
       models: [{ id: 'gpt-5.4', display_name: 'GPT-5.4', context_window: 128000 }],
       discovery: { kind: 'static', source: 'test' },
     })
+    vi.spyOn(api, 'estimateContext').mockResolvedValue({
+      session_id: 'session-ctx',
+      context_engine: 'default',
+      compression_count: 0,
+      message_count: 1,
+      token_estimate: 1200,
+      prompt_tokens: 1200,
+      pressure_level: 'low',
+      next_action: 'none',
+      breakdown: [],
+    })
     vi.spyOn(api, 'contextStatus').mockResolvedValue({
       session_id: 'session-ctx',
       context_engine: 'default',
@@ -922,6 +933,72 @@ describe('Composer', () => {
     await waitFor(() => expect(screen.queryByLabelText('Workspace context')).toBeNull())
     expect(textbox.value).toBe('')
     expect(onSend).not.toHaveBeenCalled()
+  })
+
+
+  it('debounces draft context estimates into the footer ring', async () => {
+    const onSend = vi.fn()
+    vi.spyOn(api, 'estimateContext').mockResolvedValue({
+      session_id: 'session-estimate',
+      context_engine: 'default',
+      compression_count: 0,
+      message_count: 1,
+      token_estimate: 64000,
+      prompt_tokens: 64000,
+      context_window: 128000,
+      pressure_level: 'medium',
+      next_action: 'none',
+      breakdown: [{ label: 'Transcript', tokens: 64000, detail: 'draft included' }],
+    })
+    render(
+      <Composer
+        disabled={false}
+        running={false}
+        onCancel={() => undefined}
+        onSend={onSend}
+        slashCommands={slashCommands}
+        sessionId="session-estimate"
+      />,
+    )
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: 'Summarize the selected file', selectionStart: 27 } })
+
+    await waitFor(() => expect(api.estimateContext).toHaveBeenCalledWith('session-estimate', expect.objectContaining({ draft: 'Summarize the selected file' })))
+    expect(screen.getByLabelText(/Next run estimate: 64,000 tokens/)).toBeTruthy()
+  })
+
+  it('refreshes draft context estimates when the selected model changes', async () => {
+    const onSend = vi.fn()
+    const estimateContext = vi.spyOn(api, 'estimateContext').mockResolvedValue({
+      session_id: 'session-model-estimate',
+      context_engine: 'default',
+      compression_count: 0,
+      message_count: 1,
+      token_estimate: 1200,
+      prompt_tokens: 1200,
+      context_window: 128000,
+      pressure_level: 'low',
+      next_action: 'none',
+      breakdown: [],
+    })
+    const props = {
+      disabled: false,
+      running: false,
+      onCancel: () => undefined,
+      onSend,
+      slashCommands,
+      sessionId: 'session-model-estimate',
+    }
+    const { rerender } = render(<Composer {...props} provider="openai" model="gpt-4o" />)
+    const textbox = screen.getByRole('textbox') as HTMLTextAreaElement
+
+    fireEvent.change(textbox, { target: { value: 'Estimate this prompt', selectionStart: 20 } })
+
+    await waitFor(() => expect(estimateContext).toHaveBeenCalledTimes(1))
+    rerender(<Composer {...props} provider="codex" model="gpt-5.4" />)
+
+    await waitFor(() => expect(estimateContext).toHaveBeenCalledTimes(2))
   })
 
   it('renders command-surface metadata in the footer', () => {

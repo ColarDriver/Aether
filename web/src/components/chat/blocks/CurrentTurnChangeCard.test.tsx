@@ -157,6 +157,36 @@ describe('CurrentTurnChangeCard', () => {
     expect(screen.getByText(/new/)).toBeTruthy()
   })
 
+  it('does not render checkpoint-backed files without diff statistics', () => {
+    const { container } = render(
+      <CurrentTurnChangeCard
+        diffs={[]}
+        sessionId="s1"
+        serverCheckpoint={{
+          target: {
+            target_user_message_id: 'turn-zero',
+            user_message_index: 0,
+            user_message_count: 1,
+            message_index: 0,
+          },
+          code: {
+            available: true,
+            files_changed: ['src/unknown.ts'],
+            insertions: 0,
+            deletions: 0,
+            checkpoint_id: 'cp-zero',
+          },
+        }}
+      />,
+    )
+
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Changed files' })).toBeNull()
+    expect(screen.queryByText('src/unknown.ts')).toBeNull()
+    expect(screen.queryByText('+0')).toBeNull()
+    expect(screen.queryByText('-0')).toBeNull()
+  })
+
   it('allows checkpoint-backed revert when old text is unavailable', () => {
     const onRevertFile = vi.fn()
     const diffs: DiffBlock[] = [
@@ -173,6 +203,8 @@ describe('CurrentTurnChangeCard', () => {
 
     expect(screen.getByText('checkpoint 20260527')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    expect(screen.getByRole('dialog', { name: 'Revert file change' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert file' }))
 
     expect(onRevertFile).toHaveBeenCalledWith(expect.objectContaining({
       path: 'src/clean.ts',
@@ -217,6 +249,8 @@ describe('CurrentTurnChangeCard', () => {
 
     await waitFor(() => expect(api.workspaceChanges).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    expect(screen.getByRole('dialog', { name: 'Revert file change' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert file' }))
 
     expect(onRevertFile).toHaveBeenCalledWith(expect.objectContaining({
       path: 'src/lazy.ts',
@@ -287,6 +321,8 @@ describe('CurrentTurnChangeCard', () => {
 
     await waitFor(() => expect(api.workspaceChanges).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
+    expect(screen.getByRole('dialog', { name: 'Revert file change' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert file' }))
 
     expect(await screen.findByText('conflict')).toBeTruthy()
     expect(screen.getByText(/changed after this card was rendered/)).toBeTruthy()

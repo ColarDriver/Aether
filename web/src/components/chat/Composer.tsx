@@ -2,7 +2,7 @@ import { Activity, AtSign, BarChart3, Boxes, Brain, ChevronDown, ChevronLeft, Ch
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, RefObject } from 'react'
 import { api } from '../../api/client'
-import type { PermissionMode, SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
+import type { ContextStatus, PermissionMode, SlashCommandInfo, WorkspaceEntry, WorkspaceFile } from '../../api/types'
 import type { ChatAttachment, TokenUsage } from '../../chat-rendering'
 import { tokenUsageBreakdown, tokenUsageTotal } from '../../chat-rendering'
 import { useProviderStore } from '../../stores/providerStore'
@@ -95,6 +95,8 @@ export function Composer({
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
   const [workspaceRootError, setWorkspaceRootError] = useState<string | null>(null)
   const [workspacePreview, setWorkspacePreview] = useState<WorkspacePreviewState>({ status: 'idle' })
+  const [contextEstimate, setContextEstimate] = useState<ContextStatus | null>(null)
+  const [contextEstimateError, setContextEstimateError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const controlMenuRef = useRef<HTMLDivElement>(null)
@@ -178,6 +180,36 @@ export function Composer({
       cancelled = true
     }
   }, [disabled, slashCommands])
+
+  useEffect(() => {
+    const hasDraftContext = value.trim().length > 0 || attachments.length > 0
+    if (!sessionId || disabled || !hasDraftContext) {
+      setContextEstimate(null)
+      setContextEstimateError(null)
+      return
+    }
+    let cancelled = false
+    const handle = window.setTimeout(() => {
+      api.estimateContext(sessionId, {
+        draft: value,
+        attachments: attachments.map(contextEstimateAttachment),
+      })
+        .then((estimate) => {
+          if (cancelled) return
+          setContextEstimate(estimate)
+          setContextEstimateError(null)
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return
+          setContextEstimate(null)
+          setContextEstimateError(error instanceof Error ? error.message : String(error))
+        })
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
+  }, [attachments, disabled, model, provider, sessionId, value])
 
   useEffect(() => {
     if (disabled) return
@@ -431,6 +463,8 @@ export function Composer({
           outputTokens={outputTokens}
           tokens={tokens}
           runMetadata={runMetadata}
+          contextEstimate={contextEstimate}
+          contextEstimateError={contextEstimateError}
           onClose={() => setInspectorKind(null)}
         />
       ) : null}
@@ -549,14 +583,15 @@ export function Composer({
         </div>
         <div className="composer-runbar">
           <ModelChip provider={provider} model={model} disabled={disabled || running} sessionId={sessionId} />
-          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} tokens={tokens} />
+          <ContextRing inputTokens={inputTokens} outputTokens={outputTokens} tokens={tokens} contextStatus={contextEstimate} contextError={contextEstimateError} />
           <div className="composer-actions">
             {running ? (
-              <Button aria-label="Stop run" title="Stop run" onClick={onCancel}>
+              <Button className="composer-stop-button" aria-label="Stop run" title="Stop run" onClick={onCancel}>
                 <Square size={16} />
               </Button>
             ) : (
               <Button
+                className="composer-send-button"
                 aria-label="Send message"
                 title="Send message"
                 onClick={submit}
@@ -572,6 +607,18 @@ export function Composer({
   )
 }
 
+
+function contextEstimateAttachment(attachment: ChatAttachment): Record<string, unknown> {
+  const payload: Record<string, unknown> = { type: attachment.type }
+  for (const key of ['name', 'path', 'url', 'mimeType', 'data', 'note', 'quote'] as const) {
+    const value = attachment[key]
+    if (typeof value === 'string' && value.length > 0) payload[key] = value
+  }
+  if (typeof attachment.isDirectory === 'boolean') payload.isDirectory = attachment.isDirectory
+  if (typeof attachment.lineStart === 'number') payload.lineStart = attachment.lineStart
+  if (typeof attachment.lineEnd === 'number') payload.lineEnd = attachment.lineEnd
+  return payload
+}
 
 function mergeLocalInspectorCommands(commands: SlashCommandInfo[] | undefined): SlashCommandInfo[] {
   const remoteCommands = Array.isArray(commands) ? commands : []
@@ -926,22 +973,34 @@ function formatBytes(value: number): string {
   return Math.max(0, value) + ' B'
 }
 
-function ContextRing({ inputTokens, outputTokens, tokens }: { inputTokens?: number | null; outputTokens?: number | null; tokens?: TokenUsage | null }) {
+function ContextRing({ inputTokens, outputTokens, tokens, contextStatus, contextError }: { inputTokens?: number | null; outputTokens?: number | null; tokens?: TokenUsage | null; contextStatus?: ContextStatus | null; contextError?: string | null }) {
   const fallbackTotal = Math.max(0, (inputTokens ?? 0) + (outputTokens ?? 0))
-  const total = tokenUsageTotal(tokens) || fallbackTotal
+  const usageTotal = tokenUsageTotal(tokens) || fallbackTotal
+  const estimateTotal = contextStatus?.prompt_tokens ?? contextStatus?.token_estimate ?? 0
+  const total = estimateTotal || usageTotal
+  const contextWindow = contextStatus?.context_window ?? null
   const breakdown = tokenUsageBreakdown(tokens)
-  const detail = breakdown.length > 0
+  const usageDetail = breakdown.length > 0
     ? breakdown.join(' / ')
     : (inputTokens ?? 0).toLocaleString() + ' in / ' + (outputTokens ?? 0).toLocaleString() + ' out'
-  const percent = total > 0 ? Math.min(99, Math.max(1, Math.round(total / 2000))) : 0
+  const percent = contextWindow && contextWindow > 0
+    ? Math.min(100, Math.max(1, Math.round((total / contextWindow) * 100)))
+    : total > 0
+      ? Math.min(99, Math.max(1, Math.round(total / 2000)))
+      : 0
+  const pressure = contextStatus?.pressure_level || pressureForContext(total, contextWindow)
   const circumference = 61.261
   const offset = circumference - (circumference * percent) / 100
-  const title = total > 0
-    ? total.toLocaleString() + ' tokens (' + detail + ')'
-    : 'No token usage yet'
+  const title = contextError
+    ? 'Context estimate unavailable: ' + contextError
+    : estimateTotal > 0
+      ? 'Next run estimate: ' + estimateTotal.toLocaleString() + ' tokens' + (contextWindow ? ' / ' + contextWindow.toLocaleString() + ' window' : '') + ' (' + pressure + ' pressure)'
+      : usageTotal > 0
+        ? usageTotal.toLocaleString() + ' tokens (' + usageDetail + ')'
+        : 'No token usage yet'
 
   return (
-    <span className="composer-context-ring" title={title} aria-label={title}>
+    <span className={'composer-context-ring composer-context-ring-pressure-' + pressure} title={title} aria-label={title}>
       <CircleGauge size={14} className="composer-context-ring-icon" />
       <span className="ctx-ring">
         <svg className="ctx-ring-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -958,10 +1017,19 @@ function ContextRing({ inputTokens, outputTokens, tokens }: { inputTokens?: numb
       </span>
       <span className="composer-context-ring-copy">
         <strong>{total > 0 ? total.toLocaleString() : '-'}</strong>
-        <small>tokens</small>
+        <small>{estimateTotal > 0 ? 'context' : 'tokens'}</small>
       </span>
     </span>
   )
+}
+
+function pressureForContext(tokens: number, contextWindow: number | null): string {
+  if (!contextWindow || contextWindow <= 0 || tokens <= 0) return 'unknown'
+  const ratio = tokens / contextWindow
+  if (ratio >= 0.98) return 'critical'
+  if (ratio >= 0.85) return 'high'
+  if (ratio >= 0.65) return 'medium'
+  return 'low'
 }
 
 function ModelChip({ provider, model, disabled, sessionId }: { provider?: string | null; model?: string | null; disabled: boolean; sessionId?: string | null }) {

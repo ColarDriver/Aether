@@ -1,14 +1,15 @@
-import { Edit3, GitBranch, Quote, RotateCcw, Undo2 } from 'lucide-react'
+import { Edit3, GitBranch, Quote, RotateCcw, RotateCw, Undo2 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { CopyButton } from '../shared/CopyButton'
 
-export type MessageActionKind = 'quote' | 'edit' | 'retry' | 'fork' | 'rewind'
+export type MessageActionKind = 'quote' | 'edit' | 'retry' | 'fork' | 'rewind' | 'restore' | 'undo'
 
 export type MessageAction = {
   kind: MessageActionKind
   label: string
   onClick: () => void
   disabled?: boolean
+  reason?: string | null
 }
 
 type Props = {
@@ -24,6 +25,8 @@ const ACTION_ICONS: Record<MessageActionKind, ComponentType<{ size?: number; 'ar
   retry: RotateCcw,
   fork: GitBranch,
   rewind: Undo2,
+  restore: RotateCw,
+  undo: RotateCcw,
 }
 
 export function MessageActionBar({ copyText, copyLabel, align = 'start', actions = [] }: Props) {
@@ -44,29 +47,22 @@ export function MessageActionBar({ copyText, copyLabel, align = 'start', actions
       ) : null}
       {visibleActions.map((action) => {
         const Icon = ACTION_ICONS[action.kind]
+        const title = action.reason ? action.label + ': ' + action.reason : action.label
         return (
           <button
             type="button"
             className="message-action-button"
             key={action.kind + '-' + action.label}
             aria-label={action.label}
-            title={action.label}
+            title={title}
             disabled={action.disabled}
             onClick={action.onClick}
           >
             <Icon size={13} aria-hidden={true} />
-            <span>{actionLabel(action.kind)}</span>
+            <span>{action.label}</span>
           </button>
         )
       })}
     </div>
   )
-}
-
-function actionLabel(kind: MessageActionKind): string {
-  if (kind === 'quote') return 'Quote'
-  if (kind === 'edit') return 'Edit'
-  if (kind === 'fork') return 'Fork'
-  if (kind === 'rewind') return 'Rewind'
-  return 'Retry'
 }

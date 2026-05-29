@@ -1,6 +1,7 @@
 import type { UserMessageBlock as UserMessage } from '../../../chat-rendering'
 import { AttachmentGallery } from '../AttachmentGallery'
 import { MessageActionBar } from '../MessageActionBar'
+import { MessageMeta } from './MessageMeta'
 
 type Props = {
   block: UserMessage
@@ -17,7 +18,7 @@ export function UserMessageBlock({ block, actionsDisabled = false, onEdit, onFor
   const persisted = block.source === 'transcript' && typeof block.messageIndex === 'number'
   return (
     <article className="chat-block chat-block-user chat-message-group">
-      <div className="chat-block-label">user</div>
+      <div className="chat-block-label"><MessageMeta role="user" timestamp={block.timestamp} /></div>
       <AttachmentGallery attachments={block.attachments} align="end" />
       {hasText ? <pre className="chat-user-text">{block.content.trim()}</pre> : null}
       {block.pending ? <span className="chat-state-pill">pending</span> : null}

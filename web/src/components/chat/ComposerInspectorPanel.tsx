@@ -33,6 +33,8 @@ type Props = {
   outputTokens?: number | null
   tokens?: TokenUsage | null
   runMetadata?: Record<string, unknown> | null
+  contextEstimate?: ContextStatus | null
+  contextEstimateError?: string | null
   onClose: () => void
 }
 
@@ -75,6 +77,8 @@ export function ComposerInspectorPanel({
   outputTokens,
   tokens,
   runMetadata,
+  contextEstimate,
+  contextEstimateError,
   onClose,
 }: Props) {
   const label = TITLES[kind]
@@ -114,6 +118,8 @@ export function ComposerInspectorPanel({
             outputTokens={outputTokens}
             tokens={tokens}
             runMetadata={runMetadata}
+            contextEstimate={contextEstimate}
+            contextEstimateError={contextEstimateError}
           />
         ) : null}
         {kind === 'cost' ? <CostInspector /> : null}
@@ -199,6 +205,8 @@ function ContextInspector({
   outputTokens,
   tokens,
   runMetadata,
+  contextEstimate,
+  contextEstimateError,
 }: {
   sessionId?: string | null
   provider?: string | null
@@ -209,6 +217,8 @@ function ContextInspector({
   outputTokens?: number | null
   tokens?: TokenUsage | null
   runMetadata?: Record<string, unknown> | null
+  contextEstimate?: ContextStatus | null
+  contextEstimateError?: string | null
 }) {
   const [result, setResult] = useState<LoadState<ContextPanelData>>({ state: 'loading' })
   const [focus, setFocus] = useState('')
@@ -283,19 +293,21 @@ function ContextInspector({
   }
 
   const contextStatus = result.state === 'ready' ? result.data.status : null
-  const contextWindow = result.state === 'ready' ? result.data.contextWindow : null
+  const contextWindow = contextEstimate?.context_window ?? (result.state === 'ready' ? result.data.contextWindow : null)
   const serviceTokens = contextStatus?.token_estimate ?? 0
   const promptTokens = contextStatus?.prompt_tokens ?? serviceTokens
-  const displayTokens = activeTokens || promptTokens
+  const estimateTokens = contextEstimate?.prompt_tokens ?? contextEstimate?.token_estimate ?? 0
+  const displayTokens = estimateTokens || activeTokens || promptTokens
   const percent = contextWindow && contextWindow > 0 ? Math.min(100, Math.round((displayTokens / contextWindow) * 100)) : null
   const metadataRows = contextRowsFromRunMetadata(runMetadata)
+  const estimateRows = contextRowsFromEstimate(contextEstimate)
   const serviceRows = contextRowsFromStatus(contextStatus)
-  const compressionRows = mergeRows(serviceRows, metadataRows)
+  const compressionRows = mergeRows(estimateRows, serviceRows, metadataRows)
 
   return (
     <>
       <div className="composer-inspector-grid">
-        <Metric label="Active tokens" value={formatNumber(displayTokens)} detail={activeTokens ? activeDetail : 'estimated from session transcript'} />
+        <Metric label="Next prompt" value={formatNumber(displayTokens)} detail={estimateTokens ? 'draft, attachments, and transcript estimate' : activeTokens ? activeDetail : 'estimated from session transcript'} />
         <Metric label="Context window" value={contextWindow ? formatNumber(contextWindow) : 'unknown'} detail={percent === null ? 'Provider did not report a window' : percent + '% of reported window'} />
         <Metric label="Transcript" value={formatNumber(contextStatus?.message_count ?? messageCount ?? 0)} detail="messages in current session" />
         <Metric label="Pressure" value={contextStatus?.pressure_level ?? 'unknown'} detail={contextStatus?.next_action ? 'next action: ' + contextStatus.next_action : (mode || 'agent') + ' mode'} />
@@ -322,18 +334,40 @@ function ContextInspector({
       {result.state === 'loading' || result.state === 'idle' ? <PanelLoading label="Loading model context metadata" /> : null}
       {result.state === 'error' ? <PanelError message={result.message} /> : null}
       {actionError ? <PanelError message={actionError} /> : null}
+      {contextEstimateError ? <PanelError message={'Draft estimate unavailable: ' + contextEstimateError} /> : null}
       <Rows
         rows={compressionRows}
         empty="No context compression has been recorded for this session."
       />
       {result.state === 'ready' ? (
         <p className="composer-inspector-note">
-          Active usage comes from the live token stream, latest run metadata, or session token estimate. Context window comes from the provider catalog.
+          Active usage comes from the live token stream, latest run metadata, session estimate, or the current draft estimate. Context window comes from the provider catalog or context service.
           {result.data.discovery ? ' Discovery: ' + result.data.discovery : ''}
         </p>
       ) : null}
     </>
   )
+}
+
+
+function contextRowsFromEstimate(status: ContextStatus | null | undefined): Array<{ label: string; value: string; detail?: string | null }> {
+  if (!status) return []
+  const rows: Array<{ label: string; value: string; detail?: string | null }> = []
+  rows.push({
+    label: 'Draft estimate',
+    value: formatNumber(status.prompt_tokens ?? status.token_estimate ?? 0),
+    detail: [status.pressure_level ? status.pressure_level + ' pressure' : null, status.next_action ? 'next action: ' + status.next_action : null].filter(Boolean).join(' / '),
+  })
+  if (status.breakdown?.length) {
+    for (const row of status.breakdown) {
+      rows.push({
+        label: 'Draft ' + row.label,
+        value: formatNumber(row.tokens),
+        detail: row.detail ?? null,
+      })
+    }
+  }
+  return rows
 }
 
 function contextRowsFromStatus(status: ContextStatus | null): Array<{ label: string; value: string; detail?: string | null }> {

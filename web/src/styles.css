@@ -9238,11 +9238,12 @@ body.is-resizing-layout {
 .workspace-git-panel {
   min-width: 0;
   max-height: min(46vh, 420px);
-  display: grid;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--sidebar-bg) 80%, var(--panel));
-  padding: 9px 11px;
+  background: color-mix(in srgb, var(--sidebar-bg) 84%, var(--panel));
+  padding: 12px;
   overflow: auto;
 }
 
@@ -9258,26 +9259,38 @@ body.is-resizing-layout {
 }
 
 .workspace-git-loading,
-.workspace-git-panel-muted span {
+.workspace-git-panel-muted span,
+.workspace-git-empty-state {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.workspace-git-empty-state {
+  min-height: 40px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  color: var(--muted);
+  padding: 8px 9px;
+  font-size: 12px;
 }
 
 .workspace-git-panel-error button,
 .workspace-git-actions button,
 .workspace-git-file button,
 .workspace-git-checkpoint button {
-  min-height: 26px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
-  padding: 0 7px;
-  font-size: 11px;
+  padding: 0 9px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -9302,36 +9315,50 @@ body.is-resizing-layout {
   opacity: 0.58;
 }
 
-.workspace-git-header {
+.workspace-git-summary {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  padding: 10px;
 }
 
-.workspace-git-header > span {
-  min-width: 0;
-  display: inline-grid;
-  grid-template-columns: auto minmax(0, auto) minmax(0, 1fr);
+.workspace-git-branch-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--muted);
 }
 
-.workspace-git-header strong,
-.workspace-git-header small {
+.workspace-git-branch-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-git-branch-text strong,
+.workspace-git-branch-text small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-git-header strong {
+.workspace-git-branch-text strong {
   color: var(--text-strong);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 760;
 }
 
-.workspace-git-header small,
+.workspace-git-branch-text small,
 .workspace-git-sync,
 .workspace-git-file small,
 .workspace-git-checkpoint small,
@@ -9340,16 +9367,32 @@ body.is-resizing-layout {
   font-size: 11px;
 }
 
+.workspace-git-sync {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-git-sync span {
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 2px 7px;
+}
+
 .workspace-git-clean,
 .workspace-git-dirty {
   flex: 0 0 auto;
   border: 1px solid var(--line);
-  border-radius: var(--radius-xs);
-  background: var(--panel);
-  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 2px 8px;
   font-size: 10px;
   font-style: normal;
+  line-height: 1.4;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .workspace-git-clean {
@@ -9360,12 +9403,11 @@ body.is-resizing-layout {
   color: var(--warn);
 }
 
-.workspace-git-sync,
 .workspace-git-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
 
 .workspace-git-message {
@@ -9373,25 +9415,29 @@ body.is-resizing-layout {
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--success) 8%, var(--panel));
   color: var(--success);
-  padding: 6px 7px;
-  font-size: 11px;
+  padding: 7px 8px;
+  font-size: 12px;
 }
 
-.workspace-git-files {
+.workspace-git-section {
+  min-width: 0;
   display: grid;
-  gap: 5px;
-}
-
-.workspace-git-checkpoints {
-  display: grid;
-  gap: 5px;
+  gap: 8px;
   border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
-  padding: 6px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 76%, transparent);
+  padding: 8px;
 }
 
-.workspace-git-checkpoints > header {
+.workspace-git-section-changes {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--line-soft));
+}
+
+.workspace-git-panel-clean .workspace-git-section-changes {
+  border-color: var(--line-soft);
+}
+
+.workspace-git-section-header {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -9399,19 +9445,34 @@ body.is-resizing-layout {
   gap: 8px;
   color: var(--muted);
   font-size: 11px;
+  font-weight: 700;
 }
 
-.workspace-git-checkpoints > header span {
+.workspace-git-section-header span {
   min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-git-checkpoints > header em {
+.workspace-git-section-header em {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--panel-2);
   color: var(--muted);
+  padding: 1px 6px;
   font-size: 10px;
   font-style: normal;
+  line-height: 1.4;
+}
+
+.workspace-git-files,
+.workspace-git-checkpoint-list {
+  display: grid;
+  gap: 6px;
 }
 
 .workspace-git-file,
@@ -9420,22 +9481,18 @@ body.is-resizing-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
-  padding: 6px;
-}
-
-.workspace-git-checkpoint {
-  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  background: var(--panel);
+  padding: 8px;
 }
 
 .workspace-git-file > span,
 .workspace-git-checkpoint > span {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
 .workspace-git-file strong,
@@ -9499,11 +9556,15 @@ body.is-resizing-layout {
   max-height: 260px;
 }
 
+.workspace-rail-tab-panel-git {
+  display: block;
+  overflow: auto;
+}
 
 .workspace-rail-tab-panel-git .workspace-git-panel {
-  height: 100%;
   max-height: none;
   border-bottom: 0;
+  overflow: visible;
 }
 
 .workspace-rail-browser {

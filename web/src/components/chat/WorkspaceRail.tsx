@@ -850,24 +850,25 @@ function WorkspaceGitPanel({
 
   const changedFiles = status.files.slice(0, 8)
   const recentCheckpoints = checkpoints.slice(0, 4)
+  const hasSyncState = status.ahead > 0 || status.behind > 0
   return (
-    <section className="workspace-git-panel" aria-label="Repository status">
-      <header className="workspace-git-header">
-        <span>
-          <GitBranch size={14} aria-hidden="true" />
+    <section className={'workspace-git-panel' + (status.clean ? ' workspace-git-panel-clean' : ' workspace-git-panel-dirty')} aria-label="Repository status">
+      <header className="workspace-git-summary">
+        <span className="workspace-git-branch-icon" aria-hidden="true"><GitBranch size={15} /></span>
+        <span className="workspace-git-branch-text">
           <strong>{status.branch || 'detached'}</strong>
           {status.upstream ? <small>{status.upstream}</small> : null}
         </span>
         <em className={status.clean ? 'workspace-git-clean' : 'workspace-git-dirty'}>
           {status.clean ? 'clean' : status.files.length.toLocaleString() + ' changed'}
         </em>
+        {hasSyncState ? (
+          <span className="workspace-git-sync">
+            {status.ahead > 0 ? <span>{status.ahead} ahead</span> : null}
+            {status.behind > 0 ? <span>{status.behind} behind</span> : null}
+          </span>
+        ) : null}
       </header>
-      {(status.ahead > 0 || status.behind > 0) ? (
-        <div className="workspace-git-sync">
-          {status.ahead > 0 ? <span>{status.ahead} ahead</span> : null}
-          {status.behind > 0 ? <span>{status.behind} behind</span> : null}
-        </div>
-      ) : null}
       <div className="workspace-git-actions">
         <button type="button" onClick={onRefresh} disabled={loading || mutating}>
           <RefreshCw size={13} />
@@ -879,57 +880,42 @@ function WorkspaceGitPanel({
         </button>
       </div>
       {checkpointMessage ? <div className="workspace-git-message">{checkpointMessage}</div> : null}
-      {checkpointsLoading && recentCheckpoints.length === 0 ? (
-        <span className="workspace-git-loading"><RefreshCw size={13} /> Loading checkpoints</span>
-      ) : null}
-      {recentCheckpoints.length > 0 ? (
-        <div className="workspace-git-checkpoints" aria-label="Workspace checkpoints">
-          <header>
-            <span><History size={13} aria-hidden="true" /> Recent checkpoints</span>
-            {checkpointsLoading ? <em>refreshing</em> : null}
-          </header>
-          {recentCheckpoints.map((checkpoint) => (
-            <div className="workspace-git-checkpoint" key={checkpoint.checkpoint_id}>
-              <span>
-                <strong title={checkpoint.checkpoint_id}>{checkpointLabel(checkpoint)}</strong>
-                <small>{formatCheckpointMeta(checkpoint)}</small>
-              </span>
-              <button type="button" onClick={() => onRestoreCheckpoint(checkpoint)} disabled={mutating}>
-                <RotateCcw size={12} />
-                Restore
-              </button>
-            </div>
-          ))}
-          {checkpoints.length > recentCheckpoints.length ? (
-            <div className="workspace-git-more">{checkpoints.length - recentCheckpoints.length} older checkpoint{checkpoints.length - recentCheckpoints.length === 1 ? '' : 's'}</div>
-          ) : null}
-        </div>
-      ) : null}
-      {changedFiles.length > 0 ? (
-        <div className="workspace-git-files" aria-label="Changed git files">
-          {changedFiles.map((file) => (
-            <div className="workspace-git-file" key={file.path}>
-              <span>
-                <strong>{file.path}</strong>
-                <small>{file.status}{file.staged ? ' / staged' : ''}{file.untracked ? ' / untracked' : ''}</small>
-              </span>
-              <div>
-                <button type="button" onClick={() => onOpenDiff(file)} disabled={diffLoadingPath === file.path}>
-                  <GitCompare size={12} />
-                  {diffLoadingPath === file.path ? 'Loading' : 'Diff'}
-                </button>
-                <button type="button" onClick={() => onRestore(file)} disabled={mutating}>
-                  <RotateCcw size={12} />
-                  Restore
-                </button>
+      <section className="workspace-git-section workspace-git-section-changes" aria-label="Changed git files">
+        <header className="workspace-git-section-header">
+          <span><GitCompare size={13} aria-hidden="true" /> Changes</span>
+          <em>{status.files.length.toLocaleString()}</em>
+        </header>
+        {changedFiles.length > 0 ? (
+          <div className="workspace-git-files">
+            {changedFiles.map((file) => (
+              <div className="workspace-git-file" key={file.path}>
+                <span>
+                  <strong>{file.path}</strong>
+                  <small>{file.status}{file.staged ? ' / staged' : ''}{file.untracked ? ' / untracked' : ''}</small>
+                </span>
+                <div>
+                  <button type="button" onClick={() => onOpenDiff(file)} disabled={diffLoadingPath === file.path}>
+                    <GitCompare size={12} />
+                    {diffLoadingPath === file.path ? 'Loading' : 'Diff'}
+                  </button>
+                  <button type="button" onClick={() => onRestore(file)} disabled={mutating}>
+                    <RotateCcw size={12} />
+                    Restore
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-          {status.files.length > changedFiles.length ? (
-            <div className="workspace-git-more">{status.files.length - changedFiles.length} more changed file{status.files.length - changedFiles.length === 1 ? '' : 's'}</div>
-          ) : null}
-        </div>
-      ) : null}
+            ))}
+            {status.files.length > changedFiles.length ? (
+              <div className="workspace-git-more">{status.files.length - changedFiles.length} more changed file{status.files.length - changedFiles.length === 1 ? '' : 's'}</div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="workspace-git-empty-state">
+            <GitBranch size={14} aria-hidden="true" />
+            Working tree clean
+          </div>
+        )}
+      </section>
       {activeDiff ? (
         <article className="workspace-git-diff" aria-label="Workspace git diff">
           <header>
@@ -939,6 +925,39 @@ function WorkspaceGitPanel({
           {activeDiff.diff.trim() ? <DiffViewer diff={activeDiff.diff} /> : <p>No diff available for this path.</p>}
         </article>
       ) : null}
+      <section className="workspace-git-section workspace-git-checkpoints" aria-label="Workspace checkpoints">
+        <header className="workspace-git-section-header">
+          <span><History size={13} aria-hidden="true" /> Recent checkpoints</span>
+          {checkpointsLoading ? <em>refreshing</em> : recentCheckpoints.length > 0 ? <em>{checkpoints.length.toLocaleString()}</em> : null}
+        </header>
+        {checkpointsLoading && recentCheckpoints.length === 0 ? (
+          <span className="workspace-git-loading"><RefreshCw size={13} /> Loading checkpoints</span>
+        ) : null}
+        {recentCheckpoints.length > 0 ? (
+          <div className="workspace-git-checkpoint-list">
+            {recentCheckpoints.map((checkpoint) => (
+              <div className="workspace-git-checkpoint" key={checkpoint.checkpoint_id}>
+                <span>
+                  <strong title={checkpoint.checkpoint_id}>{checkpointLabel(checkpoint)}</strong>
+                  <small>{formatCheckpointMeta(checkpoint)}</small>
+                </span>
+                <button type="button" onClick={() => onRestoreCheckpoint(checkpoint)} disabled={mutating}>
+                  <RotateCcw size={12} />
+                  Restore
+                </button>
+              </div>
+            ))}
+            {checkpoints.length > recentCheckpoints.length ? (
+              <div className="workspace-git-more">{checkpoints.length - recentCheckpoints.length} older checkpoint{checkpoints.length - recentCheckpoints.length === 1 ? '' : 's'}</div>
+            ) : null}
+          </div>
+        ) : !checkpointsLoading ? (
+          <div className="workspace-git-empty-state">
+            <History size={14} aria-hidden="true" />
+            No checkpoints yet
+          </div>
+        ) : null}
+      </section>
     </section>
   )
 }

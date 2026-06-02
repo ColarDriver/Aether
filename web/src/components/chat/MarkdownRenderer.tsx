@@ -46,17 +46,72 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ text, streaming
   const blocks = useMemo(() => splitMarkdownBlocks(text), [text])
   const images = useMemo(() => extractMarkdownImages(text), [text])
   const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null)
-  const imageContext = useMemo<ImageContext>(() => ({ images, openImage: setActiveImageIndex }), [images])
+  // extractMarkdownImages returns a fresh array every parse, so keying the
+  // context on it would create a new context each streaming frame and bust the
+  // per-block memo below. Re-create it only when the image set actually changes.
+  const imagesSignature = images.map((image) => image.src + ' ' + image.alt).join('')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableImages = useMemo(() => images, [imagesSignature])
+  const imageContext = useMemo<ImageContext>(() => ({ images: stableImages, openImage: setActiveImageIndex }), [stableImages])
+  const lastIndex = blocks.length - 1
   return (
     <div className="markdown-renderer">
-      {blocks.map((block, index) => renderBlock(block, index, streaming && index === blocks.length - 1, imageContext))}
+      {blocks.map((block, index) => (
+        <MarkdownBlockView
+          key={index}
+          block={block}
+          index={index}
+          streaming={streaming && index === lastIndex}
+          imageContext={imageContext}
+        />
+      ))}
       {blocks.length === 0 && streaming ? <span className="streaming-caret" /> : null}
       {activeImageIndex !== null ? (
-        <MarkdownImagePreview images={images} activeIndex={activeImageIndex} onClose={() => setActiveImageIndex(null)} onSelect={setActiveImageIndex} />
+        <MarkdownImagePreview images={stableImages} activeIndex={activeImageIndex} onClose={() => setActiveImageIndex(null)} onSelect={setActiveImageIndex} />
       ) : null}
     </div>
   )
 })
+
+// Each streaming delta re-parses the whole message into fresh block objects, but
+// only the last block's text actually changed. Memoizing the per-block render by
+// value runs renderInline (and React reconciliation) only for the block that
+// changed, instead of the entire message every frame.
+type MarkdownBlockViewProps = {
+  block: MarkdownBlock
+  index: number
+  streaming: boolean
+  imageContext: ImageContext
+}
+
+const MarkdownBlockView = memo(
+  function MarkdownBlockView({ block, index, streaming, imageContext }: MarkdownBlockViewProps) {
+    return renderBlock(block, index, streaming, imageContext)
+  },
+  (prev, next) =>
+    prev.index === next.index &&
+    prev.streaming === next.streaming &&
+    prev.imageContext === next.imageContext &&
+    markdownBlocksEqual(prev.block, next.block),
+)
+
+function markdownBlocksEqual(a: MarkdownBlock, b: MarkdownBlock): boolean {
+  if (a.type === 'paragraph' && b.type === 'paragraph') return a.content === b.content
+  if (a.type === 'heading' && b.type === 'heading') return a.level === b.level && a.content === b.content
+  if (a.type === 'blockquote' && b.type === 'blockquote') return a.content === b.content
+  if (a.type === 'code' && b.type === 'code') return a.language === b.language && a.code === b.code
+  if (a.type === 'math' && b.type === 'math') return a.display === b.display && a.source === b.source
+  if (a.type === 'hr' && b.type === 'hr') return true
+  if (a.type === 'table' && b.type === 'table') return a.block === b.block
+  if (a.type === 'list' && b.type === 'list') {
+    if (a.ordered !== b.ordered || a.items.length !== b.items.length) return false
+    for (let index = 0; index < a.items.length; index += 1) {
+      if (a.items[index]!.content !== b.items[index]!.content || a.items[index]!.checked !== b.items[index]!.checked) return false
+    }
+    return true
+  }
+  return false
+}
 
 function renderBlock(block: MarkdownBlock, index: number, streaming = false, imageContext?: ImageContext) {
   const caret = streaming ? <StreamingCaret /> : null

@@ -411,16 +411,31 @@ function withEstimatedTokenUsage(state: ChatRenderState, sessionId: string, runI
   }
 }
 
+// Token estimates are recomputed on every streaming delta. Re-scanning and
+// regex-counting the run's entire assistant+reasoning text each time is O(text)
+// per delta -> O(text^2) over a run, which stalls the main thread mid-stream.
+// Finalized blocks keep their identity (the reducer only replaces the active
+// streaming block), so cache each block's estimate by reference: prior blocks
+// hit the cache and only the growing active block is re-counted.
+const blockTokenEstimateCache = new WeakMap<ChatBlock, number>()
+
+function estimateBlockTokens(block: ChatBlock): number {
+  const cached = blockTokenEstimateCache.get(block)
+  if (cached !== undefined) return cached
+  const content = block.kind === 'assistant_message' || block.kind === 'thinking' ? block.content : ''
+  const tokens = estimateTextTokens(content)
+  blockTokenEstimateCache.set(block, tokens)
+  return tokens
+}
+
 function estimatedTokenUsageForRun(blocks: ChatBlock[], runId: string, previous?: TokenUsage): TokenUsage {
-  let assistantText = ''
-  let reasoningText = ''
+  let estimatedOutput = 0
+  let estimatedReasoning = 0
   for (const block of blocks) {
     if (block.runId !== runId) continue
-    if (block.kind === 'assistant_message') assistantText += '\n' + block.content
-    if (block.kind === 'thinking') reasoningText += '\n' + block.content
+    if (block.kind === 'assistant_message') estimatedOutput += estimateBlockTokens(block)
+    else if (block.kind === 'thinking') estimatedReasoning += estimateBlockTokens(block)
   }
-  const estimatedOutput = estimateTextTokens(assistantText)
-  const estimatedReasoning = estimateTextTokens(reasoningText)
   return {
     input_tokens: positiveNumber(previous?.input_tokens),
     output_tokens: positiveNumber(Math.max(previous?.output_tokens ?? 0, estimatedOutput)),

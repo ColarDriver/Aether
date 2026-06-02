@@ -28,7 +28,33 @@ describe('ActivityBar', () => {
     expect(status).toBeTruthy()
     expect(screen.getByText('Responding').className).toContain('aether-shimmer-text')
     expect(screen.getByText('writing final answer')).toBeTruthy()
-    expect(screen.getByText('1.6k tokens (1.4k out / 200 cache) · session- · gpt-5.4')).toBeTruthy()
+    // Down arrow (output streaming) is rendered as its own accented span, so
+    // the token text and trailing meta sit in sibling nodes.
+    expect(screen.getByText('↓')).toBeTruthy()
+    expect(screen.getByText('1.6k tokens (1.4k out / 200 cache)')).toBeTruthy()
+    expect(screen.getByText('session- · gpt-5.4')).toBeTruthy()
+  })
+
+  it('labels the requesting (model-wait) phase', () => {
+    render(
+      <ActivityBar
+        activeRunId="run-r"
+        status={{ runId: 'run-r', sessionId: 'session-1', state: 'requesting' }}
+      />,
+    )
+
+    expect(screen.getByText('Requesting')).toBeTruthy()
+  })
+
+  it('labels the tool-input (streaming tool args) phase', () => {
+    render(
+      <ActivityBar
+        activeRunId="run-t"
+        status={{ runId: 'run-t', sessionId: 'session-1', state: 'tool_input' }}
+      />,
+    )
+
+    expect(screen.getByText('Tool input')).toBeTruthy()
   })
 
   it('suppresses raw engine enum details', () => {

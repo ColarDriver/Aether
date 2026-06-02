@@ -3590,35 +3590,40 @@ body.is-resizing-layout {
 }
 
 .web-activity-bar {
+  width: fit-content;
+  max-width: 100%;
   min-height: 34px;
-  display: grid;
-  grid-template-columns: auto auto minmax(0, auto) minmax(0, 1fr);
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  gap: 9px;
+  margin: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border-radius: 999px;
   color: var(--text);
-  padding: 7px 12px;
+  padding: 5px 14px 5px 6px;
   font-size: 12px;
 }
 
 .web-activity-icon {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
+  flex: none;
   display: grid;
   place-items: center;
-  border: 1px solid var(--accent-soft-strong);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent-soft-strong) 70%, transparent);
+  border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-.web-activity-bar .web-activity-icon svg {
+/* Spin the leading icon only while waiting on the model (working/requesting);
+   thinking / responding / tool keep a static, meaningful glyph. */
+.web-activity-working .web-activity-icon svg {
   animation: spin 1s linear infinite;
 }
 
-.web-activity-detail,
-.web-activity-meta {
+.web-activity-detail {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -3627,31 +3632,52 @@ body.is-resizing-layout {
 }
 
 .web-activity-meta {
-  justify-self: end;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.web-activity-tokens {
+  white-space: nowrap;
+}
+
+.web-activity-sep {
+  color: var(--muted-2);
+}
+
+.web-activity-arrow,
+.status-arrow {
+  color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .chat-block-status {
   width: fit-content;
-  display: grid;
-  grid-template-columns: auto auto minmax(0, auto) auto;
+  max-width: 100%;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  gap: 10px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: 999px;
   color: var(--text);
-  padding: 6px 8px;
+  padding: 5px 14px 5px 6px;
   font-size: 12px;
 }
 
 .status-icon {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
+  flex: none;
   display: grid;
   place-items: center;
-  border: 1px solid var(--accent-soft-strong);
-  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent-soft-strong) 70%, transparent);
+  border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -3660,8 +3686,7 @@ body.is-resizing-layout {
   animation: spin 1s linear infinite;
 }
 
-.status-detail,
-.status-meta {
+.status-detail {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -3670,9 +3695,41 @@ body.is-resizing-layout {
 }
 
 .status-meta {
-  border-left: 1px solid var(--line);
-  padding-left: 8px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding-left: 10px;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Mode label + whimsical verb share a single grid cell so the grid columns
+   (icon / headline / detail / meta) stay intact. */
+.web-activity-headline,
+.status-headline {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.web-activity-verb,
+.status-verb {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-activity-verb::before,
+.status-verb::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--muted);
 }
 
 .tool-call-group {

@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'ink-testing-library'
 
 import { ActivityBar } from '../components/ActivityBar.js'
+import { SPINNER_VERBS } from '../lib/shimmer.js'
 import { activityActions, activityState } from '../store/activityStore.js'
 import { sessionActions, sessionState } from '../store/sessionStore.js'
 
 function tokenCountFrom(frame: string): number | null {
-  const match = frame.match(/↓ ([\d,.]+) tokens/)
+  const match = frame.match(/[↑↓] ([\d,.]+) tokens/)
   if (!match) {
     return null
   }
@@ -15,6 +16,12 @@ function tokenCountFrom(frame: string): number | null {
     return null
   }
   return Number(raw.replace(/[,.]/g, ''))
+}
+
+/** The headline verb is now a randomly-sampled whimsical word, so assert it is
+ * one of the pool rather than any specific value. */
+function expectSpinnerVerb(frame: string): void {
+  expect(SPINNER_VERBS.some((verb) => frame.includes(verb))).toBe(true)
 }
 
 describe('ActivityBar', () => {
@@ -39,6 +46,9 @@ describe('ActivityBar', () => {
 
   it('shows token segments, model and session id when active', () => {
     activityActions.beginTurn()
+    // Output tokens stream back during `responding`; `requesting` would show the
+    // ↑ (model-wait) arrow instead. See the dedicated arrow tests below.
+    activityActions.setStatus('responding')
     activityActions.setIteration(2, 8)
     activityActions.addResponseChars(480 * 4)
     sessionState.set({
@@ -49,7 +59,7 @@ describe('ActivityBar', () => {
 
     const { lastFrame, unmount } = render(<ActivityBar />)
     const frame = lastFrame() ?? ''
-    expect(frame).toContain('Thinking')
+    expectSpinnerVerb(frame)
     expect(frame).not.toContain('iter 2/8')
     // Mirrors Python `activity.py:239-241` — output-only token line with `↓`
     // flow-direction arrow. Input tokens are surfaced via /stats, not the
@@ -60,8 +70,21 @@ describe('ActivityBar', () => {
     unmount()
   })
 
+  it('flags the requesting (model-wait) phase with an up arrow', () => {
+    activityActions.beginTurn()
+    // beginTurn lands in `requesting`; output count is shown with the ↑ arrow
+    // because bytes are still flowing out to the model.
+    activityActions.addResponseChars(120 * 4)
+    const { lastFrame, unmount } = render(<ActivityBar />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('↑ 120 tokens')
+    expect(frame).not.toContain('↓ 120 tokens')
+    unmount()
+  })
+
   it('uses provider usage as a fallback and lets streamed progress overtake it', () => {
     activityActions.beginTurn()
+    activityActions.setStatus('responding')
     activityActions.addUsage({ input: 100, output: 321 })
     activityActions.flushUsage()
 
@@ -102,7 +125,7 @@ describe('ActivityBar', () => {
     vi.advanceTimersByTime(500)
 
     expect(activityState.get().animationTick).toBe(before)
-    expect(lastFrame() ?? '').toContain('Thinking')
+    expectSpinnerVerb(lastFrame() ?? '')
     unmount()
   })
 
@@ -112,7 +135,7 @@ describe('ActivityBar', () => {
 
     vi.advanceTimersByTime(500)
 
-    expect(lastFrame() ?? '').toContain('Thinking')
+    expectSpinnerVerb(lastFrame() ?? '')
     expect(activityState.get().animationTick).toBe(0)
     unmount()
   })

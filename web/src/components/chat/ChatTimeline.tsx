@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import type { SessionTurnCheckpoint } from '../../api/types'
 import type { AssistantMessageBlock as AssistantMessage, ChatBlock, DiagnosticsBlock as DiagnosticsChatBlock, DiffBlock as DiffChatBlock, ToolResultBlock as ToolResultChatBlock, UserMessageBlock as UserMessage } from '../../chat-rendering'
 import { buildChatRenderModel, type ChatRenderItem } from '../../chat-rendering/renderModel'
@@ -20,11 +21,7 @@ import {
 } from './blocks'
 import type { CurrentTurnCheckpoint, CurrentTurnFileChangeAction, CurrentTurnUndoAction, CurrentTurnVerification } from './blocks/CurrentTurnChangeCard'
 
-type Props = {
-  blocks: ChatBlock[]
-  sessionId?: string | null
-  turnCheckpoints?: SessionTurnCheckpoint[]
-  messageActionsDisabled?: boolean
+type TimelineCallbacks = {
   onRespondPermission?: (decision: Record<string, unknown>) => void
   onRespondApproval?: (result: Record<string, unknown>) => void
   onOpenTask?: (taskId: string) => void
@@ -41,56 +38,168 @@ type Props = {
   onQuoteAssistantMessage?: (block: AssistantMessage) => void
 }
 
-export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, onRespondPermission, onRespondApproval, onOpenTask, onAcceptFileChange, onRevertFileChange, onOpenFileChange, onUndoTurn, onRetryAssistantMessage, onRetryUserMessage, onEditUserMessage, onForkMessage, onRewindMessage, onQuoteUserMessage, onQuoteAssistantMessage }: Props) {
-  if (blocks.length === 0) {
+type Props = TimelineCallbacks & {
+  blocks: ChatBlock[]
+  sessionId?: string | null
+  turnCheckpoints?: SessionTurnCheckpoint[]
+  messageActionsDisabled?: boolean
+}
+
+export function ChatTimeline({ blocks, sessionId = null, turnCheckpoints = [], messageActionsDisabled = false, ...callbacks }: Props) {
+  const model = useMemo(() => buildChatRenderModel(blocks), [blocks])
+  const turns = useMemo(() => groupRenderItemsIntoTurns(model.items), [model])
+  if (turns.length === 0) {
     return <div className="empty-chat">No messages in this session yet.</div>
   }
-  const model = buildChatRenderModel(blocks)
-  const turns = groupRenderItemsIntoTurns(model.items)
   return (
     <div className="chat-timeline">
-      {turns.map((turn) => {
-        const serverCheckpoint = checkpointForTurn(turn, turnCheckpoints)
-        return (
-          <section className={turn.hasUser ? 'chat-turn' : 'chat-turn chat-turn-orphan'} key={turn.id}>
-            {turn.items.map((item) => (
-              <ChatRenderItemView
-                item={item}
-                key={item.kind === 'tool_group' ? item.id : item.block.id}
-                messageActionsDisabled={messageActionsDisabled}
-                onRespondPermission={onRespondPermission}
-                onRespondApproval={onRespondApproval}
-                onOpenTask={onOpenTask}
-                onRetryAssistantMessage={onRetryAssistantMessage}
-                onRetryUserMessage={onRetryUserMessage}
-                onEditUserMessage={onEditUserMessage}
-                onForkMessage={onForkMessage}
-                onRewindMessage={onRewindMessage}
-                onQuoteUserMessage={onQuoteUserMessage}
-                onQuoteAssistantMessage={onQuoteAssistantMessage}
-                results={model.toolResultsByCallId}
-                diffs={model.diffsByToolCallId}
-              />
-            ))}
-            <CurrentTurnChangeCard
-              diffs={diffsForTurn(turn, model.diffsByToolCallId)}
-              diagnostics={diagnosticsForTurn(turn)}
-              verifications={verificationsForTurn(turn, model.toolResultsByCallId)}
-              checkpoint={workspaceCheckpointForTurn(turn)}
-              sessionId={sessionId}
-              serverCheckpoint={serverCheckpoint}
-              undoAction={undoActionForTurn(turn, serverCheckpoint)}
-              undoDisabled={messageActionsDisabled}
-              onAcceptFile={onAcceptFileChange}
-              onRevertFile={onRevertFileChange}
-              onOpenFile={onOpenFileChange}
-              onUndoTurn={onUndoTurn}
-            />
-          </section>
-        )
-      })}
+      {turns.map((turn) => (
+        <TurnSection
+          key={turn.id}
+          turn={turn}
+          serverCheckpoint={checkpointForTurn(turn, turnCheckpoints)}
+          sessionId={sessionId}
+          messageActionsDisabled={messageActionsDisabled}
+          results={model.toolResultsByCallId}
+          diffs={model.diffsByToolCallId}
+          {...callbacks}
+        />
+      ))}
     </div>
   )
+}
+
+type TurnSectionProps = TimelineCallbacks & {
+  turn: ChatTurn
+  serverCheckpoint: SessionTurnCheckpoint | null
+  sessionId: string | null
+  messageActionsDisabled: boolean
+  results: Map<string, ToolResultChatBlock>
+  diffs: Map<string, DiffChatBlock[]>
+}
+
+// Only the turn whose blocks are streaming changes on each render-frame flush;
+// every prior turn keeps identical block references (the reducer replaces just
+// the active block). Memoizing the section lets unchanged turns skip both their
+// rows' reconciliation and the per-turn CurrentTurnChangeCard recomputation
+// (diffsForTurn/verificationsForTurn), collapsing per-flush work from O(all
+// turns) to O(active turn).
+const TurnSection = memo(function TurnSection({
+  turn,
+  serverCheckpoint,
+  sessionId,
+  messageActionsDisabled,
+  results,
+  diffs,
+  onRespondPermission,
+  onRespondApproval,
+  onOpenTask,
+  onAcceptFileChange,
+  onRevertFileChange,
+  onOpenFileChange,
+  onUndoTurn,
+  onRetryAssistantMessage,
+  onRetryUserMessage,
+  onEditUserMessage,
+  onForkMessage,
+  onRewindMessage,
+  onQuoteUserMessage,
+  onQuoteAssistantMessage,
+}: TurnSectionProps) {
+  return (
+    <section className={turn.hasUser ? 'chat-turn' : 'chat-turn chat-turn-orphan'}>
+      {turn.items.map((item) => (
+        <ChatRenderItemView
+          item={item}
+          key={item.kind === 'tool_group' ? item.id : item.block.id}
+          messageActionsDisabled={messageActionsDisabled}
+          onRespondPermission={onRespondPermission}
+          onRespondApproval={onRespondApproval}
+          onOpenTask={onOpenTask}
+          onRetryAssistantMessage={onRetryAssistantMessage}
+          onRetryUserMessage={onRetryUserMessage}
+          onEditUserMessage={onEditUserMessage}
+          onForkMessage={onForkMessage}
+          onRewindMessage={onRewindMessage}
+          onQuoteUserMessage={onQuoteUserMessage}
+          onQuoteAssistantMessage={onQuoteAssistantMessage}
+          results={results}
+          diffs={diffs}
+        />
+      ))}
+      <CurrentTurnChangeCard
+        diffs={diffsForTurn(turn, diffs)}
+        diagnostics={diagnosticsForTurn(turn)}
+        verifications={verificationsForTurn(turn, results)}
+        checkpoint={workspaceCheckpointForTurn(turn)}
+        sessionId={sessionId}
+        serverCheckpoint={serverCheckpoint}
+        undoAction={undoActionForTurn(turn, serverCheckpoint)}
+        undoDisabled={messageActionsDisabled}
+        onAcceptFile={onAcceptFileChange}
+        onRevertFile={onRevertFileChange}
+        onOpenFile={onOpenFileChange}
+        onUndoTurn={onUndoTurn}
+      />
+    </section>
+  )
+}, areTurnSectionsEqual)
+
+// Action callbacks are intentionally excluded: they are disabled while a run is
+// active (messageActionsDisabled flips and forces a full re-render at the run
+// boundary), and the ChatView handlers read their data from a ref so a retained
+// closure never goes stale. So a turn's rendered output is fully determined by
+// its items plus the tool results/diffs they reference and the checkpoint state.
+function areTurnSectionsEqual(prev: TurnSectionProps, next: TurnSectionProps): boolean {
+  if (prev.messageActionsDisabled !== next.messageActionsDisabled) return false
+  if (prev.sessionId !== next.sessionId) return false
+  if (prev.serverCheckpoint !== next.serverCheckpoint) return false
+  if (prev.turn.id !== next.turn.id || prev.turn.hasUser !== next.turn.hasUser) return false
+  const a = prev.turn.items
+  const b = next.turn.items
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    if (!itemRenderEqual(a[index]!, b[index]!, prev.results, next.results, prev.diffs, next.diffs)) return false
+  }
+  return true
+}
+
+// A render item produces identical output when its underlying block reference is
+// unchanged (text/tool blocks) and — for tool groups — the same tool calls plus
+// the same result/diff blocks they reference. The model rebuilds these wrapper
+// objects every flush, so we compare the stable inner references rather than the
+// wrappers.
+function itemRenderEqual(
+  a: ChatRenderItem,
+  b: ChatRenderItem,
+  prevResults: Map<string, ToolResultChatBlock>,
+  nextResults: Map<string, ToolResultChatBlock>,
+  prevDiffs: Map<string, DiffChatBlock[]>,
+  nextDiffs: Map<string, DiffChatBlock[]>,
+): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'block' && b.kind === 'block') return a.block === b.block
+  if (a.kind === 'tool_group' && b.kind === 'tool_group') {
+    if (a.id !== b.id || a.toolCalls.length !== b.toolCalls.length) return false
+    for (let index = 0; index < a.toolCalls.length; index += 1) {
+      if (a.toolCalls[index] !== b.toolCalls[index]) return false
+    }
+    for (const call of b.toolCalls) {
+      if (prevResults.get(call.toolCallId) !== nextResults.get(call.toolCallId)) return false
+      if (!sameDiffList(prevDiffs.get(call.toolCallId), nextDiffs.get(call.toolCallId))) return false
+    }
+    return true
+  }
+  return false
+}
+
+function sameDiffList(a?: DiffChatBlock[], b?: DiffChatBlock[]): boolean {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false
+  }
+  return true
 }
 
 function verificationsForTurn(turn: ChatTurn, results: Map<string, ToolResultChatBlock>): CurrentTurnVerification[] {
@@ -287,7 +396,14 @@ function diffsForTurn(turn: ChatTurn, diffs: Map<string, DiffChatBlock[]>): Diff
   })
 }
 
-function ChatRenderItemView({
+type ChatRenderItemViewProps = TimelineCallbacks & {
+  item: ChatRenderItem
+  messageActionsDisabled?: boolean
+  results: Map<string, ToolResultChatBlock>
+  diffs: Map<string, DiffChatBlock[]>
+}
+
+const ChatRenderItemView = memo(function ChatRenderItemView({
   item,
   messageActionsDisabled,
   onRespondPermission,
@@ -302,22 +418,7 @@ function ChatRenderItemView({
   onQuoteAssistantMessage,
   results,
   diffs,
-}: {
-  item: ChatRenderItem
-  messageActionsDisabled?: boolean
-  onRespondPermission?: (decision: Record<string, unknown>) => void
-  onRespondApproval?: (result: Record<string, unknown>) => void
-  onOpenTask?: (taskId: string) => void
-  onRetryAssistantMessage?: (block: AssistantMessage) => void
-  onRetryUserMessage?: (block: UserMessage) => void
-  onEditUserMessage?: (block: UserMessage) => void
-  onForkMessage?: (block: UserMessage | AssistantMessage) => void
-  onRewindMessage?: (block: UserMessage | AssistantMessage) => void
-  onQuoteUserMessage?: (block: UserMessage) => void
-  onQuoteAssistantMessage?: (block: AssistantMessage) => void
-  results: Map<string, ToolResultChatBlock>
-  diffs: Map<string, DiffChatBlock[]>
-}) {
+}: ChatRenderItemViewProps) {
   if (item.kind === 'tool_group') {
     return (
       <ToolCallGroup
@@ -343,6 +444,11 @@ function ChatRenderItemView({
       onQuoteAssistantMessage={onQuoteAssistantMessage}
     />
   )
+}, areItemViewsEqual)
+
+function areItemViewsEqual(prev: ChatRenderItemViewProps, next: ChatRenderItemViewProps): boolean {
+  if (prev.messageActionsDisabled !== next.messageActionsDisabled) return false
+  return itemRenderEqual(prev.item, next.item, prev.results, next.results, prev.diffs, next.diffs)
 }
 
 type ChatTurn = {

@@ -34,6 +34,15 @@ describe('MarkdownRenderer', () => {
     expect(screen.getByText('care').tagName).toBe('STRONG')
   })
 
+  it('does not hang on a bare heading marker streamed before its content', () => {
+    // Regression: a line like `## ` (heading marker, no content yet) is reported
+    // as a block by startsBlock() but rejected by the heading handler, which used
+    // to stall the parser's index and peg the main thread. Rendering must return.
+    render(<MarkdownRenderer streaming text={'Intro paragraph.\n\n## '} />)
+    expect(screen.getByText('Intro paragraph.')).toBeTruthy()
+    expect(screen.getByText('##')).toBeTruthy()
+  })
+
   it('renders partial streaming tables before the separator row arrives', () => {
     render(<MarkdownRenderer text={'| Tool | Status |\n| shell | running |'} />)
 

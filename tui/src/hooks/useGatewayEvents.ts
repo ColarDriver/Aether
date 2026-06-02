@@ -138,6 +138,9 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       break
     case 'stream.progress':
       activityActions.addResponseChars(event.chars)
+      // `stream.progress` carries function-call argument fragments — the model
+      // is streaming the tool-call input, distinct from executing the tool.
+      activityActions.setStatus('tool_input')
       break
     case 'tool.call': {
       if (event.tool_name === 'todo_write') {
@@ -179,12 +182,20 @@ export function applyGatewayEvent(event: GatewayEvent): void {
         ...(event.metadata ? { metadata: event.metadata } : {})
       })
       activityActions.bumpToolCounter(Boolean(event.is_error))
-      activityActions.setStatus('thinking')
+      // Tool finished — the loop heads back to the model, so we are waiting
+      // on the next response again.
+      activityActions.setStatus('requesting')
       break
-    case 'status':
+    case 'status': {
       sessionActions.setStatus(event.kind, event.detail ?? null)
-      activityActions.setStatus(event.kind, event.detail ?? null)
+      // The backend emits `thinking` whenever it is about to call the model
+      // (before_llm / after_tool) — i.e. the request is in flight and we are
+      // awaiting a response. That is the `requesting` phase; genuine extended
+      // thinking is surfaced via `reasoning.delta` below.
+      const activityKind = event.kind === 'thinking' ? 'requesting' : event.kind
+      activityActions.setStatus(activityKind, event.detail ?? null)
       break
+    }
     case 'usage':
       sessionActions.addUsage({
         inputTokens: event.input_tokens,
@@ -205,7 +216,7 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       // tool call header.
       flushAndPushGroup()
       activityActions.setIteration(event.iteration)
-      activityActions.setStatus('thinking')
+      activityActions.setStatus('requesting')
       // A new iteration means a new turn is active — clear the
       // last-finished marker so the next terminal event for this run
       // (or the next run) is not silently swallowed.
@@ -222,6 +233,9 @@ export function applyGatewayEvent(event: GatewayEvent): void {
       break
     case 'reasoning.delta':
       reasoningActions.appendDelta(event.text)
+      // Extended-thinking tokens are streaming — this is the genuine
+      // `thinking` phase (the model-wait window shows as `requesting`).
+      activityActions.setStatus('thinking')
       break
     case 'done': {
       if (event.run_id === lastFinishedRunId) {

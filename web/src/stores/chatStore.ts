@@ -2,8 +2,9 @@ import { create } from 'zustand'
 import { api } from '../api/client'
 import { runSocket } from '../api/runSocket'
 import type { RunSocketFrame, TaskSummary, TranscriptMessage } from '../api/types'
-import type { ChatAttachment, ChatBlock, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
+import type { ChatAttachment, ChatBlock, ChatRenderState, RunStatusSnapshot, TokenUsage } from '../chat-rendering'
 import { frameSessionId, normalizeTranscript, reduceRunFrame, resolvePromptInBlocks } from '../chat-rendering'
+import { logInboundFrame } from '../debug/freezeProbe'
 import { useSessionStore } from './sessionStore'
 import { useTaskStore } from './taskStore'
 
@@ -107,23 +108,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
     runSocket.connect()
     if (unsubscribeSocket) return
     unsubscribeSocket = runSocket.onFrame((frame) => {
-      set((state) => ({
-        frames: [...state.frames, frame],
-        connected: frame.type === 'ready' || frame.type === 'socket.open'
-          ? true
-          : frame.type === 'socket.closed'
-            ? false
-            : state.connected,
-        ...socketConnectionStateFromFrame(frame, state),
-        activeRunId:
-          frame.type === 'run.accepted' && typeof frame.payload?.run_id === 'string'
-            ? frame.payload.run_id
-            : state.activeRunId,
-      }))
-      applyRenderFrame(frame, set)
-      applyPromptFrame(frame, set)
-      applyTaskFrame(frame)
-      if (frame.type === 'ready') void backfillActiveSessionAfterReady(set)
+      logInboundFrame(frame.type, (frame as { transport_sequence?: unknown }).transport_sequence)
+      // Isolate each step: a throw while reducing one malformed frame must not
+      // permanently freeze the stream (block/status updates would otherwise
+      // stall until a manual refresh rebuilds state from the transcript).
+      try {
+        set((state) => {
+          const connected = frame.type === 'ready' || frame.type === 'socket.open'
+            ? true
+            : frame.type === 'socket.closed'
+              ? false
+              : state.connected
+          const connection = socketConnectionStateFromFrame(frame, state)
+          const activeRunId =
+            frame.type === 'run.accepted' && typeof frame.payload?.run_id === 'string'
+              ? frame.payload.run_id
+              : state.activeRunId
+          // The high-frequency streaming deltas touch none of these fields.
+          // Returning the existing state reference makes zustand skip the merge
+          // and the subscriber notification entirely, instead of waking every
+          // selector hundreds of times per second mid-stream.
+          if (
+            connected === state.connected &&
+            connection.socketState === state.socketState &&
+            connection.socketDetail === state.socketDetail &&
+            activeRunId === state.activeRunId
+          ) {
+            return state
+          }
+          return { connected, ...connection, activeRunId }
+        })
+      } catch (error) {
+        console.error('[chatStore] failed to apply socket frame metadata', frame.type, error)
+      }
+      try {
+        enqueueRenderFrame(frame, set)
+      } catch (error) {
+        console.error('[chatStore] failed to render socket frame', frame.type, error)
+      }
+      try {
+        applyPromptFrame(frame, set)
+        applyTaskFrame(frame)
+        if (frame.type === 'ready') void backfillActiveSessionAfterReady(set)
+      } catch (error) {
+        console.error('[chatStore] failed to process socket frame side-effects', frame.type, error)
+      }
     })
   },
   startRun: (sessionId, message, attachments = []) => {
@@ -410,29 +439,52 @@ function isPromptTerminalFrame(type: string): boolean {
     || type === 'prompt.missing'
 }
 
-function applyRenderFrame(
-  frame: RunSocketFrame,
-  set: (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void,
-) {
-  set((state) => {
-    const next = reduceRunFrame(
-      {
+type RenderSet = (partial: ChatState | Partial<ChatState> | ((state: ChatState) => ChatState | Partial<ChatState>)) => void
+
+// During streaming the backend emits hundreds of delta frames in tight bursts
+// (observed 1-3ms apart). Reducing+rendering each one synchronously re-renders
+// the entire chat timeline per delta, which saturates the main thread on long
+// sessions and freezes the tab mid-stream. Instead we queue render frames and
+// flush them in a single state update per animation frame: many deltas collapse
+// into one render, capping render frequency at the display refresh rate while
+// preserving frame order (the reducer is pure and applied FIFO).
+let pendingRenderFrames: RunSocketFrame[] = []
+let renderFlushScheduled = false
+
+function enqueueRenderFrame(frame: RunSocketFrame, set: RenderSet) {
+  pendingRenderFrames.push(frame)
+  if (renderFlushScheduled) return
+  renderFlushScheduled = true
+  const flush = () => {
+    renderFlushScheduled = false
+    const frames = pendingRenderFrames
+    pendingRenderFrames = []
+    if (frames.length === 0) return
+    set((state) => {
+      let acc: ChatRenderState = {
         blocksBySession: state.blocksBySession,
         activeRunId: state.activeRunId,
         tokenUsageByRun: state.tokenUsageByRun,
         statusByRun: state.statusByRun,
         pendingPermissionBlock: null,
         pendingApprovalBlock: null,
-      },
-      frame,
-    )
-    return {
-      blocksBySession: next.blocksBySession,
-      activeRunId: next.activeRunId,
-      tokenUsageByRun: next.tokenUsageByRun,
-      statusByRun: next.statusByRun,
-    }
-  })
+      }
+      for (const pending of frames) {
+        acc = reduceRunFrame(acc, pending)
+      }
+      return {
+        blocksBySession: acc.blocksBySession,
+        activeRunId: acc.activeRunId,
+        tokenUsageByRun: acc.tokenUsageByRun,
+        statusByRun: acc.statusByRun,
+      }
+    })
+  }
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(flush)
+  } else {
+    setTimeout(flush, 16)
+  }
 }
 
 function asString(value: unknown): string {

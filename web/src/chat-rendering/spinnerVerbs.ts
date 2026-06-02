@@ -1,44 +1,8 @@
-/**
- * Animated highlight that "sweeps" across a label by code-point index. Used
- * by the activity bar to make the active verb feel alive without flashing.
- *
- * The implementation is intentionally simple: pick a window of N adjacent
- * code points and treat them as the highlighted slice for the current tick.
- * The renderer can then split the label into three slices (before / during /
- * after) and apply a brighter colour to the middle one.
- */
-
-const SHIMMER_WINDOW = 4
-const PADDING = 6
-
-export interface ShimmerSlices {
-  before: string
-  highlight: string
-  after: string
-}
-
-export function shimmer(label: string, tick: number): ShimmerSlices {
-  if (!label) {
-    return { before: '', highlight: '', after: '' }
-  }
-  const codePoints = Array.from(label)
-  const total = codePoints.length + PADDING
-  const start = ((tick % total) - PADDING + total) % total - PADDING
-  const from = Math.max(0, start)
-  const to = Math.min(codePoints.length, Math.max(from, from + SHIMMER_WINDOW))
-  return {
-    before: codePoints.slice(0, from).join(''),
-    highlight: codePoints.slice(from, to).join(''),
-    after: codePoints.slice(to).join('')
-  }
-}
-
 // Mode-neutral, whimsical spinner verbs — ported from Claude Code's
-// `spinnerVerbs.ts`. Deliberately not themed around "thinking": the active
-// mode (requesting / thinking / responding / tool) is conveyed by the
-// surrounding cues (↑/↓ token arrow, the `· thinking` byline, the icon and
-// per-mode animation), never by the headline verb. A thinking-themed list
-// made every turn read as "Thinking…"; a broad neutral pool fixes that.
+// `spinnerVerbs.ts` and kept in sync with the TUI copy in `tui/src/lib/shimmer.ts`.
+// The active mode (requesting / thinking / responding / tool) stays the headline
+// label; this verb rides alongside it as flavour so the status never reads as a
+// single fixed state.
 export const SPINNER_VERBS: readonly string[] = [
   'Accomplishing',
   'Actioning',
@@ -226,14 +190,29 @@ export const SPINNER_VERBS: readonly string[] = [
   'Working',
   'Wrangling',
   'Zesting',
-  'Zigzagging'
+  'Zigzagging',
 ]
 
-/** Pick a stable spinner verb for a turn from its per-turn seed index. */
-export function spinnerVerbAt(index: number): string {
-  if (SPINNER_VERBS.length === 0) {
-    return 'Working'
+// Cheap deterministic string hash (FNV-1a). A stable seed → stable verb so the
+// status doesn't flicker through words on every React re-render; it only
+// changes when the run (turn) changes.
+function hashSeed(seed: string): number {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
   }
-  const wrapped = ((index % SPINNER_VERBS.length) + SPINNER_VERBS.length) % SPINNER_VERBS.length
-  return SPINNER_VERBS[wrapped] ?? 'Working'
+  return hash >>> 0
+}
+
+/**
+ * Pick a stable whimsical verb for a run/turn. Deterministic per seed so the
+ * verb is fixed for the lifetime of a run but varies from run to run. Returns a
+ * bare verb (no trailing ellipsis) — callers format it.
+ */
+export function spinnerVerbForSeed(seed: string | null | undefined): string {
+  if (SPINNER_VERBS.length === 0) return 'Working'
+  if (!seed) return SPINNER_VERBS[0] ?? 'Working'
+  const index = hashSeed(seed) % SPINNER_VERBS.length
+  return SPINNER_VERBS[index] ?? 'Working'
 }

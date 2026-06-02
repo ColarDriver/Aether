@@ -29,6 +29,14 @@ vi.mock('../api/runSocket', () => ({
   runSocket: runSocketMock,
 }))
 
+// chatStore coalesces reducer-driven block updates into one state write per
+// animation frame. Run the callback synchronously so dispatchFrame's effect is
+// observable in the same tick the tests assert on.
+vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+  cb(0)
+  return 0
+})
+
 afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()

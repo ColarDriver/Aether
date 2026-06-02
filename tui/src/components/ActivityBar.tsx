@@ -4,7 +4,7 @@ import stringWidth from 'string-width'
 import { useCallback, useEffect, useRef, type ReactElement } from 'react'
 
 import { useAnimationFrame } from '../lib/useAnimationFrame.js'
-import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
+import { shimmer, spinnerVerbAt } from '../lib/shimmer.js'
 import {
   isDirectWriteShimmerEnabled,
   measureShimmerCell,
@@ -22,6 +22,12 @@ const SPINNER_FRAMES_ASCII = ['/', '-', '\\', '|']
 // indicator instead of a flickering distraction during long model calls. The
 // shimmer animation reuses the same tick so we don't pay for two intervals.
 const SPINNER_INTERVAL_MS = 150
+// `requesting` sweeps faster than the calm default to read as "actively
+// waiting on the model", mirroring Claude Code's 50 ms requesting glimmer.
+const REQUESTING_INTERVAL_MS = 70
+// Half-period of the `tool_use` colour pulse (bright for one half, dim for
+// the next) → a ~1 s flash cycle.
+const TOOL_FLASH_HALF_PERIOD_MS = 500
 
 // Mirrors Python `activity.TOKEN_CHAR_RATIO` / `MIN_DISPLAY_TOKENS`.
 const TOKEN_CHAR_RATIO = 4
@@ -34,8 +40,10 @@ const MIN_THINKING_DISPLAY_MS = 500
 const STATIC_ICON: Record<ActivityStatus, string> = {
   idle: '◯',
   starting: '◌',
+  requesting: '◍',
   thinking: '◐',
   responding: '◑',
+  tool_input: '◓',
   tool_use: '◒',
   cancelled: '◯',
   error: '✗'
@@ -44,16 +52,20 @@ const STATIC_ICON: Record<ActivityStatus, string> = {
 const STATIC_ICON_ASCII: Record<ActivityStatus, string> = {
   idle: 'o',
   starting: '.',
+  requesting: ':',
   thinking: '*',
   responding: '>',
+  tool_input: '#',
   tool_use: '@',
   cancelled: 'o',
   error: 'x'
 }
 
 const ACTIVE_STATES: ReadonlySet<ActivityStatus> = new Set([
+  'requesting',
   'thinking',
   'responding',
+  'tool_input',
   'tool_use',
   'starting'
 ])
@@ -102,10 +114,22 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
   const displayedResponseLengthRef = useRef(0)
   const shouldAnimate =
     animate && ACTIVE_STATES.has(activity.status) && !activity.interruptPending
+  // Per-mode animation, mirroring Claude Code's `useShimmerAnimation` /
+  // SpinnerAnimationRow: `requesting` glimmers noticeably faster (the
+  // request is in flight and we want it to read as "actively waiting"),
+  // while `tool_use` pulses instead of sweeping (see flash below). Other
+  // active states keep the calm 150 ms sweep.
+  const intervalMs =
+    activity.status === 'requesting' ? REQUESTING_INTERVAL_MS : SPINNER_INTERVAL_MS
+  // `tool_use` uses a colour flash rather than the shimmer sweep, so it must
+  // not take the direct-write fast path (which only knows how to sweep).
   const directWriteActive =
-    shouldAnimate && isDirectWriteShimmerEnabled() && theme.isColorEnabled()
+    shouldAnimate &&
+    activity.status !== 'tool_use' &&
+    isDirectWriteShimmerEnabled() &&
+    theme.isColorEnabled()
   const [animationRef, animationTime] = useAnimationFrame(
-    shouldAnimate && !directWriteActive ? SPINNER_INTERVAL_MS : null
+    shouldAnimate && !directWriteActive ? intervalMs : null
   )
   const setActivityElement = useCallback(
     (element: DOMElement | null) => {
@@ -114,7 +138,15 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
     },
     [animationRef]
   )
-  const animationTick = Math.floor(animationTime / SPINNER_INTERVAL_MS)
+  const animationTick = Math.floor(animationTime / intervalMs)
+  // tool_use flash: toggle between the base status colour and the brighter
+  // text colour on a ~1 s cycle so the running tool "pulses". A discrete
+  // toggle stands in for Claude Code's sinusoidal `flashOpacity` since the
+  // terminal can't interpolate opacity.
+  const toolFlashBright =
+    activity.status === 'tool_use' &&
+    shouldAnimate &&
+    Math.floor(animationTime / TOOL_FLASH_HALF_PERIOD_MS) % 2 === 0
 
   const isError = activity.status === 'error' || activity.status === 'cancelled'
   const colorName = isError ? 'error' : activity.status === 'idle' ? 'dim' : 'status'
@@ -161,13 +193,14 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
   const tokensOutDisplay = estimatedTokensOut >= MIN_DISPLAY_TOKENS ? estimatedTokensOut : 0
 
   const segments: string[] = []
-  // Mirrors Python `activity.py:236-241` — only the output (↓) count is
-  // surfaced in the live bar; input tokens stay in `/stats` and the
-  // per-turn footer. The `↓` arrow doubles as a flow-direction hint
-  // ("tokens flowing out of the model"), matching Claude Code's
-  // SpinnerAnimationRow convention.
+  // Mirrors Python `activity.py:236-241` — only the output count is surfaced
+  // in the live bar; input tokens stay in `/stats` and the per-turn footer.
+  // The arrow doubles as a flow-direction hint, matching Claude Code's
+  // SpinnerModeGlyph: `↑` while `requesting` (the request is flowing out to
+  // the model and we're waiting on it), `↓` once tokens are streaming back.
   if (tokensOutDisplay) {
-    segments.push(`↓ ${formatTokens(tokensOutDisplay)} tokens`)
+    const tokenArrow = activity.status === 'requesting' ? '↑' : '↓'
+    segments.push(`${tokenArrow} ${formatTokens(tokensOutDisplay)} tokens`)
   }
   if (session.sessionId) {
     segments.push(session.sessionId.slice(0, 8))
@@ -226,8 +259,12 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
     runningWidth += addition
   }
 
-  const shimmerSlices = isActive && animate ? shimmer(verb, animationTick) : null
+  // tool_use pulses (flash) rather than sweeps, so skip the shimmer slices
+  // for it and let the flash colour below carry the animation instead.
+  const useShimmer = isActive && animate && activity.status !== 'tool_use'
+  const shimmerSlices = useShimmer ? shimmer(verb, animationTick) : null
   const shimmerColor = theme.color('text') ?? 'white'
+  const verbColorProps = toolFlashBright ? theme.colorProps('text') : colorProps
 
   const todoLines = formatTodoPreviewLines(activity.todos, {
     ascii,
@@ -259,12 +296,12 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
       label: verb,
       baseColor,
       highlightColor,
-      intervalMs: SPINNER_INTERVAL_MS
+      intervalMs
     })
     return () => {
       writer?.stop()
     }
-  }, [colorName, cols, directWriteActive, icon, stdout, verb])
+  }, [colorName, cols, directWriteActive, icon, intervalMs, stdout, verb])
 
   // Mirror Python `_interrupt_visual_pending` — once the user requested an
   // interrupt we drop the spinner/segments immediately and read as
@@ -292,7 +329,7 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
             ) : null}
           </>
         ) : (
-          <Text bold {...colorProps}>{verb}</Text>
+          <Text bold {...verbColorProps}>{verb}</Text>
         )}
         {detailSegment ? <Text dimColor>{detailSegment}</Text> : null}
         {elapsedSegment ? <Text dimColor>{elapsedSegment}</Text> : null}
@@ -313,9 +350,12 @@ export function ActivityBar({ animate = true }: { animate?: boolean } = {}): Rea
 
 function verbForStatus(activity: { status: ActivityStatus; statusDetail: string | null; turnVerbIndex: number }): string {
   switch (activity.status) {
+    case 'requesting':
     case 'thinking':
     case 'responding':
-      return thinkingVerbAt(activity.turnVerbIndex)
+      return spinnerVerbAt(activity.turnVerbIndex)
+    case 'tool_input':
+      return 'Preparing'
     case 'tool_use':
       return presentVerbForTool(activity.statusDetail)
     case 'cancelled':

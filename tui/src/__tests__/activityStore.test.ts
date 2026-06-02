@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { SPINNER_VERBS } from '../lib/shimmer.js'
 import {
   activityActions,
   activityInterruptPending,
@@ -7,6 +8,12 @@ import {
   activityStatus,
   activityTodoCount
 } from '../store/activityStore.js'
+
+function expectValidVerbIndex(index: number): void {
+  expect(Number.isInteger(index)).toBe(true)
+  expect(index).toBeGreaterThanOrEqual(0)
+  expect(index).toBeLessThan(SPINNER_VERBS.length)
+}
 
 describe('activityStore', () => {
   beforeEach(() => {
@@ -18,21 +25,21 @@ describe('activityStore', () => {
     vi.useRealTimers()
   })
 
-  it('beginTurn flips status to thinking and stamps thinkingStartedAt', () => {
+  it('beginTurn flips status to requesting and stamps thinkingStartedAt', () => {
     activityActions.beginTurn()
     const state = activityState.get()
-    expect(state.status).toBe('thinking')
+    expect(state.status).toBe('requesting')
     expect(state.thinkingStartedAt).not.toBeNull()
     expect(state.iteration).toBe(0)
-    expect(state.turnVerbIndex).toBe(0)
+    expectValidVerbIndex(state.turnVerbIndex)
   })
 
-  it('beginTurn advances the per-turn verb seed', () => {
+  it('beginTurn samples a fresh in-range verb seed each turn', () => {
     activityActions.beginTurn()
-    const first = activityState.get().turnVerbIndex
+    expectValidVerbIndex(activityState.get().turnVerbIndex)
     activityActions.endTurn('done')
     activityActions.beginTurn()
-    expect(activityState.get().turnVerbIndex).toBe(first + 1)
+    expectValidVerbIndex(activityState.get().turnVerbIndex)
   })
 
   it('beginTurn clears previous-turn usage and pending usage flushes', () => {

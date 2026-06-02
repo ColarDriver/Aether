@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shimmer, thinkingVerbAt } from '../lib/shimmer.js'
+import { SPINNER_VERBS, shimmer, spinnerVerbAt } from '../lib/shimmer.js'
 
 describe('shimmer', () => {
   it('returns empty slices for an empty label', () => {
@@ -30,13 +30,17 @@ describe('shimmer', () => {
   })
 })
 
-describe('thinkingVerbAt', () => {
-  it('cycles through a stable list', () => {
-    const first = thinkingVerbAt(0)
-    const second = thinkingVerbAt(1)
-    const wrap = thinkingVerbAt(99)
-    expect(typeof first).toBe('string')
-    expect(typeof second).toBe('string')
-    expect(typeof wrap).toBe('string')
+describe('spinnerVerbAt', () => {
+  it('maps an index to a stable verb from the pool', () => {
+    const first = spinnerVerbAt(0)
+    const second = spinnerVerbAt(1)
+    expect(SPINNER_VERBS).toContain(first)
+    expect(SPINNER_VERBS).toContain(second)
+  })
+
+  it('wraps and tolerates negative or out-of-range indices', () => {
+    expect(SPINNER_VERBS).toContain(spinnerVerbAt(SPINNER_VERBS.length))
+    expect(SPINNER_VERBS).toContain(spinnerVerbAt(99))
+    expect(SPINNER_VERBS).toContain(spinnerVerbAt(-1))
   })
 })

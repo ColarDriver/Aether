@@ -1,12 +1,15 @@
 import { atom, computed } from 'nanostores'
 
+import { SPINNER_VERBS } from '../lib/shimmer.js'
 import type { TodoItem } from '../lib/todos.js'
 
 export type ActivityStatus =
   | 'idle'
   | 'starting'
+  | 'requesting'
   | 'thinking'
   | 'responding'
+  | 'tool_input'
   | 'tool_use'
   | 'cancelled'
   | 'error'
@@ -119,7 +122,13 @@ let pendingTokens: { input: number; output: number; cacheRead: number; cacheWrit
   cacheWrite: 0
 }
 let flushTimer: NodeJS.Timeout | null = null
-let nextTurnVerbIndex = 0
+
+/** Pick a fresh whimsical spinner verb for the turn, the way Claude Code samples
+ * one once per spin. Randomising (vs cycling) keeps the headline from reading as
+ * any single state across a session. */
+function pickTurnVerbIndex(): number {
+  return Math.floor(Math.random() * SPINNER_VERBS.length)
+}
 
 function scheduleTokenFlush(): void {
   if (flushTimer) {
@@ -147,7 +156,6 @@ export const activityActions = {
       flushTimer = null
     }
     pendingTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-    nextTurnVerbIndex = 0
     activityState.set(initialState)
   },
 
@@ -161,9 +169,9 @@ export const activityActions = {
     const now = Date.now()
     activityState.set({
       ...current,
-      status: 'thinking',
+      status: 'requesting',
       statusDetail: null,
-      turnVerbIndex: nextTurnVerbIndex++,
+      turnVerbIndex: pickTurnVerbIndex(),
       thinkingStartedAt: now,
       responseStartedAt: null,
       iteration: 0,
@@ -249,7 +257,13 @@ export const activityActions = {
       status,
       statusDetail: detail
     }
-    if (status === 'thinking' && current.status !== 'thinking') {
+    // `requesting` is the pre-first-token wait; like `thinking` it seeds the
+    // wall-clock used for the "thought for Ns" note once a response begins.
+    if (
+      (status === 'requesting' || status === 'thinking') &&
+      current.status !== 'requesting' &&
+      current.status !== 'thinking'
+    ) {
       next.thinkingStartedAt = Date.now()
     }
     if (status === 'responding' && current.responseStartedAt === null) {

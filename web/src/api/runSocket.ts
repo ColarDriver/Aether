@@ -3,6 +3,13 @@ import type { RunAttachment, RunSocketFrame } from './types'
 
 type FrameHandler = (frame: RunSocketFrame) => void
 
+const PING_INTERVAL_MS = 15_000
+// How long to wait for a `pong` after a `ping` before treating the socket as
+// dead. A half-open connection (network drop, proxy idle-kill, server-side
+// detach) keeps readyState === OPEN, so `onclose` never fires and the stream
+// silently stalls. Without this watchdog the only recovery is a manual refresh.
+const PONG_TIMEOUT_MS = 10_000
+
 export class RunSocketClient {
   private ws: WebSocket | null = null
   private handlers = new Set<FrameHandler>()
@@ -10,6 +17,7 @@ export class RunSocketClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private pongTimer: ReturnType<typeof setTimeout> | null = null
   private closed = false
   private tokenRefresh: Promise<void> | null = null
 
@@ -36,7 +44,16 @@ export class RunSocketClient {
     }
     ws.onmessage = (event) => {
       const frame = parseFrame(event.data)
-      if (!frame) return
+      if (!frame) {
+        // onmessage fired but the payload didn't parse into a frame. If the
+        // console goes quiet here while data is still on the wire, the freeze is
+        // a frontend parse drop, not a stalled stream.
+        console.warn('[socket] onmessage unparsed', typeof event.data, String(event.data).slice(0, 80))
+        return
+      }
+      // Any inbound traffic proves the socket is alive; a pong specifically
+      // answers our heartbeat. Either way, clear the liveness watchdog.
+      this.clearPongTimeout()
       this.emit(frame)
     }
     ws.onclose = () => {
@@ -110,12 +127,56 @@ export class RunSocketClient {
 
   private startPing() {
     this.stopPing()
-    this.pingTimer = setInterval(() => this.send({ type: 'ping' }), 30_000)
+    this.pingTimer = setInterval(() => {
+      console.log('[socket] ping (readyState=' + (this.ws?.readyState ?? 'null') + ')')
+      this.send({ type: 'ping' })
+      this.armPongTimeout()
+    }, PING_INTERVAL_MS)
   }
 
   private stopPing() {
     if (this.pingTimer) clearInterval(this.pingTimer)
     this.pingTimer = null
+    this.clearPongTimeout()
+  }
+
+  private armPongTimeout() {
+    if (this.pongTimer) return
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null
+      this.handleMissedPong()
+    }, PONG_TIMEOUT_MS)
+  }
+
+  private clearPongTimeout() {
+    if (this.pongTimer) clearTimeout(this.pongTimer)
+    this.pongTimer = null
+  }
+
+  // The socket looks OPEN but the peer went silent (half-open connection):
+  // frames have silently stopped arriving. Tear the dead socket down and
+  // reconnect ourselves — `onclose` won't fire on its own. The fresh socket
+  // gets a `ready` frame, which drives the transcript backfill, so the user
+  // never has to refresh to recover the stalled stream.
+  private handleMissedPong() {
+    console.warn('[socket] missed pong -> tearing down and reconnecting')
+    const ws = this.ws
+    this.ws = null
+    this.stopPing()
+    if (ws) {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onclose = null
+      try {
+        ws.close()
+      } catch {
+        // ignore — the underlying connection is already gone
+      }
+    }
+    if (this.closed) return
+    this.emit({ type: 'socket.closed', payload: { reconnecting: true, opened: true } })
+    this.reconnectAttempt = 0
+    this.scheduleReconnect()
   }
 
   private recoverSessionTokenAndReconnect() {

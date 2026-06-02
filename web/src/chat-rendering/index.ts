@@ -93,3 +93,8 @@ export {
   tokenUsageSummary,
   tokenUsageTotal,
 } from './tokens'
+
+export {
+  SPINNER_VERBS,
+  spinnerVerbForSeed,
+} from './spinnerVerbs'

@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { MathRenderer } from './MathRenderer'
 import { MermaidRenderer } from './MermaidRenderer'
@@ -38,8 +38,12 @@ type ImageContext = {
 const MERMAID_DIAGRAM_START = /^(---|graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|c4Context|c4Container|c4Component|c4Dynamic|sankey-beta|block-beta|packet-beta|xychart-beta|kanban|architecture-beta)\b/i
 const PLAIN_CODE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext'])
 
-export function MarkdownRenderer({ text, streaming = false }: Props) {
-  const blocks = splitMarkdownBlocks(text)
+// Memoized: the chat timeline re-renders every block on each streaming token.
+// Without this gate, every token re-parses and re-renders the markdown of the
+// entire conversation history, which freezes the main thread on long sessions.
+// Props are data-only (no callbacks), so a shallow compare is correct.
+export const MarkdownRenderer = memo(function MarkdownRenderer({ text, streaming = false }: Props) {
+  const blocks = useMemo(() => splitMarkdownBlocks(text), [text])
   const images = useMemo(() => extractMarkdownImages(text), [text])
   const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null)
   const imageContext = useMemo<ImageContext>(() => ({ images, openImage: setActiveImageIndex }), [images])
@@ -52,7 +56,7 @@ export function MarkdownRenderer({ text, streaming = false }: Props) {
       ) : null}
     </div>
   )
-}
+})
 
 function renderBlock(block: MarkdownBlock, index: number, streaming = false, imageContext?: ImageContext) {
   const caret = streaming ? <StreamingCaret /> : null
@@ -202,12 +206,19 @@ function splitMarkdownBlocks(text: string): MarkdownBlock[] {
       continue
     }
 
-    const paragraphLines: string[] = []
+    // Always consume the current line first. It is non-empty (blank lines are
+    // skipped above) and reached only when no block handler claimed it — so it
+    // is paragraph text. Consuming it unconditionally guarantees `index` always
+    // advances, even when startsBlock() reports a block the handlers above don't
+    // consume (e.g. a bare `## ` heading marker with no content mid-stream),
+    // which would otherwise spin this loop forever and freeze the main thread.
+    const paragraphLines: string[] = [lines[index] ?? '']
+    index += 1
     while (index < lines.length && !startsBlock(lines[index] ?? '', lines[index + 1] ?? '')) {
       paragraphLines.push(lines[index] ?? '')
       index += 1
     }
-    if (paragraphLines.length > 0) blocks.push({ type: 'paragraph', content: paragraphLines.join('\n') })
+    blocks.push({ type: 'paragraph', content: paragraphLines.join('\n') })
   }
 
   return blocks

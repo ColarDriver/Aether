@@ -70,6 +70,7 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   const programmaticScrollRef = useRef(false)
   const lastSessionIdRef = useRef<string | null>(null)
   const scrollSnapshotsRef = useRef<Record<string, ScrollSnapshot>>({})
+  const scrollRafRef = useRef<number | null>(null)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [verboseMode, setVerboseModeState] = useState(() => readBooleanSetting(WEB_VERBOSE_STORAGE_KEY, false))
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
@@ -78,6 +79,14 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   const [pendingTurnUndo, setPendingTurnUndo] = useState<CurrentTurnUndoAction | null>(null)
   const [turnUndoRunning, setTurnUndoRunning] = useState(false)
   const composerDraftPatchIdRef = useRef(0)
+  // The message-action handlers (fork/rewind/retry) are passed into the
+  // memoized timeline, which ignores their identity so unchanged rows can bail
+  // out during streaming. That means a memoized row may keep an older closure,
+  // so the handlers must read the latest blocks/checkpoints at call time rather
+  // than capturing them — otherwise a fork after `turnCheckpoints` loads would
+  // use the stale (empty) set and lose the checkpoint-backed restore.
+  const actionDataRef = useRef<{ blocks: ChatBlock[]; turnCheckpoints: SessionTurnCheckpoint[] }>({ blocks, turnCheckpoints })
+  actionDataRef.current = { blocks, turnCheckpoints }
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     shouldAutoScrollRef.current = true
@@ -91,19 +100,28 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
     })
   }, [])
 
+  // Coalesce scroll handling to once per frame. The browser fires `scroll`
+  // continuously while the user drags during streaming, and each handler reads
+  // scrollHeight/scrollTop/clientHeight — a synchronous layout flush. Doing that
+  // per-event while the DOM is also mutating per token saturates the main thread
+  // and freezes the tab. A single rAF-batched read per frame avoids the thrash.
   const handleScroll = useCallback(() => {
     if (programmaticScrollRef.current) return
-    const element = scrollRef.current
-    if (!element) return
-    const atBottom = isNearChatBottom(element)
-    shouldAutoScrollRef.current = atBottom
-    setShowJumpToLatest(!atBottom)
-    if (sessionId) {
-      scrollSnapshotsRef.current[sessionId] = {
-        scrollTop: element.scrollTop,
-        atBottom,
+    if (scrollRafRef.current != null) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      const element = scrollRef.current
+      if (!element) return
+      const atBottom = isNearChatBottom(element)
+      shouldAutoScrollRef.current = atBottom
+      setShowJumpToLatest(!atBottom)
+      if (sessionId) {
+        scrollSnapshotsRef.current[sessionId] = {
+          scrollTop: element.scrollTop,
+          atBottom,
+        }
       }
-    }
+    })
   }, [sessionId])
 
   useEffect(() => {
@@ -179,7 +197,10 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
       setShowJumpToLatest(true)
       return
     }
-    requestAnimationFrame(() => scrollToBottom('smooth'))
+    // Instant, not smooth: a smooth scroll started on every token never settles —
+    // each new token re-targets it, so the animation runs forever and emits a
+    // continuous stream of scroll events, compounding the per-frame layout work.
+    requestAnimationFrame(() => scrollToBottom('auto'))
   }, [blocks, scrollToBottom, session])
 
   const activeStatus = activeRunId ? statusByRun[activeRunId] : undefined
@@ -206,6 +227,7 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   }
 
   const forkMessage = (block: UserMessage | AssistantMessage) => {
+    const { blocks, turnCheckpoints } = actionDataRef.current
     if (!session || typeof block.messageIndex !== 'number') {
       if (session) appendLocalError(session.session_id, 'This message cannot be forked until it is persisted in the transcript.')
       return
@@ -227,6 +249,7 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   }
 
   const rewindMessage = (block: UserMessage | AssistantMessage) => {
+    const { blocks, turnCheckpoints } = actionDataRef.current
     if (!session || typeof block.messageIndex !== 'number') {
       if (session) appendLocalError(session.session_id, 'This message cannot be rewound until it is persisted in the transcript.')
       return
@@ -247,6 +270,7 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   }
 
   const retryUserMessage = (block: UserMessage) => {
+    const { blocks, turnCheckpoints } = actionDataRef.current
     if (!session) return
     if (block.source !== 'transcript' || typeof block.messageIndex !== 'number') {
       startRun(session.session_id, block.content, block.attachments)
@@ -272,6 +296,7 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   }
 
   const retryAssistantMessage = (block: AssistantMessage) => {
+    const { blocks, turnCheckpoints } = actionDataRef.current
     if (!session || typeof block.messageIndex !== 'number') {
       if (session) appendLocalError(session.session_id, 'This reply cannot be retried until it is persisted in the transcript.')
       return

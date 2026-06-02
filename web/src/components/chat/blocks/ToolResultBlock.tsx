@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { ToolResultBlock as ToolResult } from '../../../chat-rendering'
 import { CodeBlock } from './CodeBlock'
 import { TerminalChrome } from './TerminalChrome'
@@ -9,7 +10,8 @@ type Props = {
   toolArguments?: Record<string, unknown>
 }
 
-export function ToolResultBlock({ block, command, toolArguments = {} }: Props) {
+// Memoized: re-rendered for every streaming token otherwise; tool output can be large.
+export const ToolResultBlock = memo(function ToolResultBlock({ block, command, toolArguments = {} }: Props) {
   if (isTerminalResult(block)) {
     return (
       <TerminalChrome
@@ -30,7 +32,7 @@ export function ToolResultBlock({ block, command, toolArguments = {} }: Props) {
       <CodeBlock code={block.content} language={languageFromMetadata(block.metadata)} wrap />
     </div>
   )
-}
+})
 
 function languageFromMetadata(metadata: Record<string, unknown>): string {
   return typeof metadata.language === 'string'

@@ -112,8 +112,26 @@ export function reduceRunFrame(state: ChatRenderState, frame: RunSocketFrame): C
   if (frame.type === 'reasoning.delta') {
     const text = stringFromUnknown(payload.text)
     if (!text) return state
-    const nextBlocks = appendThinkingDelta(blocks, sessionId, runId, text, sequence(frame))
-    return withEstimatedTokenUsage(withSessionBlocks(state, sessionId, nextBlocks), sessionId, runId, nextBlocks)
+    const thinkingBlocks = appendThinkingDelta(blocks, sessionId, runId, text, sequence(frame))
+    // Extended-thinking tokens are streaming — surface the genuine `thinking`
+    // phase in the activity bar (the model-wait window shows as `requesting`).
+    const previous = state.statusByRun[runId]
+    const snapshot: RunStatusSnapshot = {
+      runId,
+      sessionId,
+      state: 'thinking',
+      detail: previous?.detail ?? null,
+      elapsedMs: previous?.elapsedMs,
+      tokens: previous?.tokens,
+    }
+    const nextBlocks = upsertStreamingStatus(thinkingBlocks, snapshot)
+    // Seed statusByRun with the thinking snapshot first so the downstream
+    // token estimator preserves the `thinking` state while topping up tokens.
+    const withThinking: ChatRenderState = {
+      ...state,
+      statusByRun: { ...state.statusByRun, [runId]: snapshot },
+    }
+    return withEstimatedTokenUsage(withSessionBlocks(withThinking, sessionId, nextBlocks), sessionId, runId, nextBlocks)
   }
 
   if (frame.type === 'run.status' || frame.type === 'loop.state' || frame.type === 'silent.progress') {
@@ -857,10 +875,15 @@ function statusSnapshotFromFrame(
 ): RunStatusSnapshot {
   const payload = frame.payload ?? {}
   if (frame.type === 'run.status') {
+    // The backend reports `thinking` while it is about to call the model
+    // (before_llm / after_tool) — that is the request-in-flight wait, shown
+    // as `requesting`. Genuine extended thinking arrives via reasoning.delta.
+    const kind = stringFromUnknown(payload.kind)
+    const state = kind === 'thinking' ? 'requesting' : kind || previous?.state || 'responding'
     return {
       runId,
       sessionId,
-      state: stringFromUnknown(payload.kind) || previous?.state || 'responding',
+      state,
       detail: stringOrNull(payload.detail),
       elapsedMs: previous?.elapsedMs,
       tokens: previous?.tokens,
@@ -876,11 +899,13 @@ function statusSnapshotFromFrame(
       tokens: previous?.tokens,
     }
   }
+  // silent.progress carries function-call argument fragments — the model is
+  // streaming the tool-call input, distinct from executing the tool.
   return {
     runId,
     sessionId,
-    state: previous?.state || 'thinking',
-    detail: previous?.detail || 'working',
+    state: 'tool_input',
+    detail: previous?.detail || null,
     elapsedMs: previous?.elapsedMs,
     tokens: previous?.tokens,
   }

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { DiffBlock as DiffChatBlock } from '../../../chat-rendering'
 import { DiffViewer } from '../DiffViewer'
 
@@ -5,7 +6,8 @@ type Props = {
   block: DiffChatBlock
 }
 
-export function DiffBlock({ block }: Props) {
+// Memoized: re-rendered for every streaming token otherwise; diffs can be large.
+export const DiffBlock = memo(function DiffBlock({ block }: Props) {
   const diff = block.diff ?? diffFromOldNew(block.oldText ?? '', block.newText ?? '')
   if (!diff.trim()) return null
   return (
@@ -14,7 +16,7 @@ export function DiffBlock({ block }: Props) {
       <DiffViewer diff={diff} />
     </div>
   )
-}
+})
 
 function diffFromOldNew(oldText: string, newText: string): string {
   const oldLines = oldText ? oldText.split('\n').map((line) => '-' + line) : []

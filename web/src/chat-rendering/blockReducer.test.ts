@@ -90,6 +90,33 @@ describe('reduceRunFrame', () => {
     })
   })
 
+  it('maps a backend thinking status to the requesting (model-wait) state', () => {
+    const state = reduceRunFrame(
+      createChatRenderState(),
+      frame('run.status', { session_id: 's1', run_id: 'r1', kind: 'thinking', detail: 'calling model' }),
+    )
+
+    expect(state.statusByRun.r1).toMatchObject({ state: 'requesting', detail: 'calling model' })
+  })
+
+  it('maps silent tool-argument progress to the tool_input state', () => {
+    const state = reduceRunFrame(
+      createChatRenderState(),
+      frame('silent.progress', { session_id: 's1', run_id: 'r1', function_call_arguments: { delta: '{"pa' } }),
+    )
+
+    expect(state.statusByRun.r1).toMatchObject({ state: 'tool_input' })
+  })
+
+  it('surfaces a thinking status snapshot from reasoning deltas', () => {
+    const state = reduceRunFrame(
+      createChatRenderState(),
+      frame('reasoning.delta', { session_id: 's1', run_id: 'r1', text: 'I should inspect' }),
+    )
+
+    expect(state.statusByRun.r1).toMatchObject({ state: 'thinking' })
+  })
+
   it('updates tool call status and creates result and diff blocks', () => {
     const started = reduceRunFrame(
       createChatRenderState(),

@@ -211,6 +211,49 @@ describe('run socket client', () => {
     client.disconnect()
   })
 
+  it('reconnects when the peer stops answering heartbeat pings', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RunSocketClient()
+    const handler = vi.fn()
+    client.onFrame(handler)
+
+    client.connect()
+    fakeSockets[0].open()
+
+    // Heartbeat fires but the server never pongs back (half-open socket).
+    vi.advanceTimersByTime(15_000)
+    expect(fakeSockets[0].sent.map((item) => JSON.parse(item).type)).toContain('ping')
+
+    // Pong watchdog elapses -> the dead socket is torn down and a reconnect is scheduled.
+    vi.advanceTimersByTime(10_000)
+    expect(handler).toHaveBeenCalledWith({ type: 'socket.closed', payload: { reconnecting: true, opened: true } })
+
+    vi.advanceTimersByTime(1_000)
+    expect(fakeSockets.length).toBeGreaterThanOrEqual(2)
+
+    client.disconnect()
+  })
+
+  it('stays connected while the server answers heartbeat pings', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new RunSocketClient()
+
+    client.connect()
+    fakeSockets[0].open()
+
+    vi.advanceTimersByTime(15_000)
+    // A pong clears the watchdog before it can elapse.
+    fakeSockets[0].serverMessage({ type: 'pong' })
+    vi.advanceTimersByTime(10_000)
+    vi.advanceTimersByTime(1_000)
+
+    expect(fakeSockets).toHaveLength(1)
+
+    client.disconnect()
+  })
+
   it('nests approval responses under the result field', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const client = new RunSocketClient()

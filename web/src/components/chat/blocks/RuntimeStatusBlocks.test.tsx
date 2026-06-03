@@ -36,7 +36,7 @@ describe('runtime status blocks', () => {
     expect(screen.getByText('Need to inspect the renderer before editing.')).toBeTruthy()
   })
 
-  it('renders streaming state with status detail and token usage', () => {
+  it('renders streaming activity as an inline Aether status with a shimmering verb', () => {
     render(
       <StreamingStatusBlock
         block={{
@@ -50,10 +50,13 @@ describe('runtime status blocks', () => {
     )
 
     expect(screen.getByRole('status')).toBeTruthy()
-    expect(screen.getByText('Responding')).toBeTruthy()
-    expect(screen.getByText('Responding').className).toContain('aether-shimmer-text')
-    expect(screen.getByText('writing final answer')).toBeTruthy()
-    expect(screen.getByText('1.3k tokens (1.2k out / 80 reasoning)')).toBeTruthy()
+    // Inline name-row form: "Aether · <verb>…" with the shimmer on the verb and
+    // the explicit mode word intentionally dropped.
+    expect(screen.getByText('Aether')).toBeTruthy()
+    expect(screen.queryByText('Responding')).toBeNull()
+    const verb = document.querySelector('.chat-status-verb')
+    expect(verb?.className).toContain('aether-shimmer-text')
+    expect(verb?.textContent?.endsWith('…')).toBe(true)
   })
 
   it('renders task notification metadata and opens task details', () => {

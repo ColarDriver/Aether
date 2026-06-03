@@ -54,7 +54,6 @@ describe('ChatTimeline', () => {
   it('exposes local message lifecycle actions for user and assistant messages', () => {
     const onRetry = vi.fn()
     const onEdit = vi.fn()
-    const onQuoteUser = vi.fn()
     const onQuoteAssistant = vi.fn()
     const userBlock: ChatBlock = { ...base, id: 'u-actions', kind: 'user_message', content: 'change auth' }
     const assistantBlock: ChatBlock = { ...base, id: 'a-actions', kind: 'assistant_message', content: 'Auth summary' }
@@ -64,23 +63,21 @@ describe('ChatTimeline', () => {
         blocks={[userBlock, assistantBlock]}
         onRetryUserMessage={onRetry}
         onEditUserMessage={onEdit}
-        onQuoteUserMessage={onQuoteUser}
         onQuoteAssistantMessage={onQuoteAssistant}
       />,
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry prompt' }))
     fireEvent.click(screen.getByRole('button', { name: 'Edit prompt' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Quote prompt' }))
     fireEvent.click(screen.getByRole('button', { name: 'Quote reply' }))
 
+    expect(screen.queryByRole('button', { name: 'Quote prompt' })).toBeNull()
     expect(onRetry).toHaveBeenCalledWith(userBlock)
     expect(onEdit).toHaveBeenCalledWith(userBlock)
-    expect(onQuoteUser).toHaveBeenCalledWith(userBlock)
     expect(onQuoteAssistant).toHaveBeenCalledWith(assistantBlock)
   })
 
-  it('exposes backend-backed fork actions for persisted user and assistant messages', () => {
+  it('keeps persisted user actions compact while exposing backend-backed assistant actions', () => {
     const onFork = vi.fn()
     const onRewind = vi.fn()
     const onRetryAssistant = vi.fn()
@@ -110,17 +107,18 @@ describe('ChatTimeline', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rewind to prompt' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Fork from prompt' }))
+    expect(screen.queryByRole('button', { name: 'Rewind to prompt' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Fork from prompt' })).toBeNull()
+
     fireEvent.click(screen.getByRole('button', { name: 'Retry reply' }))
     fireEvent.click(screen.getByRole('button', { name: 'Rewind to reply' }))
     fireEvent.click(screen.getByRole('button', { name: 'Fork from reply' }))
 
-    expect(onFork).toHaveBeenNthCalledWith(1, userBlock)
-    expect(onFork).toHaveBeenNthCalledWith(2, assistantBlock)
+    expect(onFork).toHaveBeenCalledOnce()
+    expect(onFork).toHaveBeenCalledWith(assistantBlock)
     expect(onRetryAssistant).toHaveBeenCalledWith(assistantBlock)
-    expect(onRewind).toHaveBeenNthCalledWith(1, userBlock)
-    expect(onRewind).toHaveBeenNthCalledWith(2, assistantBlock)
+    expect(onRewind).toHaveBeenCalledOnce()
+    expect(onRewind).toHaveBeenCalledWith(assistantBlock)
   })
 
   it('renders prompt blocks with actions', () => {
@@ -196,11 +194,14 @@ describe('ChatTimeline', () => {
     expect(screen.getByText('Implement auth')).toBeTruthy()
     expect(screen.getByText('requirements.md')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Mode changed' })).toBeTruthy()
-    expect(screen.getByText('Responding')).toBeTruthy()
-    expect(screen.getByText('Drafting implementation')).toBeTruthy()
+    const inlineStatus = document.querySelector('.chat-status-inline')
+    expect(inlineStatus?.textContent).toContain('Aether')
+    expect(inlineStatus?.querySelector('.chat-status-verb')?.className).toContain('aether-shimmer-text')
     expect(screen.getByText('I will inspect the auth flow.')).toBeTruthy()
     expect(screen.getByText('read_file')).toBeTruthy()
-    expect(screen.getByText('auth module contents')).toBeTruthy()
+    const filePreview = screen.getByRole('region', { name: 'File preview' })
+    expect(within(filePreview).getByText('src/auth.ts')).toBeTruthy()
+    expect(filePreview.textContent).toContain('auth module contents')
     expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThanOrEqual(2)
     expect(document.querySelector('.diff-line-remove')?.textContent).toContain('old auth')
     expect(document.querySelector('.diff-line-add')?.textContent).toContain('new auth')

@@ -9,7 +9,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTaskStore } from '../../stores/taskStore'
-import { ActivityBar } from './ActivityBar'
+import { RunStatusHeader } from './RunStatusHeader'
 import { ApprovalDialog } from './ApprovalDialog'
 import { ChatTimeline } from './ChatTimeline'
 import { Composer, type ComposerDraftPatch } from './Composer'
@@ -208,6 +208,38 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
   const latestSessionUsage = session ? latestTokenUsageForSession(session.session_id, blocks, statusByRun) : undefined
   const usage = activeRunId ? activeUsage : latestSessionUsage
   const latestRunMetadata = session ? latestRunMetadataForSession(session.session_id, blocks) : undefined
+
+  // Overflow state: when the inline name-row status scrolls above the viewport
+  // during a long reply, surface the pinned activity header instead. We watch the
+  // inline element with an IntersectionObserver rooted on the scroll container.
+  const hasInlineStatus = Boolean(activeRunId) && blocks.some((block) => block.kind === 'streaming_status' && block.runId === activeRunId)
+  const [statusOffscreen, setStatusOffscreen] = useState(false)
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root || !activeRunId || !hasInlineStatus) {
+      setStatusOffscreen(false)
+      return
+    }
+    const target = root.querySelector('.chat-status-inline')
+    if (!target) {
+      setStatusOffscreen(false)
+      return
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        if (!entry) return
+        const rootTop = entry.rootBounds?.top ?? root.getBoundingClientRect().top
+        // Only pin the header once the inline status has scrolled ABOVE the top
+        // edge — not when it's simply below the fold (history scrolled up).
+        const scrolledAbove = entry.boundingClientRect.bottom <= rootTop + 1
+        setStatusOffscreen(!entry.isIntersecting && scrolledAbove)
+      },
+      { root, threshold: 0 },
+    )
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [activeRunId, hasInlineStatus])
   const fallbackProvider = currentProvider?.provider_name || providers[0]?.name || 'openai'
   const fallbackModel = currentProvider?.model || 'gpt-5.4'
 
@@ -522,13 +554,12 @@ export function ChatView({ session, workspaceRootVersion = 0, onOpenWorkspaceFil
           </button>
         ) : null}
       </div>
-      <ActivityBar
+      <RunStatusHeader
         activeRunId={activeRunId}
+        visible={statusOffscreen}
         status={activeStatus}
         tokens={usage}
-        sessionId={session.session_id}
         model={session.model}
-        verbose={verboseMode}
       />
       <Composer
         disabled={!session}

@@ -1566,6 +1566,7 @@ body.is-resizing-layout {
 .chat-surface {
   container-type: inline-size;
   container-name: chat-surface;
+  position: relative;
   display: grid;
   grid-template-rows: auto minmax(220px, 1fr) auto;
   min-height: 0;
@@ -3730,6 +3731,193 @@ body.is-resizing-layout {
   content: '·';
   margin-right: 6px;
   color: var(--muted);
+}
+
+/* ---- Aether mark: static "A" tile; only its edge breathes while active ---- */
+.aether-avatar {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 58%, #4f8cff), var(--accent-strong));
+  display: grid;
+  place-items: center;
+}
+
+.aether-avatar-sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+}
+
+.aether-avatar-mark {
+  position: relative;
+  z-index: 2;
+  width: 66%;
+  height: 66%;
+}
+
+.aether-avatar-mark path {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 3.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aether-avatar-edge {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.aether-avatar-edge rect {
+  fill: none;
+  stroke: #fff;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2.5px rgba(255, 255, 255, 0.85));
+  animation: aether-edge-glow 1.7s ease-in-out infinite;
+}
+
+@keyframes aether-edge-glow {
+  0%,
+  100% {
+    stroke-opacity: 0.28;
+    stroke-width: 1.7;
+  }
+  50% {
+    stroke-opacity: 1;
+    stroke-width: 2.7;
+  }
+}
+
+/* ---- inline main status: the active turn's header (avatar + Aether + verb).
+   Aligned to the turn's left edge so it sits exactly where the assistant name
+   row would, with the streamed reply flowing directly beneath it. ---- */
+.chat-status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.chat-status-name {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.chat-status-sep {
+  color: var(--muted-2);
+}
+
+.chat-status-verb {
+  font-weight: 550;
+}
+
+/* ---- overflow header: pins to the top of the conversation (state C) ----
+   Rendered as an absolute overlay anchored to .chat-surface so it stays OUT of
+   the surface's grid flow — it must never perturb the row/column tracks the
+   composer, scroll area, and workbench columns depend on. */
+.run-status-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 30px;
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px) saturate(1.1);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-100%);
+  transition: opacity 0.18s ease, transform 0.22s ease;
+}
+
+.run-status-header-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.run-status-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+
+.run-status-sep {
+  color: var(--muted-2);
+}
+
+.run-status-verb {
+  font-weight: 550;
+}
+
+.run-status-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-status-arrow {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.run-status-pipe {
+  width: 1px;
+  height: 12px;
+  background: var(--line);
+}
+
+.run-status-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 55%, transparent), transparent);
+  background-size: 50% 100%;
+  animation: run-status-scan 1.5s linear infinite;
+}
+
+@keyframes run-status-scan {
+  from {
+    background-position: -60% 0;
+  }
+  to {
+    background-position: 160% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aether-avatar-edge rect {
+    animation: none;
+    stroke-opacity: 0.8;
+  }
+  .run-status-header {
+    transition: opacity 0.18s ease;
+    transform: none;
+  }
+  .run-status-scan {
+    animation: none;
+  }
 }
 
 .tool-call-group {

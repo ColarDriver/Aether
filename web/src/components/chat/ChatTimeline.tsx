@@ -511,9 +511,6 @@ function ChatBlockView({
           block={block}
           actionsDisabled={messageActionsDisabled}
           onEdit={onEditUserMessage}
-          onFork={onForkMessage}
-          onQuote={onQuoteUserMessage}
-          onRewind={onRewindMessage}
           onRetry={onRetryUserMessage}
         />
       )

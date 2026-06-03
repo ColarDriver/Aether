@@ -18,13 +18,18 @@ export function AssistantMessageBlock({ block, actionsDisabled = false, onFork, 
   const documentLayout = shouldUseDocumentLayout(block.content)
   const showActions = !block.isStreaming
   const persisted = block.source === 'transcript' && typeof block.messageIndex === 'number'
+  // While streaming, the inline run-activity row above (StreamingStatusBlock:
+  // "Aether · <verb>") is the turn's header, so suppress this message's own name
+  // row to avoid a duplicate "Aether" line. It returns once the reply settles.
   return (
-    <article className={'chat-block chat-block-assistant chat-message-group' + (block.isError ? ' chat-block-error' : '')}>
-      <div className="chat-block-label">
-        <span className="chat-role-icon" aria-hidden="true"><Bot size={13} /></span>
-        <span className="chat-role-text">assistant</span>
-        <MessageMeta role="assistant" timestamp={block.timestamp} />
-      </div>
+    <article className={'chat-block chat-block-assistant chat-message-group' + (block.isStreaming ? ' chat-block-assistant-streaming' : '') + (block.isError ? ' chat-block-error' : '')}>
+      {block.isStreaming ? null : (
+        <div className="chat-block-label">
+          <span className="chat-role-icon" aria-hidden="true"><Bot size={13} /></span>
+          <span className="chat-role-text">assistant</span>
+          <MessageMeta role="assistant" timestamp={block.timestamp} />
+        </div>
+      )}
       <div className={documentLayout ? 'chat-message-document' : 'chat-message-shell'}>
         <MarkdownRenderer text={block.content} streaming={Boolean(block.isStreaming)} />
       </div>
